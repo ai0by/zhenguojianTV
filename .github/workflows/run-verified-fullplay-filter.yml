@@ -1,0 +1,32 @@
+name: Run verified full-play patch
+
+on:
+  push:
+    branches:
+      - feature/yeguo-xiangjiao-sources
+    paths:
+      - .github/workflows/run-verified-fullplay-filter.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/yeguo-xiangjiao-sources
+          fetch-depth: 0
+      - name: Patch and format
+        run: |
+          python3 scripts/apply_verified_fullplay_filter.py
+          gofmt -w native/core/provider_xiangjiao.go native/core/provider_yeguo.go
+          git diff --check
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add native/core/provider_xiangjiao.go native/core/provider_yeguo.go
+          git commit -m 'feat: only expose fully playable source dramas'
+          git push origin HEAD:feature/yeguo-xiangjiao-sources
