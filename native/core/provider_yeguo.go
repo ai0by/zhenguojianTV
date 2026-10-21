@@ -425,8 +425,8 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 			Referer:        pageURL,
 			CurrentEpisode: rawEpisode(episode.index),
 		}
+		chapter.VideoURL = yeguoEpisodeMarker(episode.id)
 		if !episode.locked {
-			chapter.VideoURL = yeguoEpisodeMarker(episode.id)
 			freeFound = true
 		}
 		chapters = append(chapters, chapter)
@@ -688,9 +688,6 @@ func yeguoFindMediaURL(value any) string {
 }
 
 func (d *Downloader) resolveYeguoPlayback(ctx context.Context, task Task) (providerMedia, error) {
-	if task.Chapter.VIP {
-		return providerMedia{}, fmt.Errorf("野果该集标记为会员/金币内容，需要站点授权后才能播放正片")
-	}
 	episodeID := yeguoMarkerEpisode(task.Chapter.VideoURL)
 	if episodeID == "" {
 		return providerMedia{}, fmt.Errorf("野果分集播放标识无效，请刷新详情")
@@ -700,6 +697,7 @@ func (d *Downloader) resolveYeguoPlayback(ctx context.Context, task Task) (provi
 		return providerMedia{}, fmt.Errorf("野果剧集信息无效")
 	}
 	attempts := []map[string]string{
+		{"playlet_id": dramaID, "episode_id": episodeID, "video_id": dramaID},
 		{"episode_id": episodeID, "video_id": dramaID},
 		{"episodeId": episodeID, "videoId": dramaID},
 		{"episode_id": episodeID},

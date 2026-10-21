@@ -389,8 +389,8 @@ func (d *Downloader) fetchXiangjiaoDetail(ctx context.Context, sourceID string) 
 			Referer:        strings.TrimRight(base, "/") + "/",
 			CurrentEpisode: rawEpisode(episode.index),
 		}
+		chapter.VideoURL = xiangjiaoEpisodeMarker(episode.id)
 		if !episode.locked {
-			chapter.VideoURL = xiangjiaoEpisodeMarker(episode.id)
 			freeFound = true
 		}
 		chapters = append(chapters, chapter)
@@ -461,19 +461,24 @@ func (d *Downloader) clearXiangjiaoGuestToken() {
 }
 
 func (d *Downloader) resolveXiangjiaoPlayback(ctx context.Context, task Task) (providerMedia, error) {
-	if task.Chapter.VIP {
-		return providerMedia{}, fmt.Errorf("香蕉该集需要会员或购买，游客身份不能播放正片")
-	}
 	episodeID := xiangjiaoMarkerEpisode(task.Chapter.VideoURL)
 	if episodeID == "" {
 		return providerMedia{}, fmt.Errorf("香蕉分集播放标识无效，请刷新详情")
+	}
+	_, dramaID, validDrama := splitProviderDramaID(task.DramaID)
+	if !validDrama {
+		dramaID = ""
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := d.xiangjiaoGuestToken(ctx, attempt > 0)
 		if err != nil {
 			return providerMedia{}, err
 		}
-		decoded, err := d.xiangjiaoJSON(ctx, http.MethodPost, "/api/playback/sessions", map[string]any{"episode_id": episodeID}, token)
+		payload := map[string]any{"episode_id": episodeID}
+		if dramaID != "" {
+			payload["drama_id"] = dramaID
+		}
+		decoded, err := d.xiangjiaoJSON(ctx, http.MethodPost, "/api/playback/sessions", payload, token)
 		if err != nil {
 			if apiErr, ok := err.(*xiangjiaoHTTPError); ok {
 				if apiErr.Status == http.StatusUnauthorized && attempt == 0 {
