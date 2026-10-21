@@ -22,3 +22,21 @@ if old not in source:
     raise SystemExit('replace_once helper not found')
 source = source.replace(old, new, 1)
 exec(compile(source, str(source_path), 'exec'), {'__name__': '__main__'})
+
+# Repair one intentionally isolated helper typo in the generated Go source.
+p = Path('native/core/provider_yeguo.go')
+text = p.read_text()
+old_tail = '''\t\t}
+\treturn nil
+}
+
+func (d *Downloader) yeguoFullPlaybackURL'''
+new_tail = '''\t\t}
+\t}
+\treturn nil
+}
+
+func (d *Downloader) yeguoFullPlaybackURL'''
+if old_tail not in text:
+    raise SystemExit('yeguoPlaybackMap tail not found')
+p.write_text(text.replace(old_tail, new_tail, 1))
