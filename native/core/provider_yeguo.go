@@ -142,7 +142,6 @@ func (d *Downloader) fetchYeguoPayload(ctx context.Context, pagePath string) (an
 }
 
 func walkYeguoMaps(value any, visit func(map[string]any)) {
-	seen := map[any]bool{}
 	var walk func(any)
 	walk = func(current any) {
 		switch typed := current.(type) {
@@ -156,11 +155,6 @@ func walkYeguoMaps(value any, visit func(map[string]any)) {
 				walk(child)
 			}
 		case map[any]any:
-			// devalue Map 结构极少出现在剧集对象里；仍做兼容，且避免循环。
-			if seen[typed] {
-				return
-			}
-			seen[typed] = true
 			for _, child := range typed {
 				walk(child)
 			}

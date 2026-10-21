@@ -37,6 +37,10 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.HuangjuURL, huangjuBaseURL
 	case sourceDuanju51:
 		fallback = duanju51BaseURL
+	case sourceYeguo:
+		fallback = yeguoBaseURL
+	case sourceXiangjiao:
+		fallback = xiangjiaoBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -70,6 +74,10 @@ func providerSourceForURL(raw string) string {
 		return sourceHuangju
 	case duanju51MirrorHost(host):
 		return sourceDuanju51
+	case yeguoMirrorHost(host) || host == "api.ekzhadks.cc":
+		return sourceYeguo
+	case xiangjiaoMirrorHost(host):
+		return sourceXiangjiao
 	default:
 		// 远程镜像配置里登记的备用域名（红果、黄剧等站源经常换域名）。
 		return providerSourceForHost(host)
@@ -159,6 +167,20 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 		}
 	}
 	media := providerMedia{URL: chapter.VideoURL, Referer: firstNonEmpty(chapter.Referer, d.providerBaseURL(chapter.Source)+"/")}
+	if chapter.Source == sourceYeguo && strings.HasPrefix(chapter.VideoURL, "yeguo-play://") {
+		var err error
+		media, err = d.resolveYeguoPlayback(ctx, task)
+		if err != nil {
+			return providerMedia{}, err
+		}
+	}
+	if chapter.Source == sourceXiangjiao && strings.HasPrefix(chapter.VideoURL, "xiangjiao-play://") {
+		var err error
+		media, err = d.resolveXiangjiaoPlayback(ctx, task)
+		if err != nil {
+			return providerMedia{}, err
+		}
+	}
 	if chapter.Source == sourceHuangdou {
 		_, sourceID, valid := splitProviderDramaID(task.DramaID)
 		if valid {

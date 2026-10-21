@@ -60,6 +60,13 @@ type Downloader struct {
 	legacy                *legacyAPIClient
 	previewMu             sync.Mutex
 	previewSessions       map[string]*huangguoPreviewSession
+	yeguoCryptoMu         sync.Mutex
+	yeguoCrypto           yeguoCryptoConfig
+	yeguoCryptoExpires    time.Time
+	xiangjiaoSessionMu    sync.Mutex
+	xiangjiaoDeviceID     string
+	xiangjiaoAccessToken  string
+	xiangjiaoAccessExpires time.Time
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 1, PageSize: 30, Retries: 2} }
@@ -530,6 +537,17 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		result.HasMore = more
 		return result, nil
 	}
+	if query != "" && source == sourceYeguo {
+		items, more, err := d.fetchYeguoCatalogPage(ctx, page, query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
 	if query != "" {
 		engine.mu.Lock()
 		items := append([]nativeDrama{}, engine.catalogs[source]...)
@@ -600,6 +618,10 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		items, result.HasMore, err = d.fetchHuangjuCatalogPage(ctx, page, category, "")
 	case sourceDuanju51:
 		items, result.HasMore, err = d.fetchDuanju51CatalogPage(ctx, page, category, "")
+	case sourceYeguo:
+		items, result.HasMore, err = d.fetchYeguoCatalogPage(ctx, page, "")
+	case sourceXiangjiao:
+		items, result.HasMore, err = d.fetchXiangjiaoCatalogPage(ctx, page, "")
 	case sourceHuangguoVideo:
 		address := fmt.Sprintf("%s/videos?page=%d", d.providerBaseURL(source), page)
 		if category != "" {
@@ -655,6 +677,10 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchHuangjuDetail(ctx, sourceID)
 	case sourceDuanju51:
 		raw, chapters, err = engine.downloader.fetchDuanju51Detail(ctx, sourceID)
+	case sourceYeguo:
+		raw, chapters, err = engine.downloader.fetchYeguoDetail(ctx, sourceID)
+	case sourceXiangjiao:
+		raw, chapters, err = engine.downloader.fetchXiangjiaoDetail(ctx, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
 	}
