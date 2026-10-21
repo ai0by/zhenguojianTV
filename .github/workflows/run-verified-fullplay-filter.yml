@@ -30,3 +30,5 @@ jobs:
           git add native/core/provider_xiangjiao.go native/core/provider_yeguo.go
           git commit -m 'feat: only expose fully playable source dramas'
           git push origin HEAD:feature/yeguo-xiangjiao-sources
+
+# rerun: 2
