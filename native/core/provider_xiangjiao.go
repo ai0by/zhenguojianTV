@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -274,7 +275,7 @@ func (d *Downloader) fetchXiangjiaoCatalogPage(ctx context.Context, page int, qu
 		}
 		items = filtered
 	}
-	return items, false, nil
+	return d.filterXiangjiaoFullyPlayable(ctx, items), false, nil
 }
 
 func xiangjiaoEpisodeLocked(row map[string]any) bool {
@@ -295,6 +296,94 @@ func xiangjiaoEpisodeLocked(row map[string]any) bool {
 	default:
 		return true
 	}
+}
+
+type xiangjiaoPlayableCacheEntry struct {
+	playable bool
+	expires  time.Time
+}
+
+var xiangjiaoPlayableCache sync.Map
+
+func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID string) bool {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return false
+	}
+	if cached, ok := xiangjiaoPlayableCache.Load(sourceID); ok {
+		entry := cached.(xiangjiaoPlayableCacheEntry)
+		if time.Now().Before(entry.expires) {
+			return entry.playable
+		}
+		xiangjiaoPlayableCache.Delete(sourceID)
+	}
+
+	raw, err := d.xiangjiaoJSON(ctx, http.MethodGet, "/api/dramas/"+url.PathEscape(sourceID)+"/episodes", nil, "")
+	if err != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	count := 0
+	playable := true
+	walkXiangjiaoMaps(xiangjiaoPayloadData(raw), func(row map[string]any) {
+		id := xiangjiaoText(row, "id", "episode_id", "episodeId")
+		if id == "" || seen[id] {
+			return
+		}
+		index := xiangjiaoInt(row, "episode_number", "episodeNumber")
+		if index <= 0 && xiangjiaoText(row, "drama_id", "dramaId") == "" {
+			return
+		}
+		seen[id] = true
+		count++
+		if xiangjiaoEpisodeLocked(row) {
+			playable = false
+		}
+	})
+	playable = playable && count > 0
+	xiangjiaoPlayableCache.Store(sourceID, xiangjiaoPlayableCacheEntry{
+		playable: playable,
+		expires:  time.Now().Add(20 * time.Minute),
+	})
+	return playable
+}
+
+func (d *Downloader) filterXiangjiaoFullyPlayable(ctx context.Context, items []Drama) []Drama {
+	if len(items) == 0 {
+		return items
+	}
+	allowed := make([]bool, len(items))
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for i := range items {
+		if items[i].VIP != nil && *items[i].VIP {
+			continue
+		}
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			allowed[index] = d.xiangjiaoDramaFullyPlayable(probeCtx, items[index].SourceID)
+		}(i)
+	}
+	wg.Wait()
+
+	filtered := make([]Drama, 0, len(items))
+	for i, drama := range items {
+		if allowed[i] {
+			vip := false
+			drama.VIP = &vip
+			filtered = append(filtered, drama)
+		}
+	}
+	return filtered
 }
 
 func xiangjiaoEpisodeMarker(episodeID string) string {
@@ -365,6 +454,11 @@ func (d *Downloader) fetchXiangjiaoDetail(ctx context.Context, sourceID string) 
 	})
 	if len(episodes) == 0 {
 		return Drama{}, nil, fmt.Errorf("香蕉详情未返回分集")
+	}
+	for _, episode := range episodes {
+		if episode.locked {
+			return Drama{}, nil, fmt.Errorf("香蕉该剧存在受限分集，已按完整可播放策略隐藏")
+		}
 	}
 	for index := range episodes {
 		if episodes[index].index <= 0 {
