@@ -1,0 +1,41 @@
+name: Apply Yeguo Xiangjiao Patch
+
+on:
+  push:
+    branches:
+      - feature/yeguo-xiangjiao-sources
+    paths:
+      - '.github/workflows/apply-yeguo-xiangjiao-patch.yml'
+      - 'scripts/apply_yeguo_xiangjiao_patch.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/yeguo-xiangjiao-sources
+          fetch-depth: 0
+
+      - name: Apply source-only patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply_yeguo_xiangjiao_patch.py
+          git diff --check
+
+      - name: Commit patched sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm scripts/apply_yeguo_xiangjiao_patch.py
+          git add native/core/provider_huangguo.go native/core/provider_media.go native/core/app_runtime.go native/core/app_categories.go native/core/provider_yeguo.go native/core/provider_xiangjiao.go lib/models.dart config/source_mirrors.json
+          git commit -m 'Integrate Yeguo and Xiangjiao sources'
+          git push origin HEAD:feature/yeguo-xiangjiao-sources
