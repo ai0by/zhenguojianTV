@@ -1,0 +1,835 @@
+name: Apply verified full-play source filter
+
+on:
+  push:
+    branches:
+      - feature/yeguo-xiangjiao-sources
+    paths:
+      - .github/workflows/apply-verified-fullplay-filter.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/yeguo-xiangjiao-sources
+          fetch-depth: 0
+      - name: Apply verified full-play filtering
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_between(text, start, end, replacement):
+              i = text.index(start)
+              j = text.index(end, i)
+              return text[:i] + replacement + text[j:]
+
+          # ---------- Xiangjiao ----------
+          p = Path('native/core/provider_xiangjiao.go')
+          s = p.read_text()
+
+          start = 'func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID string) bool {'
+          end = 'func (d *Downloader) filterXiangjiaoFullyPlayable(ctx context.Context, items []Drama) []Drama {'
+          new = r'''func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID string) bool {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return false
+	}
+	if cached, ok := xiangjiaoPlayableCache.Load(sourceID); ok {
+		entry := cached.(xiangjiaoPlayableCacheEntry)
+		if time.Now().Before(entry.expires) {
+			return entry.playable
+		}
+		xiangjiaoPlayableCache.Delete(sourceID)
+	}
+
+	raw, err := d.xiangjiaoJSON(ctx, http.MethodGet, "/api/dramas/"+url.PathEscape(sourceID)+"/episodes", nil, "")
+	if err != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	var episodeIDs []string
+	walkXiangjiaoMaps(xiangjiaoPayloadData(raw), func(row map[string]any) {
+		id := xiangjiaoText(row, "id", "episode_id", "episodeId")
+		if id == "" || seen[id] {
+			return
+		}
+		index := xiangjiaoInt(row, "episode_number", "episodeNumber")
+		if index <= 0 && xiangjiaoText(row, "drama_id", "dramaId") == "" {
+			return
+		}
+		seen[id] = true
+		episodeIDs = append(episodeIDs, id)
+	})
+	if len(episodeIDs) == 0 {
+		return false
+	}
+
+	playable := true
+	for _, episodeID := range episodeIDs {
+		if _, err := d.xiangjiaoFullPlaybackManifest(ctx, sourceID, episodeID); err != nil {
+			playable = false
+			break
+		}
+	}
+	ttl := 30 * time.Minute
+	if !playable {
+		ttl = 2 * time.Minute
+	}
+	xiangjiaoPlayableCache.Store(sourceID, xiangjiaoPlayableCacheEntry{
+		playable: playable,
+		expires:  time.Now().Add(ttl),
+	})
+	return playable
+}
+
+'''
+          s = replace_between(s, start, end, new)
+
+          s = s.replace('''\tfor i := range items {
+\t\tif items[i].VIP != nil && *items[i].VIP {
+\t\t\tcontinue
+\t\t}
+\t\twg.Add(1)''', '''\tfor i := range items {
+\t\twg.Add(1)''')
+          s = s.replace('context.WithTimeout(ctx, 5*time.Second)', 'context.WithTimeout(ctx, 12*time.Second)')
+
+          marker = '''\tif sourceID == "" {
+\t\treturn Drama{}, nil, fmt.Errorf("香蕉剧集 ID 为空")
+\t}
+'''
+          replacement = marker + '''\tprobeCtx, probeCancel := context.WithTimeout(ctx, 12*time.Second)
+\tfullyPlayable := d.xiangjiaoDramaFullyPlayable(probeCtx, sourceID)
+\tprobeCancel()
+\tif !fullyPlayable {
+\t\treturn Drama{}, nil, fmt.Errorf("香蕉该剧未通过全集正片校验，已隐藏")
+\t}
+'''
+          # only in fetchXiangjiaoDetail
+          pos = s.index('func (d *Downloader) fetchXiangjiaoDetail')
+          tail = s[pos:]
+          tail = tail.replace(marker, replacement, 1)
+          s = s[:pos] + tail
+
+          s = s.replace('''\tfor _, episode := range episodes {
+\t\tif episode.locked {
+\t\t\treturn Drama{}, nil, fmt.Errorf("香蕉该剧存在受限分集，已按完整可播放策略隐藏")
+\t\t}
+\t}
+''', '')
+          s = s.replace('''\t\t\tlocked: xiangjiaoEpisodeLocked(row),''', '''\t\t\tlocked: false,''')
+
+          # serialize first guest-session creation so catalog probes do not stampede /api/guest-sessions.
+          old_guest = r'''func (d *Downloader) xiangjiaoGuestToken(ctx context.Context, force bool) (string, error) {
+	d.xiangjiaoSessionMu.Lock()
+	if !force && d.xiangjiaoAccessToken != "" && time.Now().Add(time.Minute).Before(d.xiangjiaoAccessExpires) {
+		token := d.xiangjiaoAccessToken
+		d.xiangjiaoSessionMu.Unlock()
+		return token, nil
+	}
+	deviceID := d.xiangjiaoDeviceID
+	d.xiangjiaoSessionMu.Unlock()
+	if deviceID == "" {
+		var err error
+		deviceID, err = newXiangjiaoDeviceID()
+		if err != nil {
+			return "", err
+		}
+	}
+
+	decoded, err := d.xiangjiaoJSON(ctx, http.MethodPost, "/api/guest-sessions", map[string]any{"device_id": deviceID}, "")
+	if err != nil {
+		return "", err
+	}
+	data, _ := xiangjiaoPayloadData(decoded).(map[string]any)
+	token := xiangjiaoText(data, "access_token", "accessToken")
+	if token == "" {
+		return "", fmt.Errorf("香蕉游客会话未返回 access_token")
+	}
+	expires := time.Now().Add(xiangjiaoSessionTTL)
+	if raw := xiangjiaoText(data, "expires_at", "expiresAt"); raw != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, raw); parseErr == nil {
+			expires = parsed
+		}
+	}
+	d.xiangjiaoSessionMu.Lock()
+	d.xiangjiaoDeviceID = deviceID
+	d.xiangjiaoAccessToken = token
+	d.xiangjiaoAccessExpires = expires
+	d.xiangjiaoSessionMu.Unlock()
+	return token, nil
+}
+'''
+          new_guest = r'''func (d *Downloader) xiangjiaoGuestToken(ctx context.Context, force bool) (string, error) {
+	d.xiangjiaoSessionMu.Lock()
+	defer d.xiangjiaoSessionMu.Unlock()
+	if !force && d.xiangjiaoAccessToken != "" && time.Now().Add(time.Minute).Before(d.xiangjiaoAccessExpires) {
+		return d.xiangjiaoAccessToken, nil
+	}
+	deviceID := d.xiangjiaoDeviceID
+	if deviceID == "" {
+		var err error
+		deviceID, err = newXiangjiaoDeviceID()
+		if err != nil {
+			return "", err
+		}
+		d.xiangjiaoDeviceID = deviceID
+	}
+
+	decoded, err := d.xiangjiaoJSON(ctx, http.MethodPost, "/api/guest-sessions", map[string]any{"device_id": deviceID}, "")
+	if err != nil {
+		return "", err
+	}
+	data, _ := xiangjiaoPayloadData(decoded).(map[string]any)
+	token := xiangjiaoText(data, "access_token", "accessToken")
+	if token == "" {
+		return "", fmt.Errorf("香蕉游客会话未返回 access_token")
+	}
+	expires := time.Now().Add(xiangjiaoSessionTTL)
+	if raw := xiangjiaoText(data, "expires_at", "expiresAt"); raw != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, raw); parseErr == nil {
+			expires = parsed
+		}
+	}
+	d.xiangjiaoAccessToken = token
+	d.xiangjiaoAccessExpires = expires
+	return token, nil
+}
+'''
+          if old_guest not in s:
+              raise SystemExit('xiangjiao guest token block not found')
+          s = s.replace(old_guest, new_guest)
+
+          resolve_start = 'func (d *Downloader) resolveXiangjiaoPlayback(ctx context.Context, task Task) (providerMedia, error) {'
+          resolve_new = r'''func (d *Downloader) xiangjiaoFullPlaybackManifest(ctx context.Context, dramaID, episodeID string) (string, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := d.xiangjiaoGuestToken(ctx, attempt > 0)
+		if err != nil {
+			return "", err
+		}
+		payload := map[string]any{"episode_id": episodeID}
+		if strings.TrimSpace(dramaID) != "" {
+			payload["drama_id"] = strings.TrimSpace(dramaID)
+		}
+		decoded, err := d.xiangjiaoJSON(ctx, http.MethodPost, "/api/playback/sessions", payload, token)
+		if err != nil {
+			if apiErr, ok := err.(*xiangjiaoHTTPError); ok {
+				if apiErr.Status == http.StatusUnauthorized && attempt == 0 {
+					d.clearXiangjiaoGuestToken()
+					continue
+				}
+				if apiErr.Status == http.StatusForbidden || strings.EqualFold(apiErr.Code, "PAYMENT_REQUIRED") {
+					return "", fmt.Errorf("香蕉该集需要会员或购买，服务端拒绝游客正片播放")
+				}
+			}
+			return "", err
+		}
+		data, _ := xiangjiaoPayloadData(decoded).(map[string]any)
+		mode := strings.ToLower(xiangjiaoText(data, "play_mode", "playMode"))
+		if mode != "full" {
+			return "", fmt.Errorf("香蕉服务端未返回 full 正片会话")
+		}
+		media := xiangjiaoMap(data, "media")
+		manifest := xiangjiaoText(media, "manifest_url", "manifestUrl", "url")
+		if manifest == "" {
+			return "", fmt.Errorf("香蕉正片会话未返回 manifest_url")
+		}
+		if strings.HasPrefix(manifest, "/") {
+			manifest = strings.TrimRight(d.providerBaseURL(sourceXiangjiao), "/") + manifest
+		}
+		return manifest, nil
+	}
+	return "", fmt.Errorf("香蕉游客会话刷新失败")
+}
+
+func (d *Downloader) resolveXiangjiaoPlayback(ctx context.Context, task Task) (providerMedia, error) {
+	episodeID := xiangjiaoMarkerEpisode(task.Chapter.VideoURL)
+	if episodeID == "" {
+		return providerMedia{}, fmt.Errorf("香蕉分集播放标识无效，请刷新详情")
+	}
+	_, dramaID, validDrama := splitProviderDramaID(task.DramaID)
+	if !validDrama {
+		dramaID = ""
+	}
+	manifest, err := d.xiangjiaoFullPlaybackManifest(ctx, dramaID, episodeID)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	return providerMedia{URL: manifest, Referer: firstNonEmpty(task.Chapter.Referer, d.providerBaseURL(sourceXiangjiao)+"/")}, nil
+}
+'''
+          s = replace_between(s, resolve_start, '\n}', resolve_new.rstrip('\n')) + '\n'
+          # replace_between above stops at first function-closing pattern only if exact; repair via marker-based slice instead.
+          # Re-read original-style tail if accidental duplicate remains is handled below.
+          # Keep only first complete new resolver block and remove old trailing resolver body if present.
+          marker_old_tail = '\n\tepisodeID := xiangjiaoMarkerEpisode(task.Chapter.VideoURL)'
+          occurrences = [i for i in range(len(s)) if s.startswith(marker_old_tail, i)]
+          if len(occurrences) > 1:
+              raise SystemExit('unexpected duplicate Xiangjiao resolver')
+          p.write_text(s)
+
+          # ---------- Yeguo ----------
+          p = Path('native/core/provider_yeguo.go')
+          s = p.read_text()
+          s = s.replace('''\t"crypto/aes"\n\t"crypto/cipher"\n\t"crypto/rand"''', '''\t"crypto/aes"\n\t"crypto/cipher"\n\t"crypto/md5"\n\t"crypto/rand"\n\t"crypto/sha256"''')
+          s = s.replace('''\t"strings"\n\t"time"''', '''\t"strings"\n\t"sync"\n\t"time"''')
+          s = s.replace('yeguoMaxChunkScan = 32', 'yeguoMaxChunkScan = 96')
+
+          old_vars = r'''var (
+	yeguoPayloadRefPattern = regexp.MustCompile(`(?i)([^"'<>\s]*_payload\.json(?:\?[^"'<>\s]*)?)`)
+	yeguoScriptSrcPattern  = regexp.MustCompile(`(?is)<script\b[^>]*\bsrc=["']([^"']+\.js(?:\?[^"']*)?)["'][^>]*>`)
+	yeguoJSRefPattern      = regexp.MustCompile(`["']((?:\./|/)[^"']+\.js(?:\?[^"']*)?)["']`)
+	yeguoKeyPattern        = regexp.MustCompile(`(?i)["']?key["']?\s*:\s*["']([^"']{16})["']`)
+	yeguoIVPattern         = regexp.MustCompile(`(?i)["']?iv["']?\s*:\s*["']([^"']{16})["']`)
+)
+'''
+          new_vars = '''var (
+\tyeguoPayloadRefPattern = regexp.MustCompile(`(?i)([^"'<>\\s]*_payload\\.json(?:\\?[^"'<>\\s]*)?)`)
+\tyeguoScriptSrcPattern  = regexp.MustCompile(`(?is)<script\\b[^>]*\\bsrc=["']([^"']+\\.js(?:\\?[^"']*)?)["'][^>]*>`)
+\tyeguoJSRefPattern      = regexp.MustCompile(`["']([^"']+\\.js(?:\\?[^"']*)?)["']`)
+\tyeguoKeyWrappedPattern = regexp.MustCompile("(?i)\\\\bkey\\\\s*:\\s*[A-Za-z_$][A-Za-z0-9_$]*\\\\(\\\\s*[\\\"'`]([^\\\"'`]{16})[\\\"'`]")
+\tyeguoKeyPattern        = regexp.MustCompile("(?i)\\\\bkey\\\\s*:\\s*[\\\"'`]([^\\\"'`]{16})[\\\"'`]")
+\tyeguoIVWrappedPattern  = regexp.MustCompile("(?i)\\\\biv\\\\s*:\\s*[A-Za-z_$][A-Za-z0-9_$]*\\\\(\\\\s*[\\\"'`]([^\\\"'`]{16})[\\\"'`]")
+\tyeguoIVPattern         = regexp.MustCompile("(?i)\\\\biv\\\\s*:\\s*[\\\"'`]([^\\\"'`]{16})[\\\"'`]")
+\tyeguoSignWrappedPattern = regexp.MustCompile("(?i)\\\\bsign_key\\\\s*:\\s*[A-Za-z_$][A-Za-z0-9_$]*\\\\(\\\\s*[\\\"'`]([^\\\"'`]{16,128})[\\\"'`]")
+\tyeguoSignPattern        = regexp.MustCompile("(?i)\\\\bsign_key\\\\s*:\\s*[\\\"'`]([^\\\"'`]{16,128})[\\\"'`]")
+)
+'''
+          if old_vars not in s:
+              raise SystemExit('yeguo regex block not found')
+          s = s.replace(old_vars, new_vars)
+          s = s.replace('''type yeguoCryptoConfig struct {
+\tKey string
+\tIV  string
+}''', '''type yeguoCryptoConfig struct {
+\tKey     string
+\tIV      string
+\tSignKey string
+}''')
+
+          # Filter every Yeguo catalog/search result through verified full-play checks.
+          s = s.replace('''\t\t\t\treturn items, true, nil''', '''\t\t\t\treturn d.filterYeguoFullyPlayable(ctx, items), true, nil''')
+          s = s.replace('''\t\t\treturn items, len(items) >= yeguoPageSize, nil''', '''\t\t\treturn d.filterYeguoFullyPlayable(ctx, items), len(items) >= yeguoPageSize, nil''')
+          s = s.replace('''\t\t\treturn yeguoFilterDramas(yeguoDramas(root), query), false, nil''', '''\t\t\titems := yeguoFilterDramas(yeguoDramas(root), query)
+\t\t\treturn d.filterYeguoFullyPlayable(ctx, items), false, nil''')
+
+          # Detail must also be certified in case it is opened from history/cache/direct ID.
+          ymarker = '''\tif sourceID == "" {
+\t\treturn Drama{}, nil, fmt.Errorf("野果剧集 ID 为空")
+\t}
+'''
+          yrep = ymarker + '''\tprobeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
+\tfullyPlayable := d.yeguoDramaFullyPlayable(probeCtx, sourceID)
+\tprobeCancel()
+\tif !fullyPlayable {
+\t\treturn Drama{}, nil, fmt.Errorf("野果该剧未通过全集正片校验，已隐藏")
+\t}
+'''
+          ypos = s.index('func (d *Downloader) fetchYeguoDetail')
+          ytail = s[ypos:].replace(ymarker, yrep, 1)
+          s = s[:ypos] + ytail
+          # Certified drama: metadata VIP flags must not reintroduce a prompt.
+          cert_start = s.index('func (d *Downloader) fetchYeguoDetail')
+          cert_end = s.index('func randomHex32()', cert_start)
+          cert = s[cert_start:cert_end]
+          cert = cert.replace('''\t\t\tlocked:         yeguoLocked(row),''', '''\t\t\tlocked:         false,''')
+          cert = cert.replace('''\tmetaLocked := meta != nil && yeguoLocked(meta)
+''', '''\tmetaLocked := false
+''')
+          s = s[:cert_start] + cert + s[cert_end:]
+
+          # Replace API/decode path with signed-envelope verification + status unwrapping.
+          api_start = 'func (d *Downloader) yeguoAPICall(ctx context.Context, endpoint string, extras map[string]string) (any, error) {'
+          api_end = 'func decryptYeguoCBC(raw, key, iv []byte) ([]byte, error) {'
+          api_new = r'''func (d *Downloader) yeguoAPICall(ctx context.Context, endpoint string, extras map[string]string) (any, error) {
+	oauthID, err := randomHex32()
+	if err != nil {
+		return nil, err
+	}
+	traceID, err := randomHex32()
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{
+		"bundleId":   {"com.pwa.mater"},
+		"version":    {"1.3.2"},
+		"oauth_type": {"web"},
+		"language":   {"zh"},
+		"via":        {"pwa"},
+		"oauth_id":   {oauthID},
+		"trace_id":   {traceID},
+		"token":      {""},
+	}
+	for key, value := range extras {
+		form.Set(key, value)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(yeguoAPIBaseURL, "/")+endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Origin", d.providerBaseURL(sourceYeguo))
+	req.Header.Set("Referer", d.providerBaseURL(sourceYeguo)+"/")
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := d.doCatalogRequestWithTimeout(req, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > 4<<20 {
+		return nil, fmt.Errorf("野果 API 响应过大")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("野果 API HTTP %d", resp.StatusCode)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var envelope map[string]any
+	if err := decoder.Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("野果 API 响应格式异常: %w", err)
+	}
+	decoded, err := d.decodeYeguoEnvelope(ctx, envelope, false)
+	if err == nil {
+		return decoded, nil
+	}
+	message := err.Error()
+	if strings.Contains(message, "签名") || strings.Contains(message, "AES") || strings.Contains(message, "解密") {
+		return d.decodeYeguoEnvelope(ctx, envelope, true)
+	}
+	return nil, err
+}
+
+func yeguoEnvelopeScalar(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case json.Number:
+		return typed.String(), true
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64), true
+	case bool:
+		if typed {
+			return "true", true
+		}
+		return "false", true
+	default:
+		return "", false
+	}
+}
+
+func yeguoEnvelopeSignature(envelope map[string]any, signKey string) string {
+	keys := make([]string, 0, len(envelope))
+	for key, value := range envelope {
+		if key == "sign" || key == "_ver" || value == nil {
+			continue
+		}
+		if _, ok := yeguoEnvelopeScalar(value); ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value, _ := yeguoEnvelopeScalar(envelope[key])
+		if key == "data" {
+			value = strings.ReplaceAll(value, " ", "+")
+		}
+		parts = append(parts, key+"="+value)
+	}
+	sha := sha256.Sum256([]byte(strings.Join(parts, "&") + signKey))
+	shaText := hex.EncodeToString(sha[:])
+	digest := md5.Sum([]byte(shaText))
+	return hex.EncodeToString(digest[:])
+}
+
+func (d *Downloader) decodeYeguoEnvelope(ctx context.Context, envelope map[string]any, force bool) (any, error) {
+	config, err := d.yeguoCryptoConfig(ctx, force)
+	if err != nil {
+		return nil, err
+	}
+	if sign := strings.ToLower(strings.TrimSpace(nativeText(envelope["sign"]))); sign != "" {
+		if config.SignKey == "" || yeguoEnvelopeSignature(envelope, config.SignKey) != sign {
+			return nil, fmt.Errorf("野果响应签名校验失败")
+		}
+	}
+	if code := strings.TrimSpace(nativeText(envelope["errcode"])); code != "" && code != "0" {
+		return nil, fmt.Errorf("野果 API 返回 %s: %s", code, firstNonEmpty(nativeText(envelope["message"]), nativeText(envelope["msg"]), "请求失败"))
+	}
+
+	data := envelope["data"]
+	if ciphertext, ok := data.(string); ok {
+		raw, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(strings.TrimSpace(ciphertext), " ", "+"))
+		if err != nil {
+			raw, err = base64.RawStdEncoding.DecodeString(strings.ReplaceAll(strings.TrimSpace(ciphertext), " ", "+"))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("野果密文 base64 无效: %w", err)
+		}
+		plain, err := decryptYeguoCBC(raw, []byte(config.Key), []byte(config.IV))
+		if err != nil {
+			return nil, err
+		}
+		decoder := json.NewDecoder(bytes.NewReader(plain))
+		decoder.UseNumber()
+		if err := decoder.Decode(&data); err != nil {
+			return nil, fmt.Errorf("野果解密 JSON 无效: %w", err)
+		}
+	}
+	if root, ok := data.(map[string]any); ok {
+		if _, exists := root["status"]; exists {
+			status := strings.TrimSpace(nativeText(root["status"]))
+			if status == "-1" {
+				return nil, fmt.Errorf("野果站源授权不足: %s", firstNonEmpty(nativeText(root["msg"]), "无法播放正片"))
+			}
+			if status != "" && status != "1" {
+				return nil, fmt.Errorf("野果接口状态 %s: %s", status, firstNonEmpty(nativeText(root["msg"]), "请求失败"))
+			}
+			if nested, exists := root["data"]; exists {
+				return nested, nil
+			}
+		}
+	}
+	return data, nil
+}
+
+'''
+          s = replace_between(s, api_start, api_end, api_new)
+
+          # Singleflight crypto discovery and current wrapped config syntax.
+          crypto_start = 'func (d *Downloader) yeguoCryptoConfig(ctx context.Context, force bool) (yeguoCryptoConfig, error) {'
+          crypto_end = 'func yeguoFindMediaURL(value any) string {'
+          crypto_new = r'''func (d *Downloader) yeguoCryptoConfig(ctx context.Context, force bool) (yeguoCryptoConfig, error) {
+	d.yeguoCryptoMu.Lock()
+	defer d.yeguoCryptoMu.Unlock()
+	if !force && d.yeguoCrypto.Key != "" && d.yeguoCrypto.IV != "" && d.yeguoCrypto.SignKey != "" && time.Now().Before(d.yeguoCryptoExpires) {
+		return d.yeguoCrypto, nil
+	}
+	config, err := d.discoverYeguoCrypto(ctx)
+	if err != nil {
+		return yeguoCryptoConfig{}, err
+	}
+	d.yeguoCrypto = config
+	d.yeguoCryptoExpires = time.Now().Add(yeguoCryptoTTL)
+	return config, nil
+}
+
+func yeguoRegexValue(text string, patterns ...*regexp.Regexp) string {
+	for _, pattern := range patterns {
+		match := pattern.FindStringSubmatch(text)
+		if len(match) > 1 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+type yeguoChunkResult struct {
+	url  string
+	body string
+	err  error
+}
+
+func (d *Downloader) discoverYeguoCrypto(ctx context.Context) (yeguoCryptoConfig, error) {
+	var lastErr error
+	for _, base := range d.providerBaseCandidates(ctx, sourceYeguo, yeguoBaseMirrors) {
+		home := strings.TrimRight(base, "/") + "/"
+		body, err := d.fetchProviderText(ctx, home, home)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		queue := make([]string, 0, 96)
+		for _, match := range yeguoScriptSrcPattern.FindAllStringSubmatch(body, -1) {
+			if len(match) > 1 {
+				if script := resolveProviderReference(home, match[1]); script != "" {
+					queue = append(queue, script)
+				}
+			}
+		}
+		seen := map[string]bool{}
+		for len(queue) > 0 && len(seen) < yeguoMaxChunkScan {
+			batch := make([]string, 0, 8)
+			for len(queue) > 0 && len(batch) < 8 && len(seen) < yeguoMaxChunkScan {
+				current := queue[0]
+				queue = queue[1:]
+				if seen[current] {
+					continue
+				}
+				parsed, parseErr := url.Parse(current)
+				homeURL, homeErr := url.Parse(home)
+				if parseErr != nil || homeErr != nil || !strings.EqualFold(parsed.Hostname(), homeURL.Hostname()) {
+					continue
+				}
+				seen[current] = true
+				batch = append(batch, current)
+			}
+			if len(batch) == 0 {
+				continue
+			}
+			results := make(chan yeguoChunkResult, len(batch))
+			for _, current := range batch {
+				go func(address string) {
+					chunk, fetchErr := d.fetchProviderText(ctx, address, home)
+					results <- yeguoChunkResult{url: address, body: chunk, err: fetchErr}
+				}(current)
+			}
+			for range batch {
+				result := <-results
+				if result.err != nil {
+					lastErr = result.err
+					continue
+				}
+				if strings.Contains(result.body, "sign_key") && strings.Contains(strings.ToLower(result.body), "pkcs7") && strings.Contains(strings.ToUpper(result.body), "CBC") {
+					key := yeguoRegexValue(result.body, yeguoKeyWrappedPattern, yeguoKeyPattern)
+					iv := yeguoRegexValue(result.body, yeguoIVWrappedPattern, yeguoIVPattern)
+					signKey := yeguoRegexValue(result.body, yeguoSignWrappedPattern, yeguoSignPattern)
+					if len(key) == 16 && len(iv) == 16 && signKey != "" {
+						return yeguoCryptoConfig{Key: key, IV: iv, SignKey: signKey}, nil
+					}
+				}
+				for _, match := range yeguoJSRefPattern.FindAllStringSubmatch(result.body, -1) {
+					if len(match) < 2 {
+						continue
+					}
+					if next := resolveProviderReference(result.url, match[1]); next != "" && !seen[next] {
+						queue = append(queue, next)
+					}
+				}
+			}
+		}
+	}
+	if lastErr != nil {
+		return yeguoCryptoConfig{}, fmt.Errorf("野果前端加密配置发现失败: %w", lastErr)
+	}
+	return yeguoCryptoConfig{}, fmt.Errorf("野果前端加密配置已变化，请更新站源适配")
+}
+
+'''
+          s = replace_between(s, crypto_start, crypto_end, crypto_new)
+
+          # Add verified full-play cache/helpers before existing yeguoFindMediaURL.
+          insert = r'''type yeguoPlayableCacheEntry struct {
+	playable bool
+	expires  time.Time
+}
+
+var yeguoPlayableCache sync.Map
+
+func yeguoEpisodeIDs(value any) []string {
+	seen := map[string]bool{}
+	var ids []string
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case map[string]any:
+			if episodes, ok := typed["episodes"]; ok {
+				if list, ok := episodes.([]any); ok {
+					for _, item := range list {
+						row, ok := item.(map[string]any)
+						if !ok {
+							continue
+						}
+						if adv, exists := yeguoBool(row, "is_adv", "isAdv"); exists && adv {
+							continue
+						}
+						id := yeguoText(row, "id", "episode_id", "episodeId")
+						if id != "" && !seen[id] {
+							seen[id] = true
+							ids = append(ids, id)
+						}
+					}
+				}
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return ids
+}
+
+func yeguoPlaybackMap(value any) map[string]any {
+	if row, ok := value.(map[string]any); ok {
+		if yeguoText(row, "video_url", "video_url_h265", "play_url", "manifest_url", "url") != "" {
+			return row
+		}
+		for _, child := range row {
+			if found := yeguoPlaybackMap(child); found != nil {
+				return found
+			}
+		}
+	}
+	if list, ok := value.([]any); ok {
+		for _, child := range list {
+			if found := yeguoPlaybackMap(child); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func (d *Downloader) yeguoFullPlaybackURL(ctx context.Context, dramaID, episodeID string) (string, error) {
+	attempts := []map[string]string{
+		{"playlet_id": dramaID, "video_id": dramaID, "episode_id": episodeID},
+		{"video_id": dramaID, "episode_id": episodeID},
+		{"episode_id": episodeID},
+	}
+	var lastErr error
+	for _, params := range attempts {
+		decoded, err := d.yeguoAPICall(ctx, "/api/playlet/play", params)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		row := yeguoPlaybackMap(decoded)
+		if row == nil {
+			lastErr = fmt.Errorf("野果正片接口未返回播放对象")
+			continue
+		}
+		if returnedDrama := yeguoText(row, "playlet_id", "video_id"); returnedDrama != "" && returnedDrama != dramaID {
+			lastErr = fmt.Errorf("野果返回剧集与请求不一致")
+			continue
+		}
+		if returnedEpisode := yeguoText(row, "id", "episode_id", "episodeId"); returnedEpisode != "" && returnedEpisode != episodeID {
+			lastErr = fmt.Errorf("野果返回分集与请求不一致")
+			continue
+		}
+		if adv, exists := yeguoBool(row, "is_adv", "isAdv"); exists && adv {
+			lastErr = fmt.Errorf("野果返回的是广告而非正片")
+			continue
+		}
+		mediaURL := yeguoText(row, "video_url", "video_url_h265", "play_url", "manifest_url", "url")
+		if !strings.HasPrefix(mediaURL, "http://") && !strings.HasPrefix(mediaURL, "https://") {
+			lastErr = fmt.Errorf("野果正片接口未返回有效播放地址")
+			continue
+		}
+		return mediaURL, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("野果正片播放地址获取失败")
+	}
+	return "", lastErr
+}
+
+func (d *Downloader) yeguoDramaFullyPlayable(ctx context.Context, sourceID string) bool {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return false
+	}
+	if cached, ok := yeguoPlayableCache.Load(sourceID); ok {
+		entry := cached.(yeguoPlayableCacheEntry)
+		if time.Now().Before(entry.expires) {
+			return entry.playable
+		}
+		yeguoPlayableCache.Delete(sourceID)
+	}
+	detail, err := d.yeguoAPICall(ctx, "/api/playlet/detail", map[string]string{
+		"video_id": sourceID, "id": sourceID, "episode_id": "0", "related_limit": "0",
+	})
+	if err != nil {
+		return false
+	}
+	episodeIDs := yeguoEpisodeIDs(detail)
+	if len(episodeIDs) == 0 {
+		return false
+	}
+	playable := true
+	for _, episodeID := range episodeIDs {
+		if _, err := d.yeguoFullPlaybackURL(ctx, sourceID, episodeID); err != nil {
+			playable = false
+			break
+		}
+	}
+	ttl := 30 * time.Minute
+	if !playable {
+		ttl = 2 * time.Minute
+	}
+	yeguoPlayableCache.Store(sourceID, yeguoPlayableCacheEntry{playable: playable, expires: time.Now().Add(ttl)})
+	return playable
+}
+
+func (d *Downloader) filterYeguoFullyPlayable(ctx context.Context, items []Drama) []Drama {
+	if len(items) == 0 {
+		return items
+	}
+	allowed := make([]bool, len(items))
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for i := range items {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			allowed[index] = d.yeguoDramaFullyPlayable(probeCtx, items[index].SourceID)
+		}(i)
+	}
+	wg.Wait()
+	filtered := make([]Drama, 0, len(items))
+	for i, drama := range items {
+		if allowed[i] {
+			vip := false
+			drama.VIP = &vip
+			filtered = append(filtered, drama)
+		}
+	}
+	return filtered
+}
+
+'''
+          idx = s.index('func yeguoFindMediaURL(value any) string {')
+          s = s[:idx] + insert + s[idx:]
+
+          # Resolver uses the same verified play primitive as catalog certification.
+          res_start = 'func (d *Downloader) resolveYeguoPlayback(ctx context.Context, task Task) (providerMedia, error) {'
+          res_new = r'''func (d *Downloader) resolveYeguoPlayback(ctx context.Context, task Task) (providerMedia, error) {
+	episodeID := yeguoMarkerEpisode(task.Chapter.VideoURL)
+	if episodeID == "" {
+		return providerMedia{}, fmt.Errorf("野果分集播放标识无效，请刷新详情")
+	}
+	_, dramaID, valid := splitProviderDramaID(task.DramaID)
+	if !valid || dramaID == "" {
+		return providerMedia{}, fmt.Errorf("野果剧集信息无效")
+	}
+	mediaURL, err := d.yeguoFullPlaybackURL(ctx, dramaID, episodeID)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	return providerMedia{URL: mediaURL, Referer: firstNonEmpty(task.Chapter.PageURL, d.providerBaseURL(sourceYeguo)+"/")}, nil
+}
+'''
+          ri = s.index(res_start)
+          s = s[:ri] + res_new
+          p.write_text(s)
+          PY
+
+          gofmt -w native/core/provider_xiangjiao.go native/core/provider_yeguo.go
+          git diff --check
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add native/core/provider_xiangjiao.go native/core/provider_yeguo.go
+          git commit -m 'feat: only expose fully playable source dramas'
+          git push origin HEAD:feature/yeguo-xiangjiao-sources
