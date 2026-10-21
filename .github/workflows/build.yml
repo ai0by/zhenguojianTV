@@ -1,6 +1,9 @@
 name: Build APK
 
 on:
+  push:
+    branches:
+      - feature/yeguo-xiangjiao-sources
   workflow_dispatch:
     inputs:
       all_sources:
@@ -74,9 +77,9 @@ jobs:
         run: |
           set -euxo pipefail
           args=()
-          if [ '${{ inputs.all_sources }}' = 'true' ]; then args+=(--all-sources); fi
-          if [ '${{ inputs.tv }}' = 'true' ]; then args+=(--tv); fi
-          if [ '${{ inputs.universal }}' = 'true' ]; then args+=(--universal); fi
+          if [ '${{ github.event_name }}' != 'workflow_dispatch' ] || [ '${{ inputs.all_sources }}' = 'true' ]; then args+=(--all-sources); fi
+          if [ '${{ github.event_name }}' != 'workflow_dispatch' ] || [ '${{ inputs.tv }}' = 'true' ]; then args+=(--tv); fi
+          if [ '${{ github.event_name }}' != 'workflow_dispatch' ] || [ '${{ inputs.universal }}' = 'true' ]; then args+=(--universal); fi
           python3 scripts/build_android.py "${args[@]}"
 
       - name: Upload APK
@@ -91,7 +94,7 @@ jobs:
 
   release:
     needs: android
-    if: ${{ inputs.publish_release }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
