@@ -64,6 +64,7 @@ func xiangjiaoText(row map[string]any, keys ...string) string {
 			if text := strings.TrimSpace(nativeText(value)); text != "" {
 				return text
 			}
+		}
 	}
 	return ""
 }
@@ -356,9 +357,9 @@ func (d *Downloader) fetchXiangjiaoDetail(ctx context.Context, sourceID string) 
 		}
 		seen[id] = true
 		episodes = append(episodes, episodeRow{
-			id: id,
-			index: index,
-			title: xiangjiaoText(row, "title", "name"),
+			id:     id,
+			index:  index,
+			title:  xiangjiaoText(row, "title", "name"),
 			locked: xiangjiaoEpisodeLocked(row),
 		})
 	})

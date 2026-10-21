@@ -376,7 +376,7 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 		index := yeguoInt(row, "episode_number", "episodeNumber", "episode_no", "episodeNo", "episode", "sort", "index")
 		episodes = append(episodes, episodeRow{
 			id: episodeID, index: index,
-			title: yeguoText(row, "title", "episode_title", "episodeTitle", "name"),
+			title:  yeguoText(row, "title", "episode_title", "episodeTitle", "name"),
 			locked: yeguoLocked(row),
 		})
 	})
