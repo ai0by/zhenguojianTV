@@ -211,6 +211,15 @@ func yeguoInt(row map[string]any, keys ...string) int {
 	return 0
 }
 
+func yeguoHasExplicitAccess(row map[string]any) bool {
+	for _, key := range []string{"can_play", "canPlay", "playable", "owned", "is_free", "isFree", "free", "content_access_type", "contentAccessType", "charge_type", "chargeType", "access_type"} {
+		if _, ok := row[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func yeguoLocked(row map[string]any) bool {
 	if playable, ok := yeguoBool(row, "can_play", "canPlay", "playable", "owned"); ok {
 		return !playable
@@ -357,10 +366,11 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 
 	var meta map[string]any
 	type episodeRow struct {
-		id     string
-		index  int
-		title  string
-		locked bool
+		id             string
+		index          int
+		title          string
+		locked         bool
+		explicitAccess bool
 	}
 	seenEpisodes := map[string]bool{}
 	var episodes []episodeRow
@@ -375,15 +385,24 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 		seenEpisodes[episodeID] = true
 		index := yeguoInt(row, "episode_number", "episodeNumber", "episode_no", "episodeNo", "episode", "sort", "index")
 		episodes = append(episodes, episodeRow{
-			id: episodeID, index: index,
-			title:  yeguoText(row, "title", "episode_title", "episodeTitle", "name"),
-			locked: yeguoLocked(row),
+			id:             episodeID,
+			index:          index,
+			title:          yeguoText(row, "title", "episode_title", "episodeTitle", "name"),
+			locked:         yeguoLocked(row),
+			explicitAccess: yeguoHasExplicitAccess(row),
 		})
 	})
 	if len(episodes) == 0 {
 		return Drama{}, nil, fmt.Errorf("野果详情未返回分集，站点结构可能已变化")
 	}
+	metaLocked := meta != nil && yeguoLocked(meta)
 	for index := range episodes {
+		// 当前站点的剧级对象带 content_access_type，但分集对象不一定重复携带。
+		// 若剧级已经明确 coin/vip，而某集没有独立权益字段，按锁定处理；
+		// 只有分集自己明确 can_play/free/owned 时才允许覆盖剧级状态。
+		if metaLocked && !episodes[index].explicitAccess {
+			episodes[index].locked = true
+		}
 		if episodes[index].index <= 0 {
 			episodes[index].index = index + 1
 		}
