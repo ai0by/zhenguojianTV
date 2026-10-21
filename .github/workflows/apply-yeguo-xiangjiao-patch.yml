@@ -1,4 +1,4 @@
-name: Apply Yeguo Xiangjiao Patch
+name: Format Yeguo Xiangjiao Sources
 
 on:
   push:
@@ -6,13 +6,12 @@ on:
       - feature/yeguo-xiangjiao-sources
     paths:
       - '.github/workflows/apply-yeguo-xiangjiao-patch.yml'
-      - 'scripts/apply_yeguo_xiangjiao_patch.py'
 
 permissions:
   contents: write
 
 jobs:
-  patch:
+  format:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -22,20 +21,34 @@ jobs:
           ref: feature/yeguo-xiangjiao-sources
           fetch-depth: 0
 
-      - name: Apply source-only patch
+      - name: Go formatter only
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.1'
+
+      - name: Parse and format modified Go sources
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/apply_yeguo_xiangjiao_patch.py
+          gofmt -w \
+            native/core/provider_yeguo.go \
+            native/core/provider_xiangjiao.go \
+            native/core/provider_huangguo.go \
+            native/core/provider_media.go \
+            native/core/app_runtime.go \
+            native/core/app_categories.go
           git diff --check
 
-      - name: Commit patched sources
+      - name: Commit formatting if needed
         shell: bash
         run: |
           set -euo pipefail
+          if git diff --quiet; then
+            echo 'No formatting changes required.'
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm scripts/apply_yeguo_xiangjiao_patch.py
-          git add native/core/provider_huangguo.go native/core/provider_media.go native/core/app_runtime.go native/core/app_categories.go native/core/provider_yeguo.go native/core/provider_xiangjiao.go lib/models.dart config/source_mirrors.json
-          git commit -m 'Integrate Yeguo and Xiangjiao sources'
+          git add native/core
+          git commit -m 'Format Yeguo and Xiangjiao sources'
           git push origin HEAD:feature/yeguo-xiangjiao-sources
