@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0
       - name: Patch and format
         run: |
-          python3 scripts/apply_verified_fullplay_filter.py
+          python3 scripts/run_verified_fullplay_patch.py
           gofmt -w native/core/provider_xiangjiao.go native/core/provider_yeguo.go
           git diff --check
       - name: Commit
