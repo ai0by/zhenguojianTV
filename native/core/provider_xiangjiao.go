@@ -323,8 +323,7 @@ func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID s
 		return false
 	}
 	seen := map[string]bool{}
-	count := 0
-	playable := true
+	var episodeIDs []string
 	walkXiangjiaoMaps(xiangjiaoPayloadData(raw), func(row map[string]any) {
 		id := xiangjiaoText(row, "id", "episode_id", "episodeId")
 		if id == "" || seen[id] {
@@ -335,15 +334,26 @@ func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID s
 			return
 		}
 		seen[id] = true
-		count++
-		if xiangjiaoEpisodeLocked(row) {
-			playable = false
-		}
+		episodeIDs = append(episodeIDs, id)
 	})
-	playable = playable && count > 0
+	if len(episodeIDs) == 0 {
+		return false
+	}
+
+	playable := true
+	for _, episodeID := range episodeIDs {
+		if _, err := d.xiangjiaoFullPlaybackManifest(ctx, sourceID, episodeID); err != nil {
+			playable = false
+			break
+		}
+	}
+	ttl := 30 * time.Minute
+	if !playable {
+		ttl = 2 * time.Minute
+	}
 	xiangjiaoPlayableCache.Store(sourceID, xiangjiaoPlayableCacheEntry{
 		playable: playable,
-		expires:  time.Now().Add(20 * time.Minute),
+		expires:  time.Now().Add(ttl),
 	})
 	return playable
 }
@@ -356,9 +366,6 @@ func (d *Downloader) filterXiangjiaoFullyPlayable(ctx context.Context, items []D
 	sem := make(chan struct{}, 6)
 	var wg sync.WaitGroup
 	for i := range items {
-		if items[i].VIP != nil && *items[i].VIP {
-			continue
-		}
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -368,7 +375,7 @@ func (d *Downloader) filterXiangjiaoFullyPlayable(ctx context.Context, items []D
 			case <-ctx.Done():
 				return
 			}
-			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 			defer cancel()
 			allowed[index] = d.xiangjiaoDramaFullyPlayable(probeCtx, items[index].SourceID)
 		}(i)
@@ -403,6 +410,12 @@ func (d *Downloader) fetchXiangjiaoDetail(ctx context.Context, sourceID string) 
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return Drama{}, nil, fmt.Errorf("香蕉剧集 ID 为空")
+	}
+	probeCtx, probeCancel := context.WithTimeout(ctx, 12*time.Second)
+	fullyPlayable := d.xiangjiaoDramaFullyPlayable(probeCtx, sourceID)
+	probeCancel()
+	if !fullyPlayable {
+		return Drama{}, nil, fmt.Errorf("香蕉该剧未通过全集正片校验，已隐藏")
 	}
 	detailRaw, err := d.xiangjiaoJSON(ctx, http.MethodGet, "/api/dramas/"+url.PathEscape(sourceID), nil, "")
 	if err != nil {
@@ -449,16 +462,11 @@ func (d *Downloader) fetchXiangjiaoDetail(ctx context.Context, sourceID string) 
 			id:     id,
 			index:  index,
 			title:  xiangjiaoText(row, "title", "name"),
-			locked: xiangjiaoEpisodeLocked(row),
+			locked: false,
 		})
 	})
 	if len(episodes) == 0 {
 		return Drama{}, nil, fmt.Errorf("香蕉详情未返回分集")
-	}
-	for _, episode := range episodes {
-		if episode.locked {
-			return Drama{}, nil, fmt.Errorf("香蕉该剧存在受限分集，已按完整可播放策略隐藏")
-		}
 	}
 	for index := range episodes {
 		if episodes[index].index <= 0 {
@@ -554,23 +562,15 @@ func (d *Downloader) clearXiangjiaoGuestToken() {
 	d.xiangjiaoSessionMu.Unlock()
 }
 
-func (d *Downloader) resolveXiangjiaoPlayback(ctx context.Context, task Task) (providerMedia, error) {
-	episodeID := xiangjiaoMarkerEpisode(task.Chapter.VideoURL)
-	if episodeID == "" {
-		return providerMedia{}, fmt.Errorf("香蕉分集播放标识无效，请刷新详情")
-	}
-	_, dramaID, validDrama := splitProviderDramaID(task.DramaID)
-	if !validDrama {
-		dramaID = ""
-	}
+func (d *Downloader) xiangjiaoFullPlaybackManifest(ctx context.Context, dramaID, episodeID string) (string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := d.xiangjiaoGuestToken(ctx, attempt > 0)
 		if err != nil {
-			return providerMedia{}, err
+			return "", err
 		}
 		payload := map[string]any{"episode_id": episodeID}
-		if dramaID != "" {
-			payload["drama_id"] = dramaID
+		if strings.TrimSpace(dramaID) != "" {
+			payload["drama_id"] = strings.TrimSpace(dramaID)
 		}
 		decoded, err := d.xiangjiaoJSON(ctx, http.MethodPost, "/api/playback/sessions", payload, token)
 		if err != nil {
@@ -580,25 +580,41 @@ func (d *Downloader) resolveXiangjiaoPlayback(ctx context.Context, task Task) (p
 					continue
 				}
 				if apiErr.Status == http.StatusForbidden || strings.EqualFold(apiErr.Code, "PAYMENT_REQUIRED") {
-					return providerMedia{}, fmt.Errorf("香蕉该集需要会员或购买，服务端拒绝游客正片播放")
+					return "", fmt.Errorf("香蕉该集需要会员或购买，服务端拒绝游客正片播放")
 				}
 			}
-			return providerMedia{}, err
+			return "", err
 		}
 		data, _ := xiangjiaoPayloadData(decoded).(map[string]any)
 		mode := strings.ToLower(xiangjiaoText(data, "play_mode", "playMode"))
 		if mode != "full" {
-			return providerMedia{}, fmt.Errorf("香蕉服务端未返回 full 正片会话，已拒绝降级为试看")
+			return "", fmt.Errorf("香蕉服务端未返回 full 正片会话")
 		}
 		media := xiangjiaoMap(data, "media")
 		manifest := xiangjiaoText(media, "manifest_url", "manifestUrl", "url")
 		if manifest == "" {
-			return providerMedia{}, fmt.Errorf("香蕉正片会话未返回 manifest_url")
+			return "", fmt.Errorf("香蕉正片会话未返回 manifest_url")
 		}
 		if strings.HasPrefix(manifest, "/") {
 			manifest = strings.TrimRight(d.providerBaseURL(sourceXiangjiao), "/") + manifest
 		}
-		return providerMedia{URL: manifest, Referer: firstNonEmpty(task.Chapter.Referer, d.providerBaseURL(sourceXiangjiao)+"/")}, nil
+		return manifest, nil
 	}
-	return providerMedia{}, fmt.Errorf("香蕉游客会话刷新失败")
+	return "", fmt.Errorf("香蕉游客会话刷新失败")
+}
+
+func (d *Downloader) resolveXiangjiaoPlayback(ctx context.Context, task Task) (providerMedia, error) {
+	episodeID := xiangjiaoMarkerEpisode(task.Chapter.VideoURL)
+	if episodeID == "" {
+		return providerMedia{}, fmt.Errorf("香蕉分集播放标识无效，请刷新详情")
+	}
+	_, dramaID, validDrama := splitProviderDramaID(task.DramaID)
+	if !validDrama {
+		dramaID = ""
+	}
+	manifest, err := d.xiangjiaoFullPlaybackManifest(ctx, dramaID, episodeID)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	return providerMedia{URL: manifest, Referer: firstNonEmpty(task.Chapter.Referer, d.providerBaseURL(sourceXiangjiao)+"/")}, nil
 }
