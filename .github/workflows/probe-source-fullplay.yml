@@ -1,0 +1,234 @@
+name: Probe source full playback
+
+on:
+  push:
+    branches:
+      - feature/yeguo-xiangjiao-sources
+    paths:
+      - .github/workflows/probe-source-fullplay.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Probe Xiangjiao guest full playback
+        shell: python
+        run: |
+          import json, ssl, urllib.request, urllib.error, uuid, time
+
+          UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/18.7 Mobile/15E148 Safari/604.1'
+          BASES = ['https://xiangjiaoai.ai', 'https://xiangjiao01.com']
+          ctx = ssl.create_default_context()
+
+          def req(method, url, payload=None, bearer='', extra=None, timeout=12):
+              headers = {'User-Agent': UA, 'Accept': 'application/json', 'Accept-Language': 'zh-CN,zh;q=0.9'}
+              if extra: headers.update(extra)
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload).encode()
+                  headers['Content-Type'] = 'application/json'
+              if bearer:
+                  headers['Authorization'] = 'Bearer ' + bearer
+              r = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(r, context=ctx, timeout=timeout) as resp:
+                      raw = resp.read(2_000_000)
+                      try: body = json.loads(raw.decode('utf-8', 'ignore'))
+                      except Exception: body = {'raw': raw.decode('utf-8', 'ignore')[:500]}
+                      return resp.status, body
+              except urllib.error.HTTPError as e:
+                  raw = e.read(500_000)
+                  try: body = json.loads(raw.decode('utf-8', 'ignore'))
+                  except Exception: body = {'raw': raw.decode('utf-8', 'ignore')[:500]}
+                  return e.code, body
+
+          def data_of(v):
+              return v.get('data', v) if isinstance(v, dict) else v
+
+          def items_of(v):
+              v = data_of(v)
+              if isinstance(v, dict):
+                  for k in ('items','list','results','dramas','episodes'):
+                      if isinstance(v.get(k), list): return v[k]
+              return v if isinstance(v, list) else []
+
+          def jwt_of(v):
+              if isinstance(v, str) and v.startswith('eyJ') and len(v) > 30: return v
+              if isinstance(v, dict):
+                  for x in v.values():
+                      t = jwt_of(x)
+                      if t: return t
+              if isinstance(v, list):
+                  for x in v:
+                      t = jwt_of(x)
+                      if t: return t
+              return ''
+
+          def text(v, *keys):
+              if not isinstance(v, dict): return ''
+              for k in keys:
+                  x = v.get(k)
+                  if x is not None and str(x).strip(): return str(x).strip()
+              return ''
+
+          def locked(ep):
+              c = ep.get('commerce') if isinstance(ep, dict) and isinstance(ep.get('commerce'), dict) else ep
+              if not isinstance(c, dict): return False
+              if c.get('owned') is True: return False
+              if 'can_play' in c: return c.get('can_play') is not True
+              if 'canPlay' in c: return c.get('canPlay') is not True
+              charge = text(c, 'charge_type', 'chargeType').lower()
+              return charge not in ('', 'free', 'public')
+
+          base = ''
+          catalog = None
+          for b in BASES:
+              try:
+                  code, body = req('GET', b + '/api/theater?limit=20', extra={'Referer': b + '/theater'})
+                  if code == 200 and items_of(body):
+                      base, catalog = b, body
+                      break
+              except Exception as e:
+                  print('XJ_BASE_ERR', b, type(e).__name__)
+          if not base:
+              print('XJ_RESULT reachable=false')
+              raise SystemExit(0)
+
+          print('XJ_BASE', base)
+          dramas = items_of(catalog)
+          print('XJ_CATALOG', len(dramas))
+
+          device = str(uuid.uuid4())
+          gcode, guest = req('POST', base + '/api/guest-sessions', {'device_id': device}, extra={
+              'Origin': base, 'Referer': base + '/theater', 'Idempotency-Key': str(uuid.uuid4())})
+          token = jwt_of(guest)
+          print('XJ_GUEST', 'ok' if gcode in (200,201) and token else 'failed', 'status=' + str(gcode))
+          if not token:
+              print('XJ_RESULT guest=false')
+              raise SystemExit(0)
+
+          tested = 0
+          locked_probe_done = False
+          all_full_found = False
+          for d in dramas[:12]:
+              did = text(d, 'id', 'drama_id', 'dramaId')
+              title = text(d, 'title', 'name')[:40]
+              if not did: continue
+              ecode, eraw = req('GET', base + '/api/dramas/' + did + '/episodes', extra={'Referer': base + '/theater'})
+              eps = items_of(eraw) if ecode == 200 else []
+              eps = [e for e in eps if isinstance(e, dict) and text(e, 'id', 'episode_id', 'episodeId')]
+              if not eps: continue
+              tested += 1
+              locked_eps = [e for e in eps if locked(e)]
+              print('XJ_DRAMA_META', did, 'episodes=' + str(len(eps)), 'locked=' + str(len(locked_eps)), 'title=' + title)
+
+              if locked_eps and not locked_probe_done:
+                  ep = locked_eps[0]
+                  eid = text(ep, 'id', 'episode_id', 'episodeId')
+                  pcode, pres = req('POST', base + '/api/playback/sessions', {'drama_id': did, 'episode_id': eid}, token,
+                                     {'Origin': base, 'Referer': base + '/theater', 'Idempotency-Key': str(uuid.uuid4())})
+                  pdata = data_of(pres)
+                  mode = text(pdata, 'play_mode', 'playMode').lower() if isinstance(pdata, dict) else ''
+                  media = pdata.get('media') if isinstance(pdata, dict) and isinstance(pdata.get('media'), dict) else {}
+                  manifest = text(media, 'manifest_url', 'manifestUrl', 'url')
+                  code_txt = text(pres, 'code', 'error_code', 'errorCode') if isinstance(pres, dict) else ''
+                  msg = text(pres, 'message', 'msg', 'detail') if isinstance(pres, dict) else ''
+                  print('XJ_LOCKED_PROBE', 'status=' + str(pcode), 'mode=' + (mode or '-'), 'manifest=' + ('yes' if manifest else 'no'), 'code=' + (code_txt or '-'), 'msg=' + msg[:100])
+                  locked_probe_done = True
+
+              if not locked_eps and len(eps) <= 80 and not all_full_found:
+                  ok = 0
+                  fail = ''
+                  for idx, ep in enumerate(eps, 1):
+                      eid = text(ep, 'id', 'episode_id', 'episodeId')
+                      pcode, pres = req('POST', base + '/api/playback/sessions', {'drama_id': did, 'episode_id': eid}, token,
+                                         {'Origin': base, 'Referer': base + '/theater', 'Idempotency-Key': str(uuid.uuid4())})
+                      pdata = data_of(pres)
+                      mode = text(pdata, 'play_mode', 'playMode').lower() if isinstance(pdata, dict) else ''
+                      media = pdata.get('media') if isinstance(pdata, dict) and isinstance(pdata.get('media'), dict) else {}
+                      manifest = text(media, 'manifest_url', 'manifestUrl', 'url')
+                      if pcode in (200,201) and mode == 'full' and manifest:
+                          ok += 1
+                      else:
+                          code_txt = text(pres, 'code', 'error_code', 'errorCode') if isinstance(pres, dict) else ''
+                          fail = f'episode={idx} status={pcode} mode={mode or "-"} code={code_txt or "-"}'
+                          break
+                      time.sleep(0.05)
+                  print('XJ_ALL_EP_PROBE', did, 'full=' + str(ok) + '/' + str(len(eps)), 'failure=' + (fail or 'none'))
+                  if ok == len(eps): all_full_found = True
+
+              if tested >= 8 and locked_probe_done and all_full_found:
+                  break
+
+          print('XJ_RESULT', 'tested=' + str(tested), 'locked_probe=' + str(locked_probe_done).lower(), 'all_full_found=' + str(all_full_found).lower())
+
+      - name: Probe Yeguo anonymous full playback
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/miraplay-mega
+          git clone --depth 1 https://github.com/enginJie/miraplay-mega.git /tmp/miraplay-mega >/dev/null 2>&1
+          cd /tmp/miraplay-mega
+          npm ci --omit=dev --silent
+          cat > probe-yeguo.mjs <<'NODE'
+          import { yeguo } from './src/sources/yeguo.js';
+          import { request, getJson } from './src/http.js';
+          import { untoken } from './src/common.js';
+
+          const source = yeguo({ text: request, json: getJson });
+          let home;
+          try {
+            home = await source.home(1);
+          } catch (e) {
+            console.log('YG_RESULT reachable=false error=' + String(e?.message || e).slice(0,160));
+            process.exit(0);
+          }
+          const items = Array.isArray(home?.items) ? home.items : [];
+          console.log('YG_CATALOG ' + items.length);
+          let tested = 0;
+          let allFullFound = false;
+          let authFailureSeen = false;
+
+          for (const it of items.slice(0, 10)) {
+            let meta;
+            try { meta = untoken(it.vod_id, 'detail'); } catch { continue; }
+            let d;
+            try { d = await source.detail(meta.d); }
+            catch (e) {
+              console.log('YG_DETAIL_FAIL ' + meta.d + ' ' + String(e?.message || e).slice(0,120));
+              continue;
+            }
+            const parts = String(d.vod_play_url || '').split('#').filter(Boolean);
+            if (!parts.length || parts.length > 100) continue;
+            tested++;
+            let ok = 0;
+            let fail = '';
+            for (let i = 0; i < parts.length; i++) {
+              const pos = parts[i].indexOf('$');
+              if (pos < 0) { fail = 'episode=' + (i+1) + ' token-missing'; break; }
+              let p;
+              try { p = untoken(parts[i].slice(pos + 1), 'play'); }
+              catch (e) { fail = 'episode=' + (i+1) + ' token-invalid'; break; }
+              try {
+                const r = await source.play(p.d, p.e);
+                if (!r || !String(r.url || '').trim()) throw new Error('empty media url');
+                ok++;
+              } catch (e) {
+                const msg = String(e?.message || e).slice(0,160);
+                fail = 'episode=' + (i+1) + ' error=' + msg;
+                if (/授权|会员|金币|permission|coin|vip/i.test(msg)) authFailureSeen = true;
+                break;
+              }
+              await new Promise(r => setTimeout(r, 50));
+            }
+            console.log('YG_DRAMA_PROBE ' + meta.d + ' full=' + ok + '/' + parts.length + ' failure=' + (fail || 'none') + ' title=' + String(it.vod_name || '').slice(0,40));
+            if (ok === parts.length) { allFullFound = true; break; }
+            if (tested >= 5) break;
+          }
+          console.log('YG_RESULT tested=' + tested + ' auth_failure_seen=' + authFailureSeen + ' all_full_found=' + allFullFound);
+          NODE
+          node probe-yeguo.mjs
