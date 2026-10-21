@@ -21,6 +21,21 @@ jobs:
           ref: feature/yeguo-xiangjiao-sources
           fetch-depth: 0
 
+      - name: Fix parser brace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('native/core/provider_xiangjiao.go')
+          text = p.read_text(encoding='utf-8')
+          old = '''\t\t\tif text := strings.TrimSpace(nativeText(value)); text != "" {\n\t\t\t\treturn text\n\t\t\t}\n\t}\n\treturn ""\n}'''
+          new = '''\t\t\tif text := strings.TrimSpace(nativeText(value)); text != "" {\n\t\t\t\treturn text\n\t\t\t}\n\t\t}\n\t}\n\treturn ""\n}'''
+          if text.count(old) != 1:
+              raise SystemExit('xiangjiaoText patch target changed')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Go formatter only
         uses: actions/setup-go@v5
         with:
@@ -39,16 +54,16 @@ jobs:
             native/core/app_categories.go
           git diff --check
 
-      - name: Commit formatting if needed
+      - name: Commit source fixes
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet; then
-            echo 'No formatting changes required.'
-            exit 0
-          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add native/core
-          git commit -m 'Format Yeguo and Xiangjiao sources'
+          if git diff --cached --quiet; then
+            echo 'No source changes required.'
+            exit 0
+          fi
+          git commit -m 'Fix and format Yeguo and Xiangjiao sources'
           git push origin HEAD:feature/yeguo-xiangjiao-sources
