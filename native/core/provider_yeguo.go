@@ -1,0 +1,715 @@
+package core
+
+import (
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// 野果短剧当前是 Nuxt 3 站点：列表/详情通过 devalue payload 提供，
+// API 响应用前端内置的 AES-128-CBC 配置加密。这里不把 key/iv 写死，
+// 而是从当前 Nuxt chunk 动态发现并短时缓存，避免站点重新构建后失效。
+const (
+	sourceYeguo       = "yeguo"
+	yeguoBaseURL      = "https://blue.ekzhadks.cc"
+	yeguoAPIBaseURL   = "https://api.ekzhadks.cc"
+	yeguoPageSize     = 20
+	yeguoCryptoTTL    = 30 * time.Minute
+	yeguoMaxChunkScan = 32
+)
+
+var yeguoBaseMirrors = []string{
+	"https://blue.ekzhadks.cc",
+	"https://yeguodj.com",
+	"https://ygdj16.com",
+	"https://hoamqvgal.cc",
+}
+
+var (
+	yeguoPayloadRefPattern = regexp.MustCompile(`(?i)([^"'<>\s]*_payload\.json(?:\?[^"'<>\s]*)?)`)
+	yeguoScriptSrcPattern  = regexp.MustCompile(`(?is)<script\b[^>]*\bsrc=["']([^"']+\.js(?:\?[^"']*)?)["'][^>]*>`)
+	yeguoJSRefPattern      = regexp.MustCompile(`["']((?:\./|/)[^"']+\.js(?:\?[^"']*)?)["']`)
+	yeguoKeyPattern        = regexp.MustCompile(`(?i)["']?key["']?\s*:\s*["']([^"']{16})["']`)
+	yeguoIVPattern         = regexp.MustCompile(`(?i)["']?iv["']?\s*:\s*["']([^"']{16})["']`)
+)
+
+type yeguoCryptoConfig struct {
+	Key string
+	IV  string
+}
+
+type yeguoAPIEnvelope struct {
+	Errcode any `json:"errcode"`
+	Data    any `json:"data"`
+	Message any `json:"message"`
+	Msg     any `json:"msg"`
+}
+
+func yeguoMirrorHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, origin := range yeguoBaseMirrors {
+		parsed, err := url.Parse(origin)
+		if err == nil && strings.EqualFold(parsed.Hostname(), host) {
+			return true
+		}
+	}
+	return false
+}
+
+func yeguoDetailPath(sourceID string) string {
+	return "/drama/detail/" + url.PathEscape(strings.TrimSpace(sourceID)) + "/"
+}
+
+func yeguoPayloadURL(base, pagePath string) string {
+	base = strings.TrimRight(base, "/")
+	pagePath = "/" + strings.Trim(pagePath, "/")
+	if pagePath == "/" {
+		return base + "/_payload.json"
+	}
+	return base + pagePath + "/_payload.json"
+}
+
+func resolveProviderReference(baseURL, reference string) string {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	ref, err := url.Parse(strings.TrimSpace(reference))
+	if err != nil {
+		return ""
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func (d *Downloader) fetchYeguoPayload(ctx context.Context, pagePath string) (any, string, error) {
+	var lastErr error
+	for _, base := range d.providerBaseCandidates(ctx, sourceYeguo, yeguoBaseMirrors) {
+		pageURL := strings.TrimRight(base, "/") + "/" + strings.TrimLeft(pagePath, "/")
+		payloadURL := yeguoPayloadURL(base, pagePath)
+		body, err := d.fetchProviderText(ctx, payloadURL, pageURL)
+		if err == nil {
+			if decoded := duanju51DecodePayload(body); decoded != nil {
+				d.rememberProviderHost(sourceYeguo, base)
+				return decoded, pageURL, nil
+			}
+			lastErr = fmt.Errorf("野果 payload 解码失败")
+		} else {
+			lastErr = err
+		}
+
+		// Nuxt 有时给 _payload.json 附带 buildId 查询串；直接路径失败时从页面发现真实地址。
+		pageBody, pageErr := d.fetchProviderText(ctx, pageURL, strings.TrimRight(base, "/")+"/")
+		if pageErr != nil {
+			continue
+		}
+		for _, match := range yeguoPayloadRefPattern.FindAllStringSubmatch(pageBody, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			candidate := resolveProviderReference(pageURL, match[1])
+			if candidate == "" {
+				continue
+			}
+			body, err = d.fetchProviderText(ctx, candidate, pageURL)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if decoded := duanju51DecodePayload(body); decoded != nil {
+				d.rememberProviderHost(sourceYeguo, base)
+				return decoded, pageURL, nil
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("野果页面暂未返回可解析数据")
+	}
+	return nil, "", lastErr
+}
+
+func walkYeguoMaps(value any, visit func(map[string]any)) {
+	seen := map[any]bool{}
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case map[string]any:
+			visit(typed)
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case map[any]any:
+			// devalue Map 结构极少出现在剧集对象里；仍做兼容，且避免循环。
+			if seen[typed] {
+				return
+			}
+			seen[typed] = true
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+}
+
+func yeguoText(row map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := row[key]; ok {
+			text := strings.TrimSpace(nativeText(value))
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func yeguoBool(row map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value, ok := row[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return typed, true
+		case float64:
+			return typed != 0, true
+		case json.Number:
+			return typed.String() != "0", true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(typed)) {
+			case "1", "true", "yes":
+				return true, true
+			case "0", "false", "no":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
+func yeguoInt(row map[string]any, keys ...string) int {
+	for _, key := range keys {
+		if text := yeguoText(row, key); text != "" {
+			if value, err := strconv.Atoi(text); err == nil {
+				return value
+			}
+		}
+	}
+	return 0
+}
+
+func yeguoLocked(row map[string]any) bool {
+	if playable, ok := yeguoBool(row, "can_play", "canPlay", "playable", "owned"); ok {
+		return !playable
+	}
+	if free, ok := yeguoBool(row, "is_free", "isFree", "free"); ok && free {
+		return false
+	}
+	access := strings.ToLower(yeguoText(row, "content_access_type", "contentAccessType", "charge_type", "chargeType", "access_type"))
+	switch access {
+	case "coin", "vip", "paid", "pay", "member", "membership":
+		return true
+	case "free", "public", "":
+		return false
+	default:
+		// 未知权益类型不主动当作可绕过的免费内容。
+		return true
+	}
+}
+
+func yeguoDramas(root any) []Drama {
+	seen := map[string]bool{}
+	var dramas []Drama
+	walkYeguoMaps(root, func(row map[string]any) {
+		id := yeguoText(row, "video_id", "videoId", "drama_id", "dramaId")
+		title := yeguoText(row, "title", "video_title", "drama_name", "name")
+		if id == "" || title == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		cover := yeguoText(row, "cover", "cover_url", "coverUrl", "cover_img")
+		if strings.HasPrefix(cover, "//") {
+			cover = "https:" + cover
+		}
+		locked := yeguoLocked(row)
+		vip := locked
+		dramas = append(dramas, Drama{
+			VIP:          &vip,
+			ID:           providerDramaID(sourceYeguo, id),
+			Source:       sourceYeguo,
+			SourceID:     id,
+			Title:        title,
+			Name:         title,
+			Desc:         yeguoText(row, "intro", "description", "desc"),
+			Intro:        yeguoText(row, "intro", "description", "desc"),
+			Cover:        cover,
+			CoverURL:     cover,
+			EpisodeCount: yeguoText(row, "episode_count", "episodeCount", "latest_episode", "latestEpisode"),
+			ChannelName:  "野果短剧",
+			CategoryName: yeguoText(row, "category_name", "categoryName", "tags"),
+		})
+	})
+	return dramas
+}
+
+func yeguoFilterDramas(items []Drama, query string) []Drama {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return items
+	}
+	var result []Drama
+	for _, drama := range items {
+		text := strings.ToLower(drama.DisplayTitle() + " " + drama.Desc)
+		if strings.Contains(text, query) {
+			result = append(result, drama)
+		}
+	}
+	return result
+}
+
+func (d *Downloader) fetchYeguoCatalogPage(ctx context.Context, page int, query string) ([]Drama, bool, error) {
+	if page < 1 {
+		page = 1
+	}
+	if query == "" && page == 1 {
+		root, _, err := d.fetchYeguoPayload(ctx, "/")
+		if err == nil {
+			items := yeguoDramas(root)
+			if len(items) > 0 {
+				// 首页是多栏目聚合，不代表完整剧库；允许继续翻 API 历史分页。
+				return items, true, nil
+			}
+		}
+	}
+
+	endpoint := "/api/theater/exploreList"
+	attempts := []map[string]string{{
+		"page": strconv.Itoa(page), "limit": strconv.Itoa(yeguoPageSize), "page_size": strconv.Itoa(yeguoPageSize),
+	}}
+	if strings.TrimSpace(query) != "" {
+		endpoint = "/api/search/result"
+		attempts = []map[string]string{
+			{"keyword": query, "page": strconv.Itoa(page), "limit": strconv.Itoa(yeguoPageSize)},
+			{"keywords": query, "page": strconv.Itoa(page), "limit": strconv.Itoa(yeguoPageSize)},
+			{"search": query, "page": strconv.Itoa(page), "limit": strconv.Itoa(yeguoPageSize)},
+		}
+	}
+	var lastErr error
+	for _, params := range attempts {
+		decoded, err := d.yeguoAPICall(ctx, endpoint, params)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		items := yeguoDramas(decoded)
+		if len(items) > 0 {
+			return items, len(items) >= yeguoPageSize, nil
+		}
+	}
+	if strings.TrimSpace(query) != "" && page == 1 {
+		root, _, err := d.fetchYeguoPayload(ctx, "/")
+		if err == nil {
+			return yeguoFilterDramas(yeguoDramas(root), query), false, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("野果暂未返回剧集")
+	}
+	return nil, false, lastErr
+}
+
+func yeguoEpisodeMarker(episodeID string) string {
+	return "yeguo-play://episode/" + url.PathEscape(strings.TrimSpace(episodeID))
+}
+
+func yeguoMarkerEpisode(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "yeguo-play" || parsed.Host != "episode" {
+		return ""
+	}
+	value, _ := url.PathUnescape(strings.Trim(parsed.Path, "/"))
+	return strings.TrimSpace(value)
+}
+
+func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return Drama{}, nil, fmt.Errorf("野果剧集 ID 为空")
+	}
+	path := yeguoDetailPath(sourceID)
+	root, pageURL, err := d.fetchYeguoPayload(ctx, path)
+	if err != nil {
+		return Drama{}, nil, err
+	}
+
+	var meta map[string]any
+	type episodeRow struct {
+		id     string
+		index  int
+		title  string
+		locked bool
+	}
+	seenEpisodes := map[string]bool{}
+	var episodes []episodeRow
+	walkYeguoMaps(root, func(row map[string]any) {
+		if meta == nil && yeguoText(row, "video_id", "videoId", "drama_id", "dramaId") == sourceID && yeguoText(row, "title", "video_title", "drama_name", "name") != "" {
+			meta = row
+		}
+		episodeID := yeguoText(row, "episode_id", "episodeId")
+		if episodeID == "" || seenEpisodes[episodeID] {
+			return
+		}
+		seenEpisodes[episodeID] = true
+		index := yeguoInt(row, "episode_number", "episodeNumber", "episode_no", "episodeNo", "episode", "sort", "index")
+		episodes = append(episodes, episodeRow{
+			id: episodeID, index: index,
+			title: yeguoText(row, "title", "episode_title", "episodeTitle", "name"),
+			locked: yeguoLocked(row),
+		})
+	})
+	if len(episodes) == 0 {
+		return Drama{}, nil, fmt.Errorf("野果详情未返回分集，站点结构可能已变化")
+	}
+	for index := range episodes {
+		if episodes[index].index <= 0 {
+			episodes[index].index = index + 1
+		}
+	}
+	sort.SliceStable(episodes, func(i, j int) bool { return episodes[i].index < episodes[j].index })
+
+	chapters := make([]Chapter, 0, len(episodes))
+	freeFound := false
+	for _, episode := range episodes {
+		title := strings.TrimSpace(episode.title)
+		if title == "" {
+			title = fmt.Sprintf("第%d集", episode.index)
+		}
+		chapter := Chapter{
+			VIP:            episode.locked,
+			ID:             providerChapterID(sourceYeguo, sourceID, episode.id),
+			Source:         sourceYeguo,
+			Title:          title,
+			PageURL:        pageURL,
+			Referer:        pageURL,
+			CurrentEpisode: rawEpisode(episode.index),
+		}
+		if !episode.locked {
+			chapter.VideoURL = yeguoEpisodeMarker(episode.id)
+			freeFound = true
+		}
+		chapters = append(chapters, chapter)
+	}
+
+	title := "野果短剧 " + sourceID
+	cover, description := "", ""
+	if meta != nil {
+		title = firstNonEmpty(yeguoText(meta, "title", "video_title", "drama_name", "name"), title)
+		cover = yeguoText(meta, "cover", "cover_url", "coverUrl", "cover_img")
+		description = yeguoText(meta, "intro", "description", "desc")
+	}
+	if strings.HasPrefix(cover, "//") {
+		cover = "https:" + cover
+	}
+	vip := !freeFound
+	drama := Drama{
+		VIP:          &vip,
+		ID:           providerDramaID(sourceYeguo, sourceID),
+		Source:       sourceYeguo,
+		SourceID:     sourceID,
+		Title:        title,
+		Name:         title,
+		Desc:         description,
+		Intro:        description,
+		Cover:        cover,
+		CoverURL:     cover,
+		EpisodeCount: strconv.Itoa(len(chapters)),
+		TotalEpisode: strconv.Itoa(len(chapters)),
+		ChannelName:  "野果短剧",
+	}
+	return drama, chapters, nil
+}
+
+func randomHex32() (string, error) {
+	var data [16]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(data[:]), nil
+}
+
+func (d *Downloader) yeguoAPICall(ctx context.Context, endpoint string, extras map[string]string) (any, error) {
+	oauthID, err := randomHex32()
+	if err != nil {
+		return nil, err
+	}
+	traceID, err := randomHex32()
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{
+		"bundleId":   {"com.pwa.mater"},
+		"version":    {"1.3.2"},
+		"oauth_type": {"web"},
+		"language":   {"zh"},
+		"via":        {"pwa"},
+		"oauth_id":   {oauthID},
+		"trace_id":   {traceID},
+		"token":      {""},
+	}
+	for key, value := range extras {
+		form.Set(key, value)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(yeguoAPIBaseURL, "/")+endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Origin", d.providerBaseURL(sourceYeguo))
+	req.Header.Set("Referer", d.providerBaseURL(sourceYeguo)+"/")
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := d.doCatalogRequestWithTimeout(req, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > 4<<20 {
+		return nil, fmt.Errorf("野果 API 响应过大")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("野果 API HTTP %d", resp.StatusCode)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var envelope yeguoAPIEnvelope
+	if err := decoder.Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("野果 API 响应格式异常: %w", err)
+	}
+	if code := strings.TrimSpace(nativeText(envelope.Errcode)); code != "" && code != "0" {
+		return nil, fmt.Errorf("野果 API 返回 %s: %s", code, firstNonEmpty(nativeText(envelope.Message), nativeText(envelope.Msg), "请求失败"))
+	}
+	ciphertext, encrypted := envelope.Data.(string)
+	if !encrypted {
+		return envelope.Data, nil
+	}
+	decoded, err := d.decryptYeguoData(ctx, ciphertext, false)
+	if err != nil {
+		// 前端刚更新时缓存 key 可能已经过期，强制重扫一次 chunk。
+		return d.decryptYeguoData(ctx, ciphertext, true)
+	}
+	return decoded, nil
+}
+
+func (d *Downloader) decryptYeguoData(ctx context.Context, ciphertext string, force bool) (any, error) {
+	config, err := d.yeguoCryptoConfig(ctx, force)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(ciphertext))
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimSpace(ciphertext))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("野果密文 base64 无效: %w", err)
+	}
+	plain, err := decryptYeguoCBC(raw, []byte(config.Key), []byte(config.IV))
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(plain))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("野果解密 JSON 无效: %w", err)
+	}
+	return decoded, nil
+}
+
+func decryptYeguoCBC(raw, key, iv []byte) ([]byte, error) {
+	if len(key) != 16 || len(iv) != aes.BlockSize || len(raw) == 0 || len(raw)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("野果 AES 参数无效")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]byte, len(raw))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, raw)
+	padding := int(plain[len(plain)-1])
+	if padding < 1 || padding > aes.BlockSize || padding > len(plain) {
+		return nil, fmt.Errorf("野果 AES 填充无效")
+	}
+	for _, value := range plain[len(plain)-padding:] {
+		if int(value) != padding {
+			return nil, fmt.Errorf("野果 AES 填充无效")
+		}
+	}
+	return plain[:len(plain)-padding], nil
+}
+
+func (d *Downloader) yeguoCryptoConfig(ctx context.Context, force bool) (yeguoCryptoConfig, error) {
+	d.yeguoCryptoMu.Lock()
+	if !force && d.yeguoCrypto.Key != "" && time.Now().Before(d.yeguoCryptoExpires) {
+		config := d.yeguoCrypto
+		d.yeguoCryptoMu.Unlock()
+		return config, nil
+	}
+	d.yeguoCryptoMu.Unlock()
+
+	config, err := d.discoverYeguoCrypto(ctx)
+	if err != nil {
+		return yeguoCryptoConfig{}, err
+	}
+	d.yeguoCryptoMu.Lock()
+	d.yeguoCrypto = config
+	d.yeguoCryptoExpires = time.Now().Add(yeguoCryptoTTL)
+	d.yeguoCryptoMu.Unlock()
+	return config, nil
+}
+
+func (d *Downloader) discoverYeguoCrypto(ctx context.Context) (yeguoCryptoConfig, error) {
+	var lastErr error
+	for _, base := range d.providerBaseCandidates(ctx, sourceYeguo, yeguoBaseMirrors) {
+		home := strings.TrimRight(base, "/") + "/"
+		body, err := d.fetchProviderText(ctx, home, home)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		queue := make([]string, 0, 16)
+		for _, match := range yeguoScriptSrcPattern.FindAllStringSubmatch(body, -1) {
+			if len(match) > 1 {
+				if script := resolveProviderReference(home, match[1]); script != "" {
+					queue = append(queue, script)
+				}
+			}
+		}
+		seen := map[string]bool{}
+		for len(queue) > 0 && len(seen) < yeguoMaxChunkScan {
+			current := queue[0]
+			queue = queue[1:]
+			if seen[current] {
+				continue
+			}
+			seen[current] = true
+			chunk, err := d.fetchProviderText(ctx, current, home)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if strings.Contains(chunk, "sign_key") || strings.Contains(strings.ToLower(chunk), "pkcs7") || strings.Contains(strings.ToUpper(chunk), "CBC") {
+				key := yeguoKeyPattern.FindStringSubmatch(chunk)
+				iv := yeguoIVPattern.FindStringSubmatch(chunk)
+				if len(key) > 1 && len(iv) > 1 {
+					return yeguoCryptoConfig{Key: key[1], IV: iv[1]}, nil
+				}
+			}
+			for _, match := range yeguoJSRefPattern.FindAllStringSubmatch(chunk, -1) {
+				if len(match) < 2 {
+					continue
+				}
+				if next := resolveProviderReference(current, match[1]); next != "" && !seen[next] {
+					queue = append(queue, next)
+				}
+			}
+		}
+	}
+	if lastErr != nil {
+		return yeguoCryptoConfig{}, fmt.Errorf("野果前端加密配置发现失败: %w", lastErr)
+	}
+	return yeguoCryptoConfig{}, fmt.Errorf("野果前端加密配置已变化，请更新站源适配")
+}
+
+func yeguoFindMediaURL(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"manifest_url", "manifestUrl", "play_url", "playUrl", "video_url", "videoUrl", "hls", "m3u8", "url"} {
+			if candidate := yeguoFindMediaURL(typed[key]); candidate != "" {
+				return candidate
+			}
+		}
+		for _, child := range typed {
+			if candidate := yeguoFindMediaURL(child); candidate != "" {
+				return candidate
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if candidate := yeguoFindMediaURL(child); candidate != "" {
+				return candidate
+			}
+		}
+	case string:
+		candidate := strings.TrimSpace(typed)
+		lower := strings.ToLower(candidate)
+		if strings.HasPrefix(candidate, "http://") || strings.HasPrefix(candidate, "https://") {
+			if strings.Contains(lower, ".m3u8") || strings.Contains(lower, ".mp4") || strings.Contains(lower, "manifest") {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func (d *Downloader) resolveYeguoPlayback(ctx context.Context, task Task) (providerMedia, error) {
+	if task.Chapter.VIP {
+		return providerMedia{}, fmt.Errorf("野果该集标记为会员/金币内容，需要站点授权后才能播放正片")
+	}
+	episodeID := yeguoMarkerEpisode(task.Chapter.VideoURL)
+	if episodeID == "" {
+		return providerMedia{}, fmt.Errorf("野果分集播放标识无效，请刷新详情")
+	}
+	_, dramaID, valid := splitProviderDramaID(task.DramaID)
+	if !valid || dramaID == "" {
+		return providerMedia{}, fmt.Errorf("野果剧集信息无效")
+	}
+	attempts := []map[string]string{
+		{"episode_id": episodeID, "video_id": dramaID},
+		{"episodeId": episodeID, "videoId": dramaID},
+		{"episode_id": episodeID},
+	}
+	var lastErr error
+	for _, params := range attempts {
+		decoded, err := d.yeguoAPICall(ctx, "/api/playlet/play", params)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		mediaURL := yeguoFindMediaURL(decoded)
+		if mediaURL == "" {
+			lastErr = fmt.Errorf("野果正片接口未返回播放地址")
+			continue
+		}
+		if strings.HasPrefix(mediaURL, "/") {
+			mediaURL = strings.TrimRight(yeguoAPIBaseURL, "/") + mediaURL
+		}
+		return providerMedia{URL: mediaURL, Referer: firstNonEmpty(task.Chapter.PageURL, d.providerBaseURL(sourceYeguo)+"/")}, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("野果正片播放地址获取失败")
+	}
+	return providerMedia{}, lastErr
+}
