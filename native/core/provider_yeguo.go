@@ -704,39 +704,58 @@ type yeguoPlayableCacheEntry struct {
 
 var yeguoPlayableCache sync.Map
 
-func yeguoEpisodeIDs(value any) []string {
-	seen := map[string]bool{}
-	var ids []string
+func yeguoEpisodeIDs(value any, sourceID string) []string {
+	sourceID = strings.TrimSpace(sourceID)
+	var fallback []any
+	var target []any
 	var walk func(any)
 	walk = func(current any) {
 		switch typed := current.(type) {
 		case map[string]any:
-			if episodes, ok := typed["episodes"].([]any); ok {
-				for _, item := range episodes {
-					row, ok := item.(map[string]any)
-					if !ok {
-						continue
-					}
-					if adv, exists := yeguoBool(row, "is_adv", "isAdv"); exists && adv {
-						continue
-					}
-					id := yeguoText(row, "id", "episode_id", "episodeId")
-					if id != "" && !seen[id] {
-						seen[id] = true
-						ids = append(ids, id)
-					}
+			if episodes, ok := typed["episodes"].([]any); ok && len(episodes) > 0 {
+				if fallback == nil {
+					fallback = episodes
+				}
+				id := yeguoText(typed, "video_id", "videoId", "playlet_id", "playletId", "drama_id", "dramaId", "id")
+				if sourceID != "" && id == sourceID {
+					target = episodes
+					return
 				}
 			}
 			for _, child := range typed {
-				walk(child)
+				if target == nil {
+					walk(child)
+				}
 			}
 		case []any:
 			for _, child := range typed {
-				walk(child)
+				if target == nil {
+					walk(child)
+				}
 			}
 		}
 	}
 	walk(value)
+	rows := target
+	if rows == nil {
+		rows = fallback
+	}
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(rows))
+	for _, item := range rows {
+		row, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if adv, exists := yeguoBool(row, "is_adv", "isAdv"); exists && adv {
+			continue
+		}
+		id := yeguoText(row, "id", "episode_id", "episodeId")
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
 	return ids
 }
 
@@ -825,7 +844,7 @@ func (d *Downloader) yeguoDramaFullyPlayable(ctx context.Context, sourceID strin
 	if err != nil {
 		return false
 	}
-	episodeIDs := yeguoEpisodeIDs(detail)
+	episodeIDs := yeguoEpisodeIDs(detail, sourceID)
 	if len(episodeIDs) == 0 {
 		return false
 	}

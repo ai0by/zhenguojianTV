@@ -303,7 +303,10 @@ type xiangjiaoPlayableCacheEntry struct {
 	expires  time.Time
 }
 
-var xiangjiaoPlayableCache sync.Map
+var (
+	xiangjiaoPlayableCache  sync.Map
+	xiangjiaoGuestRefreshMu sync.Mutex
+)
 
 func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID string) bool {
 	sourceID = strings.TrimSpace(sourceID)
@@ -516,6 +519,8 @@ func newXiangjiaoDeviceID() (string, error) {
 }
 
 func (d *Downloader) xiangjiaoGuestToken(ctx context.Context, force bool) (string, error) {
+	xiangjiaoGuestRefreshMu.Lock()
+	defer xiangjiaoGuestRefreshMu.Unlock()
 	d.xiangjiaoSessionMu.Lock()
 	if !force && d.xiangjiaoAccessToken != "" && time.Now().Add(time.Minute).Before(d.xiangjiaoAccessExpires) {
 		token := d.xiangjiaoAccessToken
