@@ -324,6 +324,12 @@ func parseEZDMWEpisodes(raw, detailURL, sourceID string) []Chapter {
 		if episodeID == "" || seenIDs[episodeID] || !isProviderHTTPMediaURL(pageURL) {
 			continue
 		}
+		// E站详情页当前仍会输出旧的 /v/{id}.html 选集链接，但线上该路由
+		// 返回 404；相同分集的 /Index/bangumi/{id}.html 页面可正常访问。
+		if parsedPage, parseErr := url.Parse(pageURL); parseErr == nil && strings.HasPrefix(strings.ToLower(parsedPage.Path), "/v/") {
+			parsedPage.Path = "/Index/bangumi/" + episodeID + ".html"
+			pageURL = parsedPage.String()
+		}
 		title := cleanText(inner)
 		if title == "" {
 			title = extractAttr(attributes, "title", "aria-label")
