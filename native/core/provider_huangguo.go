@@ -131,7 +131,7 @@ func canonicalProviderSource(source string) string {
 		return sourceYeguo
 	case "xiangjiao", "香蕉", "香蕉短剧", "xiangjiaoai.ai", "xiangjiao01.com":
 		return sourceXiangjiao
-	case "ezdmw", "e站", "e站动漫", "m.ezdmw.org":
+	case "ezdmw", "e站", "e站动漫", "ezdmw.org", "m.ezdmw.org", "www.ezdmw.org":
 		return sourceEZDMW
 	case "cloudfront":
 		return sourceCloudFront
