@@ -75,6 +75,31 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 	task := Task{DramaID: drama.ID, DramaTitle: drama.DisplayTitle(), Chapter: chapters[0], Index: 0}
 	media, err := d.resolveProviderMedia(ctx, task)
 	if err != nil {
+		if body, pageErr := d.fetchProviderText(ctx, chapters[0].PageURL, ezdmwBaseURL+"/"); pageErr == nil {
+			t.Logf("live episode page diagnostics: bytes=%d title=%q iframe_count=%d direct_media=%t player_data=%t m3u8_text=%t", len(body), extractPageTitle(body), len(ezdmwIframePattern.FindAllString(body, -1)), ezdmwDirectMedia(body, chapters[0].PageURL) != "", ezdmwPlayerDataPattern.MatchString(body), strings.Contains(strings.ToLower(body), ".m3u8"))
+			for _, tag := range ezdmwIframePattern.FindAllString(body, 5) {
+				frameURL := resolveProviderURL(chapters[0].PageURL, ezdmwAttr(tag, "src", "data-src"))
+				if parsedFrame, parseErr := url.Parse(frameURL); parseErr == nil {
+					t.Logf("iframe candidate: %s%s", parsedFrame.Host, parsedFrame.Path)
+				}
+			}
+			scriptPattern := regexp.MustCompile("(?is)<script\\b.*?</script>")
+			logged := 0
+			for _, script := range scriptPattern.FindAllString(body, -1) {
+				lower := strings.ToLower(script)
+				if strings.Contains(lower, "player") || strings.Contains(lower, "m3u8") || strings.Contains(lower, "video") {
+					sanitized := regexp.MustCompile(`(?i)(https?://[^"'\\s]+)\\?[^"'\\s]*`).ReplaceAllString(script, "$1?REDACTED")
+					if len(sanitized) > 600 {
+						sanitized = sanitized[:600]
+					}
+					t.Logf("player script sample: %s", sanitized)
+					logged++
+					if logged == 3 {
+						break
+					}
+				}
+			}
+		}
 		t.Fatalf("live E站 playback resolution failed: %v", err)
 	}
 	parsed, err := url.Parse(media.URL)
