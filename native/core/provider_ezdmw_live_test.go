@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -31,16 +32,18 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 	if err != nil {
 		searchURL := strings.TrimRight(d.providerBaseURL(sourceEZDMW), "/") + "/Index/search.html?searchText=" + url.QueryEscape("学生会也有洞")
 		if body, fetchErr := d.fetchProviderText(ctx, searchURL, ezdmwBaseURL+"/"); fetchErr == nil {
-			sectionAt := strings.Index(strings.ToLower(body), "some_drama")
-			start := sectionAt - 250
-			if start < 0 {
-				start = 0
+			sectionPattern := regexp.MustCompile(`(?is)<(?:section|div)\\b[^>]*id=["']some_drama["'][^>]*>`)
+			sectionAt := sectionPattern.FindStringIndex(body)
+			if sectionAt == nil {
+				t.Logf("live search diagnostics: bytes=%d title=%q; no some_drama container; occurrences=%d", len(body), extractPageTitle(body), strings.Count(strings.ToLower(body), "some_drama"))
+			} else {
+				start := sectionAt[0]
+				end := start + 4200
+				if end > len(body) {
+					end = len(body)
+				}
+				t.Logf("live search diagnostics: bytes=%d title=%q; container_at=%d excerpt=%q", len(body), extractPageTitle(body), start, body[start:end])
 			}
-			end := start + 1800
-			if end > len(body) {
-				end = len(body)
-			}
-			t.Logf("live search diagnostics: bytes=%d title=%q some_drama_at=%d excerpt=%q", len(body), extractPageTitle(body), sectionAt, body[start:end])
 		}
 		t.Fatalf("live E站 search/catalog failed: %v", err)
 	}
