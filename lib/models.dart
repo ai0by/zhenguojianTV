@@ -34,7 +34,7 @@ class SourceSite {
     SourceSite('huangju', '黄剧', '热门 · 最新 · 分类短剧'),
     SourceSite('51duanju', '51', '短剧 · 首页 · 榜单'),
     SourceSite('yeguo', '野果', '热播 · 全集正片校验'),
-    SourceSite('xiangjiao', '香蕉', '热播 · 全集正片校验'),
+    SourceSite('xiangjiao', '香蕉', '热播 · 分集权限识别'),
     SourceSite('huangguo-video', '剧场', '视频剧集'),
     SourceSite('huangguoai', 'AI', 'AI 短剧'),
     SourceSite('cloudfront', '旧版', '旧 API 剧库'),
