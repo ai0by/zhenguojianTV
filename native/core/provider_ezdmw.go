@@ -120,6 +120,32 @@ func parseEZDMWEpisodeCount(raw string) int {
 	return 0
 }
 
+func ezdmwNearbyTitle(raw string, start, end int) string {
+	pPattern := regexp.MustCompile("(?is)<p\\b[^>]*>(.*?)</p>")
+	bestDistance := int(^uint(0) >> 1)
+	bestTitle := ""
+	for _, match := range pPattern.FindAllStringSubmatchIndex(raw, -1) {
+		if len(match) < 6 {
+			continue
+		}
+		distance := 0
+		if match[1] < start {
+			distance = start - match[1]
+		} else if match[0] > end {
+			distance = match[0] - end
+		}
+		if distance > 600 || distance >= bestDistance {
+			continue
+		}
+		title := ezdmwCleanTitle(cleanText(raw[match[4]:match[5]]))
+		if title != "" {
+			bestDistance = distance
+			bestTitle = title
+		}
+	}
+	return bestTitle
+}
+
 func parseEZDMWCatalogItems(raw, pageURL string) []Drama {
 	scope := ezdmwElementBlock(raw, "section", func(opening string) bool {
 		return strings.EqualFold(extractAttr(opening, "id"), "some_drama")
@@ -140,6 +166,9 @@ func parseEZDMWCatalogItems(raw, pageURL string) []Drama {
 		title := ezdmwCleanTitle(cleanText(inner))
 		if title == "" {
 			title = ezdmwCleanTitle(extractAttr(attributes, "title", "aria-label"))
+		}
+		if title == "" {
+			title = ezdmwNearbyTitle(scope, match[0], match[1])
 		}
 		cover := ""
 		for _, tag := range ezdmwImageTagPattern.FindAllString(inner, -1) {
