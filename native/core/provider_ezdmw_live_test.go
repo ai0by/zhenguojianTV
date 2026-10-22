@@ -67,6 +67,10 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 		t.Fatalf("live E站 detail %q returned no episodes", drama.DisplayTitle())
 	}
 	t.Logf("detail parsed: %q; %d episodes", drama.DisplayTitle(), len(chapters))
+	for index, chapter := range chapters {
+		parsedPage, _ := url.Parse(chapter.PageURL)
+		t.Logf("chapter[%d]: title=%q page=%s%s", index, chapter.Title, parsedPage.Host, parsedPage.Path)
+	}
 
 	task := Task{DramaID: drama.ID, DramaTitle: drama.DisplayTitle(), Chapter: chapters[0], Index: 0}
 	media, err := d.resolveProviderMedia(ctx, task)
