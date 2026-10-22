@@ -485,6 +485,44 @@ func ezdmwDirectMedia(rawHTML, pageURL string) string {
 	return ""
 }
 
+func ezdmwMediaFromPlayerFrameURL(frameURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(frameURL))
+	if err != nil {
+		return ""
+	}
+	for _, key := range []string{"src", "url", "file", "video", "media", "play"} {
+		candidate := strings.TrimSpace(parsed.Query().Get(key))
+		for depth := 0; depth < 4 && candidate != ""; depth++ {
+			if media := ezdmwDirectMedia(candidate, frameURL); media != "" {
+				return media
+			}
+			var decoded []byte
+			var decodeErr error
+			decoded, decodeErr = base64.RawURLEncoding.DecodeString(candidate)
+			if decodeErr != nil {
+				decoded, decodeErr = base64.URLEncoding.DecodeString(candidate)
+			}
+			if decodeErr != nil {
+				decoded, decodeErr = base64.RawStdEncoding.DecodeString(candidate)
+			}
+			if decodeErr != nil {
+				decoded, decodeErr = base64.StdEncoding.DecodeString(candidate)
+			}
+			if decodeErr == nil {
+				candidate = strings.TrimSpace(string(decoded))
+				continue
+			}
+			unescaped, unescapeErr := url.QueryUnescape(candidate)
+			if unescapeErr == nil && unescaped != candidate {
+				candidate = strings.TrimSpace(unescaped)
+				continue
+			}
+			break
+		}
+	}
+	return ""
+}
+
 func parseEZDMWPlayerMedia(rawHTML, pageURL string) string {
 	if media := ezdmwDirectMedia(rawHTML, pageURL); media != "" {
 		return media
@@ -586,6 +624,9 @@ func (d *Downloader) resolveEZDMWPlayback(ctx context.Context, task Task) (provi
 		next := parseEZDMWPlayerFrame(body, pageURL)
 		if next == "" || visited[next] {
 			break
+		}
+		if media := ezdmwMediaFromPlayerFrameURL(next); media != "" {
+			return providerMedia{URL: media, Referer: pageURL}, nil
 		}
 		referer, pageURL = pageURL, next
 	}
