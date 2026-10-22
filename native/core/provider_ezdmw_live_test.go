@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,25 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 				frameURL := resolveProviderURL(chapters[0].PageURL, ezdmwAttr(tag, "src", "data-src"))
 				if parsedFrame, parseErr := url.Parse(frameURL); parseErr == nil {
 					t.Logf("iframe candidate: %s%s", parsedFrame.Host, parsedFrame.Path)
+					query := parsedFrame.Query()
+					keys := make([]string, 0, len(query))
+					for key, values := range query {
+						keys = append(keys, key)
+						if len(values) > 0 {
+							decoded, decodeErr := url.QueryUnescape(values[0])
+							if decodeErr == nil {
+								if nested, nestedErr := url.Parse(decoded); nestedErr == nil && nested.Host != "" {
+									t.Logf("iframe parameter %q contains URL %s%s", key, nested.Host, nested.Path)
+								}
+								lowerValue := strings.ToLower(decoded)
+								if strings.Contains(lowerValue, ".m3u8") || strings.Contains(lowerValue, ".mp4") {
+									t.Logf("iframe parameter %q appears to contain a media URL", key)
+								}
+							}
+						}
+					}
+					sort.Strings(keys)
+					t.Logf("iframe query keys: %s", strings.Join(keys, ","))
 				}
 			}
 			for _, key := range []string{"在线播放", "主线线路", "备用线路", "line_button_ban", "circuit_switch_ban", "onclick", "player", "video", "m3u8"} {
