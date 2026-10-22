@@ -63,6 +63,22 @@ class SourceFixtureRepository extends FixtureRepository {
 }
 
 void main() {
+  test('source picker labels include Yeguo and stay concise', () {
+    final sources = {
+      for (final source in SourceSite.knownValues) source.id: source,
+    };
+    expect(sources.keys, containsAll(['yeguo', 'xiangjiao']));
+    expect(sources['yeguo']?.name, '野果');
+    expect(sources['xiangjiao']?.name, '香蕉');
+    expect(sources['51duanju']?.name, '51');
+    expect(sources['huangguo-video']?.name, '剧场');
+    expect(sources['huangguoai']?.name, 'AI');
+    expect(sources['cloudfront']?.name, '旧版');
+    expect(sources['yeguo']?.onlineSearch, isTrue);
+    expect(sources['yeguo']?.pagedSearch, isTrue);
+    expect(sources['xiangjiao']?.onlineSearch, isTrue);
+  });
+
   testWidgets(
     'source update prevents duplicate submits and can stop without losing cache',
     (tester) async {

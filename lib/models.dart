@@ -7,8 +7,8 @@ class SourceSite {
   final String id;
   final String name;
   final String description;
-  bool get onlineSearch => id == 'hongguo' || id == 'huangju' || id == '51duanju';
-  bool get pagedSearch => id == 'huangju' || id == '51duanju';
+  bool get onlineSearch => id == 'hongguo' || id == 'huangju' || id == '51duanju' || id == 'yeguo' || id == 'xiangjiao';
+  bool get pagedSearch => id == 'huangju' || id == '51duanju' || id == 'yeguo';
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => switch (id) {
     'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
@@ -27,11 +27,12 @@ class SourceSite {
     hongguo,
     SourceSite('huangdou', '黄豆', '精选短剧'),
     SourceSite('huangju', '黄剧', '热门 · 最新 · 分类短剧'),
-    SourceSite('51duanju', '51短剧', '首页 · 榜单 · 剧场'),
-    SourceSite('xiangjiao', '香蕉短剧', '热播 · 正片会话'),
-    SourceSite('huangguo-video', '黄果剧场', '视频剧集'),
-    SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
-    SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
+    SourceSite('51duanju', '51', '短剧 · 首页 · 榜单'),
+    SourceSite('yeguo', '野果', '热播 · 全集正片校验'),
+    SourceSite('xiangjiao', '香蕉', '热播 · 全集正片校验'),
+    SourceSite('huangguo-video', '剧场', '视频剧集'),
+    SourceSite('huangguoai', 'AI', 'AI 短剧'),
+    SourceSite('cloudfront', '旧版', '旧 API 剧库'),
   ];
   static const values = allSourcesEnabled ? knownValues : [hongguo];
   static bool isAvailable(String id) => values.any((site) => site.id == id);

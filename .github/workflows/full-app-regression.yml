@@ -25,7 +25,25 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery)$' -count=1
+          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery|XiangjiaoJSONRetriesForbiddenPrimaryMirror|XiangjiaoFullPlaybackProbeUsesConcurrency|XiangjiaoFullPlaybackRejectsLockedEpisodes)
+          go test ./bridge -run '^$'
+
+  shared-apk-flutter-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Flutter 3.47.4
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+      - name: Resolve Flutter dependencies
+        run: flutter pub get
+      - name: Shared APK Flutter regression (phone + TV, all sources)
+        run: flutter test --dart-define=ALL_SOURCES=true --concurrency=1
+ -count=1
           go test ./bridge -run '^$'
 
   shared-apk-flutter-regression:

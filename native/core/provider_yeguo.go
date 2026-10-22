@@ -270,7 +270,7 @@ func yeguoDramas(root any) []Drama {
 			Cover:        cover,
 			CoverURL:     cover,
 			EpisodeCount: yeguoText(row, "episode_count", "episodeCount", "latest_episode", "latestEpisode"),
-			ChannelName:  "野果短剧",
+			ChannelName:  "野果",
 			CategoryName: yeguoText(row, "category_name", "categoryName", "tags"),
 		})
 	})
@@ -442,7 +442,7 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 		chapters = append(chapters, chapter)
 	}
 
-	title := "野果短剧 " + sourceID
+	title := "野果 " + sourceID
 	cover, description := "", ""
 	if meta != nil {
 		title = firstNonEmpty(yeguoText(meta, "title", "video_title", "drama_name", "name"), title)
@@ -466,7 +466,7 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 		CoverURL:     cover,
 		EpisodeCount: strconv.Itoa(len(chapters)),
 		TotalEpisode: strconv.Itoa(len(chapters)),
-		ChannelName:  "野果短剧",
+		ChannelName:  "野果",
 	}
 	return drama, chapters, nil
 }
