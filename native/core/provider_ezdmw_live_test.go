@@ -108,6 +108,31 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 					t.Logf("iframe query keys: %s", strings.Join(keys, ","))
 				}
 			}
+			frameURL := parseEZDMWPlayerFrame(body, chapters[0].PageURL)
+			if frameURL != "" {
+				frameBody, frameErr := d.fetchProviderText(ctx, frameURL, chapters[0].PageURL)
+				if frameErr != nil {
+					t.Logf("player frame fetch failed: %v", frameErr)
+				} else {
+					lowerFrame := strings.ToLower(frameBody)
+					frameParsed, _ := url.Parse(frameURL)
+					t.Logf("player frame body: %s%s bytes=%d title=%q direct_media=%t iframes=%d video_tags=%d m3u8=%t",
+						frameParsed.Host, frameParsed.Path, len(frameBody), extractPageTitle(frameBody),
+						parseEZDMWPlayerMedia(frameBody, frameURL) != "",
+						len(ezdmwIframePattern.FindAllString(frameBody, -1)),
+						strings.Count(lowerFrame, "<video"), strings.Contains(lowerFrame, ".m3u8"))
+					for _, key := range []string{"src", "video", "m3u8", "player", "url", "source"} {
+						at := strings.Index(lowerFrame, key)
+						if at >= 0 {
+							lo := at - 100
+							if lo < 0 { lo = 0 }
+							hi := at + 400
+							if hi > len(frameBody) { hi = len(frameBody) }
+							t.Logf("player frame context %q: %s", key, sanitizeEZDMWDiagnostic(frameBody[lo:hi]))
+						}
+					}
+				}
+			}
 			for _, key := range []string{"在线播放", "主线线路", "备用线路", "line_button_ban", "circuit_switch_ban", "onclick", "player", "video", "m3u8"} {
 				at := strings.Index(strings.ToLower(body), strings.ToLower(key))
 				if at >= 0 {
