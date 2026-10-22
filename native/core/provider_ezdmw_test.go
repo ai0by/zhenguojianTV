@@ -14,7 +14,7 @@ func TestEZDMWCatalogParsesAnimeCards(t *testing.T) {
 	if items[0].ID != "ezdmw:123" || items[0].Title != "番剧甲" {
 		t.Fatalf("unexpected item: %+v", items[0])
 	}
-	if items[0].Cover != "https://m.ezdmw.org/cover/123.jpg" {
+	if items[0].Cover != "https://www.ezdmw.org/cover/123.jpg" {
 		t.Fatalf("unexpected cover URL: %q", items[0].Cover)
 	}
 	if nativeText(items[0].Episodes) != "12" {
@@ -41,13 +41,16 @@ func TestEZDMWNearbyTitleIgnoresHTMLComments(t *testing.T) {
 }
 
 func TestEZDMWDetailParsesAndDeduplicatesEpisodes(t *testing.T) {
-	body := "<section class=\"anthology\"><div class=\"line_button_ban\"></div><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/101.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/201.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/102.html\">第2集</a></section>"
+	body := "<section class=\"anthology\"><div class=\"line_button_ban\"></div><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/101.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/201.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/102.html\">第2集</a><a class=\"circuit_switch_ban\" href=\"/v/103.html\">第3集</a></section>"
 	chapters := parseEZDMWEpisodes(body, ezdmwBaseURL+"/show/123.html", "123")
-	if len(chapters) != 2 {
-		t.Fatalf("got %d chapters, want 2: %+v", len(chapters), chapters)
+	if len(chapters) != 3 {
+		t.Fatalf("got %d chapters, want 3: %+v", len(chapters), chapters)
 	}
 	if chapters[0].ID != "ezdmw:123:101" || chapters[0].PageURL != ezdmwBaseURL+"/Index/bangumi/101.html" {
 		t.Fatalf("unexpected first chapter: %+v", chapters[0])
+	}
+	if chapters[2].PageURL != ezdmwBaseURL+"/Index/bangumi/103.html" {
+		t.Fatalf("unexpected canonical episode URL: %q", chapters[2].PageURL)
 	}
 	if chapters[1].Title != "第2集" || chapters[1].VideoURL != "ezdmw-play://102" {
 		t.Fatalf("unexpected second chapter: %+v", chapters[1])
