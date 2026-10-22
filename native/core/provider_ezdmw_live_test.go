@@ -88,7 +88,7 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 			for _, script := range scriptPattern.FindAllString(body, -1) {
 				lower := strings.ToLower(script)
 				if strings.Contains(lower, "player") || strings.Contains(lower, "m3u8") || strings.Contains(lower, "video") {
-					sanitized := regexp.MustCompile(`(?i)(https?://[^"'\\s]+)\\?[^"'\\s]*`).ReplaceAllString(script, "$1?REDACTED")
+					sanitized := regexp.MustCompile(`(?i)(https?://[^"'\s]+)\?[^"'\s]*`).ReplaceAllString(script, "$1?REDACTED")
 					if len(sanitized) > 600 {
 						sanitized = sanitized[:600]
 					}
