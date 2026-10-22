@@ -1,0 +1,24 @@
+name: E站 Live Smoke Test
+
+on:
+  push:
+    branches: [feat/ezdmw-anime-source]
+
+permissions:
+  contents: read
+
+jobs:
+  ezdmw-live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go 1.24.1
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.1'
+      - name: Live catalog, detail, and playback probe
+        working-directory: native
+        env:
+          EZDMW_LIVE_TEST: '1'
+        run: go test ./core -run '^TestEZDMWLiveCatalogDetailPlayback$' -count=1 -v
