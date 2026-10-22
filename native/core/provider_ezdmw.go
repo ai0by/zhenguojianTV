@@ -125,7 +125,7 @@ func ezdmwNearbyTitle(raw string, start, end int) string {
 	bestDistance := int(^uint(0) >> 1)
 	bestTitle := ""
 	for _, match := range pPattern.FindAllStringSubmatchIndex(raw, -1) {
-		if len(match) < 6 {
+		if len(match) < 4 {
 			continue
 		}
 		distance := 0
@@ -137,7 +137,7 @@ func ezdmwNearbyTitle(raw string, start, end int) string {
 		if distance > 600 || distance >= bestDistance {
 			continue
 		}
-		title := ezdmwCleanTitle(cleanText(raw[match[4]:match[5]]))
+		title := ezdmwCleanTitle(cleanText(raw[match[2]:match[3]]))
 		if title != "" {
 			bestDistance = distance
 			bestTitle = title
