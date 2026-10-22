@@ -49,7 +49,7 @@ func TestEZDMWDetailParsesAndDeduplicatesEpisodes(t *testing.T) {
 	if chapters[0].ID != "ezdmw:123:101" || chapters[0].PageURL != ezdmwBaseURL+"/Index/bangumi/101.html" {
 		t.Fatalf("unexpected first chapter: %+v", chapters[0])
 	}
-	if chapters[2].PageURL != ezdmwBaseURL+"/Index/bangumi/103.html" {
+	if chapters[2].PageURL != ezdmwBaseURL+"/Index/video/103.html" {
 		t.Fatalf("unexpected canonical episode URL: %q", chapters[2].PageURL)
 	}
 	if chapters[1].Title != "第2集" || chapters[1].VideoURL != "ezdmw-play://102" {
