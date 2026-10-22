@@ -13,7 +13,7 @@ import (
 )
 
 func sanitizeEZDMWDiagnostic(raw string) string {
-	pattern := regexp.MustCompile("(?i)(https?://[^\"'\\s]+)\\?[^"'\\s]*")
+	pattern := regexp.MustCompile("(?i)(https?://[^\"\'\\s]+)\\?[^\"\'\\s]*")
 	return pattern.ReplaceAllString(raw, "$1?REDACTED")
 }
 
