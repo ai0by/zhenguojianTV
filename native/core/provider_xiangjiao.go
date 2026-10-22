@@ -420,6 +420,10 @@ func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID s
 	// hidden even when every episode was playable. Probe with bounded parallelism.
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// Episode session probes are bounded by this semaphore and the global request
+	// limiter, but should not queue one-by-one behind the source catalog gate.
+	// They still respect global concurrency, per-host backoff and request interval.
+	parallelCtx := context.WithValue(probeCtx, parallelCatalogProbeKey{}, true)
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
 	var resultMu sync.Mutex
@@ -435,7 +439,7 @@ func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID s
 			case <-probeCtx.Done():
 				return
 			}
-			if _, err := d.xiangjiaoFullPlaybackManifest(probeCtx, sourceID, id); err != nil {
+			if _, err := d.xiangjiaoFullPlaybackManifest(parallelCtx, sourceID, id); err != nil {
 				resultMu.Lock()
 				failed = true
 				if xiangjiaoPaymentRequiredFromError(err) {

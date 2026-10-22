@@ -11,9 +11,13 @@ import (
 )
 
 func TestXiangjiaoJSONRetriesForbiddenPrimaryMirror(t *testing.T) {
+	resetProviderMirrorCaches()
 	var primaryCalls atomic.Int32
 	var mirrorCalls atomic.Int32
 	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == providerMirrorConfigURL {
+			return sourceFixtureResponse(request, http.StatusOK, `{"version":1,"ttl_seconds":3600,"sources":{}}`), nil
+		}
 		if request.URL.Hostname() == "xiangjiaoai.ai" {
 			primaryCalls.Add(1)
 			return sourceFixtureResponse(request, http.StatusForbidden, `{"code":"EDGE_BLOCKED","message":"upstream denied"}`), nil
@@ -48,6 +52,7 @@ func TestXiangjiaoJSONRetriesForbiddenPrimaryMirror(t *testing.T) {
 }
 
 func TestXiangjiaoFullPlaybackProbeUsesConcurrency(t *testing.T) {
+	resetProviderMirrorCaches()
 	const sourceID = "parallel-probe-fixture-20261022"
 	xiangjiaoPlayableCache.Delete(sourceID)
 	t.Cleanup(func() { xiangjiaoPlayableCache.Delete(sourceID) })
@@ -55,6 +60,9 @@ func TestXiangjiaoFullPlaybackProbeUsesConcurrency(t *testing.T) {
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == providerMirrorConfigURL {
+			return sourceFixtureResponse(request, http.StatusOK, `{"version":1,"ttl_seconds":3600,"sources":{}}`), nil
+		}
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/api/dramas/"+sourceID+"/episodes":
 			return sourceFixtureResponse(request, http.StatusOK, `{"data":[
@@ -99,11 +107,15 @@ func TestXiangjiaoFullPlaybackProbeUsesConcurrency(t *testing.T) {
 }
 
 func TestXiangjiaoFullPlaybackRejectsLockedEpisodes(t *testing.T) {
+	resetProviderMirrorCaches()
 	const sourceID = "locked-probe-fixture-20261022"
 	xiangjiaoPlayableCache.Delete(sourceID)
 	t.Cleanup(func() { xiangjiaoPlayableCache.Delete(sourceID) })
 	var playbackCalls atomic.Int32
 	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == providerMirrorConfigURL {
+			return sourceFixtureResponse(request, http.StatusOK, `{"version":1,"ttl_seconds":3600,"sources":{}}`), nil
+		}
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/api/dramas/"+sourceID+"/episodes":
 			return sourceFixtureResponse(request, http.StatusOK, `{"data":[

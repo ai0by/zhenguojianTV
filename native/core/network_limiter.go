@@ -97,6 +97,11 @@ type backgroundCatalogKey struct{}
 // 若被并发限制器压成 3 个一批，8 个候选会退化成三批串行，成功率反而更低。
 type skipCatalogGateKey struct{}
 
+// parallelCatalogProbeKey permits a small, explicitly bounded group of provider
+// validation requests to share a source gate. It still observes global concurrency,
+// per-host backoff, and the configured request interval.
+type parallelCatalogProbeKey struct{}
+
 func newRequestLimiter(concurrency int, interval time.Duration) *requestLimiter {
 	if concurrency < 1 {
 		concurrency = 1
@@ -115,6 +120,7 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		return func() {}, nil
 	}
 	background, _ := ctx.Value(backgroundCatalogKey{}).(bool)
+	parallelProbe, _ := ctx.Value(parallelCatalogProbeKey{}).(bool)
 	host := strings.ToLower(request.URL.Hostname())
 	source := providerSourceForURL(request.URL.String())
 	if source == "" {
@@ -160,8 +166,10 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 			}
 		}
 		lowPriorityReady := !background || limiter.foregroundWaiting == 0 && limiter.active == 0
-		if lowPriorityReady && !gate.busy && limiter.active < limiter.concurrency && delay <= 0 {
-			gate.busy = true
+		if lowPriorityReady && (parallelProbe || !gate.busy) && limiter.active < limiter.concurrency && delay <= 0 {
+			if !parallelProbe {
+				gate.busy = true
+			}
 			gate.lastStart = time.Now()
 			limiter.active++
 			limiter.mu.Unlock()
@@ -189,7 +197,9 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		once.Do(func() {
 			limiter.mu.Lock()
 			limiter.active--
-			gate.busy = false
+			if !parallelProbe {
+				gate.busy = false
+			}
 			if !background {
 				limiter.lastForeground = time.Now()
 			}
