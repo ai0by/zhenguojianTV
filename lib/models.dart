@@ -7,7 +7,12 @@ class SourceSite {
   final String id;
   final String name;
   final String description;
-  bool get onlineSearch => id == 'hongguo' || id == 'huangju' || id == '51duanju' || id == 'yeguo' || id == 'xiangjiao';
+  bool get onlineSearch =>
+      id == 'hongguo' ||
+      id == 'huangju' ||
+      id == '51duanju' ||
+      id == 'yeguo' ||
+      id == 'xiangjiao';
   bool get pagedSearch => id == 'huangju' || id == '51duanju' || id == 'yeguo';
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => switch (id) {

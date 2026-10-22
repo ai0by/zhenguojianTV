@@ -40,27 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery|XiangjiaoJSONRetriesForbiddenPrimaryMirror|XiangjiaoFullPlaybackProbeUsesConcurrency|XiangjiaoFullPlaybackRejectsLockedEpisodes)
-          go test ./bridge -run '^$'
-
-      - name: Whole-project static analysis
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
-
-      - name: Pinyin regression
-        run: flutter test test/pinyin_test.dart
-
-      - name: Mobile bottom-navigation latency regression
-        run: flutter test --dart-define=ALL_SOURCES=true test/app_bottom_navigation_test.dart
-
-      - name: TV navigation regression (all sources)
-        run: flutter test --dart-define=ALL_SOURCES=true test/television_test.dart
-
-      - name: Shared APK TV tab regression (all sources)
-        run: flutter test --dart-define=ALL_SOURCES=true test/tv_shared_apk_navigation_test.dart
-
-      - name: TV player remote regression (all sources)
-        run: flutter test --dart-define=ALL_SOURCES=true test/tv_player_remote_test.dart
- -count=1
+          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery|XiangjiaoJSONRetriesForbiddenPrimaryMirror|XiangjiaoFullPlaybackProbeUsesConcurrency|XiangjiaoFullPlaybackRejectsLockedEpisodes)$' -count=1
           go test ./bridge -run '^$'
 
       - name: Whole-project static analysis
