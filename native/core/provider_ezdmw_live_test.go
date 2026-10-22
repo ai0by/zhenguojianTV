@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+// resolveEZDMWLiveTestURL resolves playlist references without applying the
+// production helper's HTTP-to-HTTPS upgrade. The native playback gateway is
+// intentionally served over plain HTTP on loopback.
+func resolveEZDMWLiveTestURL(base, reference string) string {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return reference
+	}
+	referenceURL, err := url.Parse(reference)
+	if err != nil {
+		return reference
+	}
+	return baseURL.ResolveReference(referenceURL).String()
+}
+
 func firstEZDMWHLSResource(playlist string) string {
 	for _, line := range strings.Split(playlist, "\n") {
 		line = strings.TrimSpace(line)
@@ -116,7 +131,7 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 	if resource == "" {
 		t.Fatal("native HLS playlist contains no variant or segment URL")
 	}
-	resourceURL := resolveProviderURL(plan.URL, resource)
+	resourceURL := resolveEZDMWLiveTestURL(plan.URL, resource)
 	resourceReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
 	if err != nil {
 		t.Fatalf("create native HLS resource request: %v", err)
@@ -138,7 +153,7 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 		if segment == "" {
 			t.Fatal("variant HLS playlist contains no media segment")
 		}
-		segmentURL := resolveProviderURL(resourceURL, segment)
+		segmentURL := resolveEZDMWLiveTestURL(resourceURL, segment)
 		segmentReq, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, segmentURL, nil)
 		if reqErr != nil {
 			t.Fatalf("create segment request: %v", reqErr)
