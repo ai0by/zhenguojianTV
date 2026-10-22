@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+func firstEZDMWHLSResource(playlist string) string {
+	for _, line := range strings.Split(playlist, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
+}
+
 // TestEZDMWLiveCatalogDetailPlayback is an opt-in end-to-end smoke test against
 // the real E站 site. Set EZDMW_LIVE_TEST=1 to run it; normal unit tests stay deterministic.
 func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
@@ -81,5 +91,67 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 	if n == 0 || (readErr != nil && readErr != io.EOF) {
 		t.Fatalf("live E站 media endpoint returned no readable bytes (read=%d, err=%v)", n, readErr)
 	}
-	t.Logf("live E站 smoke passed: %d search results, %d episodes, media host=%s, HTTP %d", len(items), len(chapters), parsed.Host, resp.StatusCode)
+	plan, err := engine.nativeOpenPlayback(ctx, nativePlaybackChoices(media, 0))
+	if err != nil {
+		t.Fatalf("open E站 through the native playback gateway: %v", err)
+	}
+	localClient := &http.Client{Timeout: 15 * time.Second}
+	localReq, err := http.NewRequestWithContext(ctx, http.MethodGet, plan.URL, nil)
+	if err != nil {
+		t.Fatalf("create local playback request: %v", err)
+	}
+	localResp, err := localClient.Do(localReq)
+	if err != nil {
+		t.Fatalf("native playback gateway request failed: %v", err)
+	}
+	playlistBytes, readErr := io.ReadAll(io.LimitReader(localResp.Body, 1<<20))
+	localResp.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read native HLS playlist: %v", readErr)
+	}
+	if localResp.StatusCode < 200 || localResp.StatusCode >= 300 || !strings.HasPrefix(strings.TrimSpace(string(playlistBytes)), "#EXTM3U") {
+		t.Fatalf("native playback gateway did not return a valid HLS playlist (HTTP %d)", localResp.StatusCode)
+	}
+	resource := firstEZDMWHLSResource(string(playlistBytes))
+	if resource == "" {
+		t.Fatal("native HLS playlist contains no variant or segment URL")
+	}
+	resourceURL := resolveProviderURL(plan.URL, resource)
+	resourceReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
+	if err != nil {
+		t.Fatalf("create native HLS resource request: %v", err)
+	}
+	resourceResp, err := localClient.Do(resourceReq)
+	if err != nil {
+		t.Fatalf("native HLS resource request failed: %v", err)
+	}
+	resourceBytes, resourceReadErr := io.ReadAll(io.LimitReader(resourceResp.Body, 1<<20))
+	resourceResp.Body.Close()
+	if resourceReadErr != nil {
+		t.Fatalf("read native HLS resource: %v", resourceReadErr)
+	}
+	if resourceResp.StatusCode < 200 || resourceResp.StatusCode >= 300 || len(resourceBytes) == 0 {
+		t.Fatalf("native HLS resource unavailable (HTTP %d, bytes=%d)", resourceResp.StatusCode, len(resourceBytes))
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(resourceBytes)), "#EXTM3U") {
+		segment := firstEZDMWHLSResource(string(resourceBytes))
+		if segment == "" {
+			t.Fatal("variant HLS playlist contains no media segment")
+		}
+		segmentURL := resolveProviderURL(resourceURL, segment)
+		segmentReq, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, segmentURL, nil)
+		if reqErr != nil {
+			t.Fatalf("create segment request: %v", reqErr)
+		}
+		segmentResp, reqErr := localClient.Do(segmentReq)
+		if reqErr != nil {
+			t.Fatalf("native media segment request failed: %v", reqErr)
+		}
+		n, _ := io.CopyN(io.Discard, segmentResp.Body, 1)
+		segmentResp.Body.Close()
+		if segmentResp.StatusCode < 200 || segmentResp.StatusCode >= 300 || n == 0 {
+			t.Fatalf("native media segment unavailable (HTTP %d, bytes=%d)", segmentResp.StatusCode, n)
+		}
+	}
+	t.Logf("live E站 playback passed: %d search results, %d episodes, upstream=%s, native HLS gateway and first resource verified", len(items), len(chapters), parsed.Host)
 }
