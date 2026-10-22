@@ -48,7 +48,7 @@ func TestEZDMWDetailParsesAndDeduplicatesEpisodes(t *testing.T) {
 	if len(chapters) != 3 {
 		t.Fatalf("got %d chapters, want 3: %+v", len(chapters), chapters)
 	}
-	if chapters[0].ID != "ezdmw:123:101" || chapters[0].PageURL != ezdmwBaseURL+"/Index/bangumi/101.html" {
+	if chapters[0].ID != "ezdmw:123:101" || chapters[0].PageURL != ezdmwBaseURL+"/Index/video/101.html" {
 		t.Fatalf("unexpected first chapter: %+v", chapters[0])
 	}
 	if chapters[2].PageURL != ezdmwBaseURL+"/Index/video/103.html" {
