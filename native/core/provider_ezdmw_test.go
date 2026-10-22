@@ -1,6 +1,8 @@
 package core
 
 import (
+	"encoding/base64"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -54,6 +56,18 @@ func TestEZDMWDetailParsesAndDeduplicatesEpisodes(t *testing.T) {
 	}
 	if chapters[1].Title != "第2集" || chapters[1].VideoURL != "ezdmw-play://102" {
 		t.Fatalf("unexpected second chapter: %+v", chapters[1])
+	}
+}
+
+func TestEZDMWMediaFromPlayerFrameURL(t *testing.T) {
+	direct := "https://player.example.test/danmuku/?src=" + url.QueryEscape("https://cdn.example.test/episode.m3u8?token=abc")
+	if got := ezdmwMediaFromPlayerFrameURL(direct); got != "https://cdn.example.test/episode.m3u8?token=abc" {
+		t.Fatalf("direct player frame media = %q", got)
+	}
+	encodedMedia := base64.RawURLEncoding.EncodeToString([]byte("https://cdn.example.test/episode.mp4"))
+	encoded := "https://player.example.test/danmuku/?src=" + url.QueryEscape(encodedMedia)
+	if got := ezdmwMediaFromPlayerFrameURL(encoded); got != "https://cdn.example.test/episode.mp4" {
+		t.Fatalf("encoded player frame media = %q", got)
 	}
 }
 
