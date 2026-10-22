@@ -94,7 +94,7 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 					if end > len(body) {
 						end = len(body)
 					}
-					snippet := regexp.MustCompile(`(?i)(https?://[^"'\\s]+)\\?[^"'\\s]*`).ReplaceAllString(body[start:end], "$1?REDACTED")
+					snippet := regexp.MustCompile(`(?i)(https?://[^"'\s]+)\?[^"'\s]*`).ReplaceAllString(body[start:end], "$1?REDACTED")
 					t.Logf("player markup around %q: %s", key, snippet)
 				}
 			}
@@ -103,7 +103,7 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 				if index == 10 {
 					break
 				}
-				sanitized := regexp.MustCompile(`(?i)(https?://[^"'\\s]+)\\?[^"'\\s]*`).ReplaceAllString(tag, "$1?REDACTED")
+					sanitized := regexp.MustCompile(`(?i)(https?://[^"'\s]+)\?[^"'\s]*`).ReplaceAllString(tag, "$1?REDACTED")
 				t.Logf("player-related attribute tag: %s", sanitized)
 			}
 			scriptPattern := regexp.MustCompile("(?is)<script\\b.*?</script>")
