@@ -20,7 +20,7 @@ var ezdmwBaseMirrors = []string{ezdmwBaseURL}
 
 var (
 	ezdmwDetailPathPattern = regexp.MustCompile("(?i)^/(?:show|Index/show|Index/detail)/([0-9]+)\\.html$")
-	ezdmwEpisodePathPattern = regexp.MustCompile("(?i)^/Index/bangumi/([0-9]+)\\.html$")
+	ezdmwEpisodePathPattern = regexp.MustCompile("(?i)^/(?:Index/bangumi|v)/([0-9]+)\\.html$")
 	ezdmwAnchorPattern = regexp.MustCompile("(?is)<a\\b([^>]*)>(.*?)</a>")
 	ezdmwEpisodeCountPattern = regexp.MustCompile("(?i)(?:更新到|更新至)\\s*0*([0-9]+)|(?:共|全)\\s*0*([0-9]+)\\s*(?:集|话|期)|([0-9]+)\\s*集\\s*完结")
 	ezdmwMediaURLPattern = regexp.MustCompile("(?i)(?:https?:)?//[^\\\"'<>\\s]+?\\.(?:m3u8|mp4)(?:\\?[^\\\"'<>\\s]*)?")
