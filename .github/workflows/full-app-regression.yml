@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery|XiangjiaoJSONRetriesForbiddenPrimaryMirror|XiangjiaoCatalogKeepsCoinLockedDramasVisible|XiangjiaoDetailMarksCoinEpisodesLocked|XiangjiaoPlayback403IsTreatedAsPaymentDenial)$' -count=1
+          go test ./core -run 'Test(EZDMWCatalogParsesAnimeCards|EZDMWDetailParsesAndDeduplicatesEpisodes|EZDMWPlaybackParserHandlesDirectMediaAndIframe|EZDMWRejectsUnsafePlayerPageAddresses|ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery|XiangjiaoJSONRetriesForbiddenPrimaryMirror|XiangjiaoCatalogKeepsCoinLockedDramasVisible|XiangjiaoDetailMarksCoinEpisodesLocked|XiangjiaoPlayback403IsTreatedAsPaymentDenial)$' -count=1
           go test ./bridge -run '^$'
 
   shared-apk-flutter-regression:

@@ -63,11 +63,11 @@ class SourceFixtureRepository extends FixtureRepository {
 }
 
 void main() {
-  test('source picker labels include Yeguo and stay concise', () {
+  test('source picker labels include anime and short-drama sources', () {
     final sources = {
       for (final source in SourceSite.knownValues) source.id: source,
     };
-    expect(sources.keys, containsAll(['yeguo', 'xiangjiao']));
+    expect(sources.keys, containsAll(['yeguo', 'xiangjiao', 'ezdmw']));
     expect(sources['yeguo']?.name, '野果');
     expect(sources['xiangjiao']?.name, '香蕉');
     expect(sources['51duanju']?.name, '51');
@@ -77,6 +77,9 @@ void main() {
     expect(sources['yeguo']?.onlineSearch, isTrue);
     expect(sources['yeguo']?.pagedSearch, isTrue);
     expect(sources['xiangjiao']?.onlineSearch, isTrue);
+    expect(sources['ezdmw']?.name, 'E站');
+    expect(sources['ezdmw']?.onlineSearch, isTrue);
+    expect(sources['ezdmw']?.pagedSearch, isTrue);
   });
 
   testWidgets(

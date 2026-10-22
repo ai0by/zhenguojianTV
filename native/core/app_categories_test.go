@@ -62,7 +62,7 @@ func TestNativeCategoryDiscoveryUsesSourceLinks(t *testing.T) {
 	if len(categories) != 2 || categories[0].ID != "2" || categories[0].Name != "合成分类甲" || categories[1].ID != "5" {
 		t.Fatal("category discovery included unrelated navigation", categories)
 	}
-	for _, source := range []string{sourceHongguo, sourceHuangdou, sourceHuangguoAI, sourceHuangguoVideo, sourceCloudFront} {
+	for _, source := range []string{sourceHongguo, sourceHuangdou, sourceHuangguoAI, sourceHuangguoVideo, sourceCloudFront, sourceEZDMW} {
 		if validNativeCategory(source, "../other|source") {
 			t.Fatal("invalid category entered a cache namespace")
 		}

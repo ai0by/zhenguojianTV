@@ -12,8 +12,10 @@ class SourceSite {
       id == 'huangju' ||
       id == '51duanju' ||
       id == 'yeguo' ||
-      id == 'xiangjiao';
-  bool get pagedSearch => id == 'huangju' || id == '51duanju' || id == 'yeguo';
+      id == 'xiangjiao' ||
+      id == 'ezdmw';
+  bool get pagedSearch =>
+      id == 'huangju' || id == '51duanju' || id == 'yeguo' || id == 'ezdmw';
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => switch (id) {
     'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
@@ -35,6 +37,7 @@ class SourceSite {
     SourceSite('51duanju', '51', '短剧 · 首页 · 榜单'),
     SourceSite('yeguo', '野果', '热播 · 全集正片校验'),
     SourceSite('xiangjiao', '香蕉', '热播 · 分集权限识别'),
+    SourceSite('ezdmw', 'E站', '动漫 · 新番 · 完结'),
     SourceSite('huangguo-video', '剧场', '视频剧集'),
     SourceSite('huangguoai', 'AI', 'AI 短剧'),
     SourceSite('cloudfront', '旧版', '旧 API 剧库'),

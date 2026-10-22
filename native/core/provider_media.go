@@ -41,6 +41,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		fallback = yeguoBaseURL
 	case sourceXiangjiao:
 		fallback = xiangjiaoBaseURL
+	case sourceEZDMW:
+		fallback = ezdmwBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -78,6 +80,8 @@ func providerSourceForURL(raw string) string {
 		return sourceYeguo
 	case xiangjiaoMirrorHost(host):
 		return sourceXiangjiao
+	case ezdmwMirrorHost(host):
+		return sourceEZDMW
 	default:
 		// 远程镜像配置里登记的备用域名（红果、黄剧等站源经常换域名）。
 		return providerSourceForHost(host)
@@ -104,11 +108,23 @@ func (d *Downloader) providerURLCandidates(raw string) []string {
 	add(rehostProviderURL(parsed, preferred))
 	configured := d.providerBaseURL(source)
 	add(rehostProviderURL(parsed, configured))
-	if providerSourceForURL(configured) == "" {
-		return candidates
+	var mirrors []string
+	switch source {
+	case sourceHuangguoAI:
+		mirrors = huangguoAIBaseMirrors
+	case sourceHuangdou:
+		mirrors = huangdouBaseMirrors
+	case sourceDuanju51:
+		mirrors = duanju51BaseMirrors
+	case sourceYeguo:
+		mirrors = yeguoBaseMirrors
+	case sourceXiangjiao:
+		mirrors = xiangjiaoBaseMirrors
+	case sourceEZDMW:
+		mirrors = ezdmwBaseMirrors
 	}
-	for _, candidate := range providerURLCandidates(raw) {
-		add(candidate)
+	for _, origin := range mirrors {
+		add(rehostProviderURL(parsed, origin))
 	}
 	return candidates
 }
@@ -177,6 +193,13 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == sourceXiangjiao && strings.HasPrefix(chapter.VideoURL, "xiangjiao-play://") {
 		var err error
 		media, err = d.resolveXiangjiaoPlayback(ctx, task)
+		if err != nil {
+			return providerMedia{}, err
+		}
+	}
+	if chapter.Source == sourceEZDMW && strings.HasPrefix(chapter.VideoURL, "ezdmw-play://") {
+		var err error
+		media, err = d.resolveEZDMWPlayback(ctx, task)
 		if err != nil {
 			return providerMedia{}, err
 		}

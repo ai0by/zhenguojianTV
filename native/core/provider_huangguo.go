@@ -26,6 +26,7 @@ const (
 	sourceHongguo       = "hongguo"
 	sourceHuangju       = "huangju"
 	sourceCloudFront    = "cloudfront"
+	sourceEZDMW         = "ezdmw"
 
 	providerMaxBodyBytes = 20 * 1024 * 1024
 	providerTimeout      = 12 * time.Second
@@ -104,7 +105,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceDuanju51, sourceYeguo, sourceXiangjiao, sourceCloudFront:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceDuanju51, sourceYeguo, sourceXiangjiao, sourceCloudFront, sourceEZDMW:
 		return true
 	default:
 		return false
@@ -130,6 +131,8 @@ func canonicalProviderSource(source string) string {
 		return sourceYeguo
 	case "xiangjiao", "香蕉", "香蕉短剧", "xiangjiaoai.ai", "xiangjiao01.com":
 		return sourceXiangjiao
+	case "ezdmw", "e站", "e站动漫", "m.ezdmw.org":
+		return sourceEZDMW
 	case "cloudfront":
 		return sourceCloudFront
 	default:
@@ -240,6 +243,8 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return drama.DisplayTitle(), chapters, err
 	case sourceCloudFront:
 		return d.fetchLegacyChapters(ctx, sourceID)
+	case sourceEZDMW:
+		return d.fetchEZDMWChapters(ctx, sourceID)
 	default:
 		return "", nil, fmt.Errorf("unsupported provider source: %s", source)
 	}
