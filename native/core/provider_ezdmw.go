@@ -19,7 +19,7 @@ const ezdmwPageSize = 20
 var ezdmwBaseMirrors = []string{ezdmwBaseURL}
 
 var (
-	ezdmwDetailPathPattern = regexp.MustCompile("(?i)^/(?:show|Index/show|Index/detail)/([0-9]+)\\.html$")
+	ezdmwDetailPathPattern = regexp.MustCompile("(?i)^/(?:show|Index/show|Index/detail|Index/bangumi|v)/([0-9]+)\\.html$")
 	ezdmwEpisodePathPattern = regexp.MustCompile("(?i)^/(?:Index/bangumi|v)/([0-9]+)\\.html$")
 	ezdmwAnchorPattern = regexp.MustCompile("(?is)<a\\b([^>]*)>(.*?)</a>")
 	ezdmwEpisodeCountPattern = regexp.MustCompile("(?i)(?:更新到|更新至)\\s*0*([0-9]+)|(?:共|全)\\s*0*([0-9]+)\\s*(?:集|话|期)|([0-9]+)\\s*集\\s*完结")
@@ -216,7 +216,7 @@ func (d *Downloader) fetchEZDMWCatalogPage(ctx context.Context, page int, catego
 		page = 1
 	}
 	base := strings.TrimRight(d.providerBaseURL(sourceEZDMW), "/")
-	address := base + "/Index/anime.html"
+	address := base + "/"
 	if query = strings.TrimSpace(query); query != "" {
 		address = base + "/Index/search.html?searchText=" + url.QueryEscape(query)
 	}
@@ -244,7 +244,11 @@ func (d *Downloader) fetchEZDMWCatalogPage(ctx context.Context, page int, catego
 	if len(items) == 0 {
 		return nil, false, errors.New("E站目录未解析到番剧，站点页面结构可能已变化")
 	}
-	return items, ezdmwHasMore(body, len(items)), nil
+	more := false
+	if query != "" {
+		more = ezdmwHasMore(body, len(items))
+	}
+	return items, more, nil
 }
 
 func ezdmwEpisodeTitle(raw string, index int) string {
@@ -338,18 +342,42 @@ func (d *Downloader) fetchEZDMWDetail(ctx context.Context, sourceID string) (Dra
 		return Drama{}, nil, errors.New("E站番剧 ID 无效")
 	}
 	base := strings.TrimRight(d.providerBaseURL(sourceEZDMW), "/")
-	detailURL := base + "/show/" + url.PathEscape(sourceID) + ".html"
-	body, err := d.fetchProviderText(ctx, detailURL, base+"/")
-	if err != nil {
-		return Drama{}, nil, err
+	// E站的列表入口在不同页面/版本中可能链接到番剧页或某一集的
+	// /Index/bangumi/、/v/ 页面；这些页面都可能包含完整选集列表。
+	paths := []string{
+		"/Index/bangumi/" + sourceID + ".html",
+		"/show/" + sourceID + ".html",
+		"/Index/show/" + sourceID + ".html",
+		"/Index/detail/" + sourceID + ".html",
+		"/v/" + sourceID + ".html",
+	}
+	var body, detailURL string
+	var chapters []Chapter
+	var lastErr error
+	for _, path := range paths {
+		candidateURL := base + path
+		candidateBody, err := d.fetchProviderText(ctx, candidateURL, base+"/")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		candidateChapters := parseEZDMWEpisodes(candidateBody, candidateURL, sourceID)
+		if len(candidateChapters) == 0 {
+			lastErr = errors.New("页面未解析到分集")
+			continue
+		}
+		body, detailURL, chapters = candidateBody, candidateURL, candidateChapters
+		break
+	}
+	if len(chapters) == 0 {
+		if lastErr != nil {
+			return Drama{}, nil, fmt.Errorf("E站未找到包含选集的详情页：%w", lastErr)
+		}
+		return Drama{}, nil, errors.New("E站未找到包含选集的详情页")
 	}
 	title := ezdmwCleanTitle(extractPageTitle(body))
 	if title == "" {
 		title = "番剧 " + sourceID
-	}
-	chapters := parseEZDMWEpisodes(body, detailURL, sourceID)
-	if len(chapters) == 0 {
-		return Drama{}, nil, errors.New("E站未解析到分集，站点页面结构可能已变化")
 	}
 	count := len(chapters)
 	releaseStatus := "ongoing"
