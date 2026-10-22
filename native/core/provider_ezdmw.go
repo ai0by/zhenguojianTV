@@ -106,6 +106,9 @@ func ezdmwCleanTitle(raw string) string {
 
 func parseEZDMWEpisodeCount(raw string) int {
 	match := ezdmwEpisodeCountPattern.FindStringSubmatch(raw)
+	if len(match) < 2 {
+		return 0
+	}
 	for _, group := range match[1:] {
 		if group == "" {
 			continue
