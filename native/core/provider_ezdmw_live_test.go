@@ -29,6 +29,19 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 
 	items, _, err := d.fetchEZDMWCatalogPage(ctx, 1, "", "学生会也有洞")
 	if err != nil {
+		searchURL := strings.TrimRight(d.providerBaseURL(sourceEZDMW), "/") + "/Index/search.html?searchText=" + url.QueryEscape("学生会也有洞")
+		if body, fetchErr := d.fetchProviderText(ctx, searchURL, ezdmwBaseURL+"/"); fetchErr == nil {
+			sectionAt := strings.Index(strings.ToLower(body), "some_drama")
+			start := sectionAt - 250
+			if start < 0 {
+				start = 0
+			}
+			end := start + 1800
+			if end > len(body) {
+				end = len(body)
+			}
+			t.Logf("live search diagnostics: bytes=%d title=%q some_drama_at=%d excerpt=%q", len(body), extractPageTitle(body), sectionAt, body[start:end])
+		}
 		t.Fatalf("live E站 search/catalog failed: %v", err)
 	}
 	var selected Drama
