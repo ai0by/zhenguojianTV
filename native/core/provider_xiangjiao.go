@@ -28,7 +28,6 @@ const (
 
 var xiangjiaoBaseMirrors = []string{
 	"https://xiangjiaoai.ai",
-	"https://xiangjiao01.com",
 }
 
 type xiangjiaoHTTPError struct {
@@ -204,16 +203,11 @@ func (d *Downloader) xiangjiaoJSON(ctx context.Context, method, path string, pay
 			}
 			lastErr = apiErr
 			normalizedPath := strings.TrimRight(path, "/")
-			// 播放接口的 401 交给上层刷新游客 token；明确的会员/购买拒绝
-			// 也不能通过切换镜像重试。其他 401/403 可能是单个域名的 CDN/WAF
-			// 限制，继续尝试备用镜像，避免把镜像故障误判成“没有内容”。
-			if normalizedPath == "/api/playback/sessions" {
-				if resp.StatusCode == http.StatusUnauthorized {
-					return nil, apiErr
-				}
-				if resp.StatusCode == http.StatusForbidden && xiangjiaoPaymentRequired(apiErr) {
-					return nil, apiErr
-				}
+			// 播放接口的 401 交给上层刷新游客 token；403 可能是购买限制，
+			// 即使服务端没有返回 JSON 错误体，也不能切换镜像尝试规避访问控制。
+			if normalizedPath == "/api/playback/sessions" &&
+				(resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				return nil, apiErr
 			}
 			continue
 		}
@@ -240,6 +234,26 @@ func xiangjiaoPayloadData(value any) any {
 }
 
 func xiangjiaoDramaFromMap(row map[string]any) Drama {
+	// /api/home/hot wraps each item in {id,title,image_url,drama:{...}}.
+	// Merge the nested drama fields so commerce metadata (including coin/VIP
+	// status) is not lost when the outer item and nested object share the same ID.
+	if nested := xiangjiaoMap(row, "drama"); nested != nil {
+		merged := make(map[string]any, len(row)+len(nested))
+		for key, value := range row {
+			merged[key] = value
+		}
+		for key, value := range nested {
+			current, exists := merged[key]
+			if !exists || current == nil {
+				merged[key] = value
+				continue
+			}
+			if text, ok := current.(string); ok && strings.TrimSpace(text) == "" {
+				merged[key] = value
+			}
+		}
+		row = merged
+	}
 	id := firstNonEmpty(
 		xiangjiaoText(row, "dramaId", "drama_id", "shortDramaId", "short_drama_id", "playletId", "playlet_id", "videoId", "video_id"),
 		xiangjiaoText(row, "id"),
@@ -250,6 +264,9 @@ func xiangjiaoDramaFromMap(row map[string]any) Drama {
 	}
 	cover := xiangjiaoText(row, "coverUrl", "cover_url", "cover", "poster")
 	charge := strings.ToLower(xiangjiaoText(row, "chargeType", "charge_type"))
+	if charge == "" {
+		charge = strings.ToLower(xiangjiaoText(xiangjiaoMap(row, "commerce"), "chargeType", "charge_type"))
+	}
 	var vip *bool
 	if charge != "" {
 		value := charge != "free" && charge != "public"
@@ -306,23 +323,10 @@ func (d *Downloader) fetchXiangjiaoCatalogPage(ctx context.Context, page int, qu
 		}
 		items = filtered
 	}
-	return d.filterXiangjiaoFullyPlayable(ctx, items), false, nil
-}
-
-func xiangjiaoPaymentRequiredFromError(err error) bool {
-	if apiErr, ok := err.(*xiangjiaoHTTPError); ok {
-		return xiangjiaoPaymentRequired(apiErr)
-	}
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "会员") ||
-		strings.Contains(message, "购买") ||
-		strings.Contains(message, "付费") ||
-		strings.Contains(message, "payment") ||
-		strings.Contains(message, "purchase") ||
-		strings.Contains(message, "vip")
+	// Do not hide an entire drama just because its episodes require coins.
+	// The live API exposes access metadata per episode; detail parsing marks
+	// paid episodes as locked and playback still rejects purchase-required 403s.
+	return items, false, nil
 }
 
 func xiangjiaoEpisodeLocked(row map[string]any) bool {
@@ -345,16 +349,6 @@ func xiangjiaoEpisodeLocked(row map[string]any) bool {
 	}
 }
 
-type xiangjiaoPlayableCacheEntry struct {
-	playable bool
-	expires  time.Time
-}
-
-var (
-	xiangjiaoPlayableCache  sync.Map
-	xiangjiaoGuestRefreshMu sync.Mutex
-)
-
 func xiangjiaoEpisodeRecord(row map[string]any) (string, int, bool) {
 	explicitID := xiangjiaoText(row, "episode_id", "episodeId", "video_id", "videoId")
 	id := firstNonEmpty(explicitID, xiangjiaoText(row, "id"))
@@ -362,8 +356,6 @@ func xiangjiaoEpisodeRecord(row map[string]any) (string, int, bool) {
 		return "", 0, false
 	}
 	index := xiangjiaoInt(row, "episode_number", "episodeNumber", "episode_no", "episodeNo", "sort", "index")
-	// 有些接口会在详情根对象上同时放 id、drama_id 和 episodes 数组。
-	// 这种根对象不是一集，不能把整部剧的 ID 当成 episode_id。
 	if _, hasNestedEpisodes := row["episodes"]; hasNestedEpisodes && index <= 0 && explicitID == "" {
 		return "", 0, false
 	}
@@ -373,138 +365,7 @@ func xiangjiaoEpisodeRecord(row map[string]any) (string, int, bool) {
 	return id, index, true
 }
 
-func (d *Downloader) xiangjiaoDramaFullyPlayable(ctx context.Context, sourceID string) bool {
-	sourceID = strings.TrimSpace(sourceID)
-	if sourceID == "" {
-		return false
-	}
-	if cached, ok := xiangjiaoPlayableCache.Load(sourceID); ok {
-		entry := cached.(xiangjiaoPlayableCacheEntry)
-		if time.Now().Before(entry.expires) {
-			return entry.playable
-		}
-		xiangjiaoPlayableCache.Delete(sourceID)
-	}
-
-	raw, err := d.xiangjiaoJSON(ctx, http.MethodGet, "/api/dramas/"+url.PathEscape(sourceID)+"/episodes", nil, "")
-	if err != nil {
-		return false
-	}
-	seen := map[string]bool{}
-	var episodeIDs []string
-	explicitlyLocked := false
-	walkXiangjiaoMaps(xiangjiaoPayloadData(raw), func(row map[string]any) {
-		id, _, ok := xiangjiaoEpisodeRecord(row)
-		if !ok || seen[id] {
-			return
-		}
-		seen[id] = true
-		if xiangjiaoEpisodeLocked(row) {
-			explicitlyLocked = true
-		}
-		episodeIDs = append(episodeIDs, id)
-	})
-	if len(episodeIDs) == 0 {
-		return false
-	}
-	if explicitlyLocked {
-		xiangjiaoPlayableCache.Store(sourceID, xiangjiaoPlayableCacheEntry{
-			playable: false,
-			expires:  time.Now().Add(2 * time.Minute),
-		})
-		return false
-	}
-
-	// The old code resolved every episode serially under a 12-second context.
-	// A normal 20-episode drama could time out before its final episode and be
-	// hidden even when every episode was playable. Probe with bounded parallelism.
-	probeCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	// Episode session probes are bounded by this semaphore and the global request
-	// limiter, but should not queue one-by-one behind the source catalog gate.
-	// They still respect global concurrency, per-host backoff and request interval.
-	parallelCtx := context.WithValue(probeCtx, parallelCatalogProbeKey{}, true)
-	sem := make(chan struct{}, 3)
-	var wg sync.WaitGroup
-	var resultMu sync.Mutex
-	failed := false
-	paymentDenied := false
-	for _, episodeID := range episodeIDs {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-probeCtx.Done():
-				return
-			}
-			if _, err := d.xiangjiaoFullPlaybackManifest(parallelCtx, sourceID, id); err != nil {
-				resultMu.Lock()
-				failed = true
-				if xiangjiaoPaymentRequiredFromError(err) {
-					paymentDenied = true
-				}
-				resultMu.Unlock()
-				cancel()
-			}
-		}(episodeID)
-	}
-	wg.Wait()
-	resultMu.Lock()
-	playable := !failed && probeCtx.Err() == nil
-	shouldCacheDenied := paymentDenied
-	resultMu.Unlock()
-	if playable {
-		xiangjiaoPlayableCache.Store(sourceID, xiangjiaoPlayableCacheEntry{
-			playable: true,
-			expires:  time.Now().Add(30 * time.Minute),
-		})
-	} else if shouldCacheDenied {
-		// Cache only definite payment denials. Timeouts, mirror failures and
-		// transient API errors are retried on the next catalog refresh.
-		xiangjiaoPlayableCache.Store(sourceID, xiangjiaoPlayableCacheEntry{
-			playable: false,
-			expires:  time.Now().Add(2 * time.Minute),
-		})
-	}
-	return playable
-}
-
-func (d *Downloader) filterXiangjiaoFullyPlayable(ctx context.Context, items []Drama) []Drama {
-	if len(items) == 0 {
-		return items
-	}
-	allowed := make([]bool, len(items))
-	sem := make(chan struct{}, 3)
-	var wg sync.WaitGroup
-	for i := range items {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-			probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			defer cancel()
-			allowed[index] = d.xiangjiaoDramaFullyPlayable(probeCtx, items[index].SourceID)
-		}(i)
-	}
-	wg.Wait()
-
-	filtered := make([]Drama, 0, len(items))
-	for i, drama := range items {
-		if allowed[i] {
-			vip := false
-			drama.VIP = &vip
-			filtered = append(filtered, drama)
-		}
-	}
-	return filtered
-}
+var xiangjiaoGuestRefreshMu sync.Mutex
 
 func xiangjiaoEpisodeMarker(episodeID string) string {
 	return "xiangjiao-play://episode/" + url.PathEscape(strings.TrimSpace(episodeID))
@@ -523,12 +384,6 @@ func (d *Downloader) fetchXiangjiaoDetail(ctx context.Context, sourceID string) 
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return Drama{}, nil, fmt.Errorf("香蕉剧集 ID 为空")
-	}
-	probeCtx, probeCancel := context.WithTimeout(ctx, 20*time.Second)
-	fullyPlayable := d.xiangjiaoDramaFullyPlayable(probeCtx, sourceID)
-	probeCancel()
-	if !fullyPlayable {
-		return Drama{}, nil, fmt.Errorf("香蕉该剧未通过全集正片校验，已隐藏")
 	}
 	detailRaw, err := d.xiangjiaoJSON(ctx, http.MethodGet, "/api/dramas/"+url.PathEscape(sourceID), nil, "")
 	if err != nil {
@@ -689,7 +544,7 @@ func (d *Downloader) xiangjiaoFullPlaybackManifest(ctx context.Context, dramaID,
 					d.clearXiangjiaoGuestToken()
 					continue
 				}
-				if xiangjiaoPaymentRequired(apiErr) {
+				if apiErr.Status == http.StatusForbidden || xiangjiaoPaymentRequired(apiErr) {
 					return "", fmt.Errorf("香蕉该集需要会员或购买，服务端拒绝游客正片播放")
 				}
 			}
