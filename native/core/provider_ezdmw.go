@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const ezdmwBaseURL = "https://m.ezdmw.org"
+const ezdmwBaseURL = "https://www.ezdmw.org"
 const ezdmwPageSize = 20
 
 var ezdmwBaseMirrors = []string{ezdmwBaseURL}
