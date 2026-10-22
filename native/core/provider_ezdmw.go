@@ -458,10 +458,21 @@ func ezdmwUnescapePlayerText(raw string) string {
 	).Replace(html.UnescapeString(raw))
 }
 
+func ezdmwPlaylistURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.Contains(strings.ToLower(parsed.Path), "/index/listres/")
+}
+
 func ezdmwDirectMedia(rawHTML, pageURL string) string {
 	rawHTML = ezdmwUnescapePlayerText(rawHTML)
 	for _, tag := range ezdmwVideoTagPattern.FindAllString(rawHTML, -1) {
 		if address := ezdmwAttr(tag, "src", "data-src", "data-url"); address != "" {
+			// E站播放器的 listres 接口使用 .webp 后缀，但页面脚本明确交给 Hls.js 加载。
+			if strings.Contains(strings.ToLower(address), "/index/listres/") || strings.Contains(strings.ToLower(address), "/listres/") {
+				if media := resolveProviderURL(pageURL, address); isProviderHTTPMediaURL(media) {
+					return media
+				}
+			}
 			if media := normalizeProviderMediaURL(pageURL, address); media != "" && isProviderHTTPMediaURL(media) {
 				return media
 			}
