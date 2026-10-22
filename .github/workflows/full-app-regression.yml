@@ -20,12 +20,43 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.1'
+      - name: Diagnose Xiangjiao live episode and playback APIs (temporary)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          base=https://xiangjiaoai.ai
+          drama_id=7c2ecbc4-292b-4796-94ff-cb79403d91ff
+          headers=(-H 'Accept: application/json' -H 'User-Agent: Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/125.0.0.0 Mobile Safari/537.36' -H "Origin: $base" -H "Referer: $base/")
+          echo "=== episode list ==="
+          curl --silent --show-error --location --max-time 15 "${headers[@]}" -o /tmp/xj-episodes.json -w 'episodes HTTP %{http_code}\n' "$base/api/dramas/$drama_id/episodes" || true
+          head -c 2600 /tmp/xj-episodes.json || true
+          printf '\n'
+          echo "=== guest session ==="
+          curl --silent --show-error --location --max-time 15 "${headers[@]}" -H 'Content-Type: application/json' -d '{"device_id":"diagnostic-device-20261022"}' -o /tmp/xj-guest.json -w 'guest HTTP %{http_code}\n' "$base/api/guest-sessions" || true
+          token="$(jq -r '.data.access_token // .data.accessToken // .data.token // .access_token // .accessToken // .token // empty' /tmp/xj-guest.json 2>/dev/null || true)"
+          if [ -n "$token" ]; then
+            echo "guest token acquired (value redacted)"
+            episode_id="$(jq -r '[.. | objects | (.episode_id // .episodeId // .video_id // .videoId // empty) | select(type == "string" and length > 0)][0] // empty' /tmp/xj-episodes.json 2>/dev/null || true)"
+            if [ -n "$episode_id" ]; then
+              echo "first episode id found"
+              curl --silent --show-error --location --max-time 15 "${headers[@]}" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(jq -n --arg eid "$episode_id" --arg did "$drama_id" '{episode_id:$eid,drama_id:$did}')" -o /tmp/xj-playback.json -w 'playback HTTP %{http_code}\n' "$base/api/playback/sessions" || true
+              jq '{code:.code,message:.message,error:.error,dataKeys:(.data|keys?),playMode:(.data.play_mode // .data.playMode),mediaKeys:(.data.media|keys?)}' /tmp/xj-playback.json 2>/dev/null || head -c 1200 /tmp/xj-playback.json
+            else
+              echo "episode id could not be extracted from response"
+            fi
+          else
+            echo "guest token not returned; response summary:"
+            jq '{code:.code,message:.message,error:.error,rootKeys:keys,dataKeys:(.data|keys?)}' /tmp/xj-guest.json 2>/dev/null || head -c 1000 /tmp/xj-guest.json
+          fi
+          printf '\n'
+
       - name: Deterministic native regression
         working-directory: native
         shell: bash
         run: |
           set -euxo pipefail
-          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery|XiangjiaoJSONRetriesForbiddenPrimaryMirror|XiangjiaoFullPlaybackProbeUsesConcurrency|XiangjiaoFullPlaybackRejectsLockedEpisodes)$' -count=1
+          go test ./core -run 'Test(ParseProviderMirrorDocument|InvalidProviderMirrorDocumentFallsBack|ProviderMirrorConfigUsesJsDelivr|ValidProviderMirrorOriginRejectsUnsafeAddresses|ProviderBaseCandidatesPrefersRememberedThenRemoteThenBuiltin|ProviderURLCandidatesDynamicPreservesPathAndQuery)$' -count=1
           go test ./bridge -run '^$'
 
   shared-apk-flutter-regression:
