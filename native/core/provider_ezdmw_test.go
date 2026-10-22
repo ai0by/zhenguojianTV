@@ -31,6 +31,15 @@ func TestParseEZDMWEpisodeCountHandlesMissingCount(t *testing.T) {
 	}
 }
 
+func TestEZDMWNearbyTitleIgnoresHTMLComments(t *testing.T) {
+	raw := "<div><a href=\"/Index/bangumi/123.html\"><img src=\"/cover.jpg\" /></a><p><span><!-- 1.7万 --> </span>&nbsp;番剧甲</p></div>"
+	start := strings.Index(raw, "<a")
+	end := strings.Index(raw, "</a>") + len("</a>")
+	if got := ezdmwNearbyTitle(raw, start, end); got != "番剧甲" {
+		t.Fatalf("nearby title = %q, want 番剧甲", got)
+	}
+}
+
 func TestEZDMWDetailParsesAndDeduplicatesEpisodes(t *testing.T) {
 	body := "<section class=\"anthology\"><div class=\"line_button_ban\"></div><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/101.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/201.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/102.html\">第2集</a></section>"
 	chapters := parseEZDMWEpisodes(body, ezdmwBaseURL+"/show/123.html", "123")
