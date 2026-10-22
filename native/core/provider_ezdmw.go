@@ -16,7 +16,11 @@ import (
 const ezdmwBaseURL = "https://www.ezdmw.org"
 const ezdmwPageSize = 20
 
-var ezdmwBaseMirrors = []string{ezdmwBaseURL}
+var ezdmwBaseMirrors = []string{
+	"https://www.ezdmw.org",
+	"https://m.ezdmw.org",
+	"https://ezdmw.org",
+}
 
 var (
 	ezdmwDetailPathPattern = regexp.MustCompile("(?i)^/(?:show|Index/show|Index/detail|Index/bangumi|v)/([0-9]+)\\.html$")
@@ -35,7 +39,7 @@ var (
 
 func ezdmwMirrorHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
-	return host == "m.ezdmw.org"
+	return host == "m.ezdmw.org" || host == "www.ezdmw.org" || host == "ezdmw.org"
 }
 
 func ezdmwAttr(raw string, names ...string) string {
