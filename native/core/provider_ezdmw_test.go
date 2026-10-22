@@ -22,6 +22,15 @@ func TestEZDMWCatalogParsesAnimeCards(t *testing.T) {
 	}
 }
 
+func TestParseEZDMWEpisodeCountHandlesMissingCount(t *testing.T) {
+	if got := parseEZDMWEpisodeCount("暂无集数信息"); got != 0 {
+		t.Fatalf("missing episode count = %d, want 0", got)
+	}
+	if got := parseEZDMWEpisodeCount("更新到12"); got != 12 {
+		t.Fatalf("episode count = %d, want 12", got)
+	}
+}
+
 func TestEZDMWDetailParsesAndDeduplicatesEpisodes(t *testing.T) {
 	body := "<section class=\"anthology\"><div class=\"line_button_ban\"></div><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/101.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/201.html\">第1集</a><a class=\"circuit_switch_ban\" href=\"/Index/bangumi/102.html\">第2集</a></section>"
 	chapters := parseEZDMWEpisodes(body, ezdmwBaseURL+"/show/123.html", "123")
