@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+func sanitizeEZDMWDiagnostic(raw string) string {
+	pattern := regexp.MustCompile("(?i)(https?://[^\"'\\s]+)\\?[^"'\\s]*")
+	return pattern.ReplaceAllString(raw, "$1?REDACTED")
+}
+
 // TestEZDMWLiveCatalogDetailPlayback is an opt-in end-to-end smoke test against
 // the real E站 website. It is intentionally excluded from normal deterministic
 // regression runs because the upstream site and playback lines can change.
@@ -106,20 +111,24 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 					sanitized := regexp.MustCompile(`(?i)(https?://[^"'\s]+)\?[^"'\s]*`).ReplaceAllString(tag, "$1?REDACTED")
 				t.Logf("player-related attribute tag: %s", sanitized)
 			}
-			scriptPattern := regexp.MustCompile("(?is)<script\\b.*?</script>")
-			logged := 0
-			for _, script := range scriptPattern.FindAllString(body, -1) {
-				lower := strings.ToLower(script)
-				if strings.Contains(lower, "player") || strings.Contains(lower, "m3u8") || strings.Contains(lower, "video") {
-					sanitized := regexp.MustCompile(`(?i)(https?://[^"'\s]+)\?[^"'\s]*`).ReplaceAllString(script, "$1?REDACTED")
-					if len(sanitized) > 600 {
-						sanitized = sanitized[:600]
+			scriptSrcPattern := regexp.MustCompile(`(?is)<script\b[^>]*src=["']([^"']+)["'][^>]*>`)
+			for _, match := range scriptSrcPattern.FindAllStringSubmatch(body, -1) {
+				src := resolveProviderURL(chapters[0].PageURL, match[1])
+				if parsedSrc, parseErr := url.Parse(src); parseErr == nil {
+					lower := strings.ToLower(parsedSrc.Path)
+					if strings.Contains(lower, "player") || strings.Contains(lower, "video") || strings.Contains(lower, "play") {
+						t.Logf("player-related script src: %s%s", parsedSrc.Host, parsedSrc.Path)
 					}
-					t.Logf("player script sample: %s", sanitized)
-					logged++
-					if logged == 3 {
-						break
-					}
+				}
+			}
+			for _, key := range []string{"player_iframe", "player_url", "video_url", "m3u8", "DPlayer", "videojs", "Index/video", "iframe"} {
+				at := strings.Index(strings.ToLower(body), strings.ToLower(key))
+				if at >= 0 {
+					lo := at - 120
+					if lo < 0 { lo = 0 }
+					hi := at + 520
+					if hi > len(body) { hi = len(body) }
+					t.Logf("player context %q: %s", key, sanitizeEZDMWDiagnostic(body[lo:hi]))
 				}
 			}
 		}
