@@ -6,7 +6,7 @@ import (
 )
 
 func TestEZDMWCatalogParsesAnimeCards(t *testing.T) {
-	body := "<section id=\"some_drama\"><div class=\"item\"><a href=\"/show/123.html\"><img data-src=\"/cover/123.jpg\" /></a><p><a href=\"/show/123.html\">番剧甲</a></p><span>更新到12</span></div></section>"
+	body := "<section id=\"some_drama\"><div class=\"item\"><a href=\"/show/123.html\"><img data-src=\"/cover/123.jpg\" /></a><p>番剧甲</p><span>更新到12</span></div></section>"
 	items := parseEZDMWCatalogItems(body, ezdmwBaseURL+"/Index/search.html?searchText=x")
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
