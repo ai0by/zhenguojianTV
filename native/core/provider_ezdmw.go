@@ -23,8 +23,8 @@ var ezdmwBaseMirrors = []string{
 }
 
 var (
-	ezdmwDetailPathPattern = regexp.MustCompile("(?i)^/(?:show|Index/show|Index/detail|Index/bangumi|v)/([0-9]+)\\.html$")
-	ezdmwEpisodePathPattern = regexp.MustCompile("(?i)^/(?:Index/bangumi|v)/([0-9]+)\\.html$")
+	ezdmwDetailPathPattern = regexp.MustCompile("(?i)^/(?:show|Index/show|Index/detail|Index/bangumi|Index/video|v)/([0-9]+)\\.html$")
+	ezdmwEpisodePathPattern = regexp.MustCompile("(?i)^/(?:Index/bangumi|Index/video|v)/([0-9]+)\\.html$")
 	ezdmwAnchorPattern = regexp.MustCompile("(?is)<a\\b([^>]*)>(.*?)</a>")
 	ezdmwEpisodeCountPattern = regexp.MustCompile("(?i)(?:更新到|更新至)\\s*0*([0-9]+)|(?:共|全)\\s*0*([0-9]+)\\s*(?:集|话|期)|([0-9]+)\\s*集\\s*完结")
 	ezdmwMediaURLPattern = regexp.MustCompile("(?i)(?:https?:)?//[^\\\"'<>\\s]+?\\.(?:m3u8|mp4)(?:\\?[^\\\"'<>\\s]*)?")
@@ -324,10 +324,10 @@ func parseEZDMWEpisodes(raw, detailURL, sourceID string) []Chapter {
 		if episodeID == "" || seenIDs[episodeID] || !isProviderHTTPMediaURL(pageURL) {
 			continue
 		}
-		// E站详情页当前仍会输出旧的 /v/{id}.html 选集链接，但线上该路由
-		// 返回 404；相同分集的 /Index/bangumi/{id}.html 页面可正常访问。
-		if parsedPage, parseErr := url.Parse(pageURL); parseErr == nil && strings.HasPrefix(strings.ToLower(parsedPage.Path), "/v/") {
-			parsedPage.Path = "/Index/bangumi/" + episodeID + ".html"
+		// E站的 /Index/bangumi/ 页面是番剧/分集信息页，真正的播放线路
+		// 使用 /Index/video/{id}.html；旧 /v/ 链接也统一映射到该播放路由。
+		if parsedPage, parseErr := url.Parse(pageURL); parseErr == nil {
+			parsedPage.Path = "/Index/video/" + episodeID + ".html"
 			pageURL = parsedPage.String()
 		}
 		title := cleanText(inner)
