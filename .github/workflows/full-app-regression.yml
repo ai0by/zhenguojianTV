@@ -20,24 +20,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.1'
-      - name: Diagnose Xiangjiao live API (temporary)
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -u
-          for base in https://xiangjiaoai.ai https://xiangjiao01.com; do
-            echo "=== $base/api/home/hot ==="
-            curl --silent --show-error --location --max-time 15 \
-              -H 'Accept: application/json' \
-              -H 'User-Agent: Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/125.0.0.0 Mobile Safari/537.36' \
-              -H "Origin: $base" -H "Referer: $base/" \
-              -D /tmp/xiangjiao-headers -o /tmp/xiangjiao-body \
-              -w 'HTTP %{http_code}\n' "$base/api/home/hot" || true
-            sed -n '1,16p' /tmp/xiangjiao-headers || true
-            head -c 1800 /tmp/xiangjiao-body || true
-            printf '\n'
-          done
-
       - name: Deterministic native regression
         working-directory: native
         shell: bash
