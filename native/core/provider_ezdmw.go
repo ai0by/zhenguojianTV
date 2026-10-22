@@ -34,6 +34,7 @@ var (
 	ezdmwImageTagPattern = regexp.MustCompile("(?is)<img\\b[^>]*>")
 	ezdmwTitleEpisodeSuffix = regexp.MustCompile("(?i)\\s*第\\s*0*[0-9]+\\s*集.*$")
 	ezdmwTitleSiteSuffix = regexp.MustCompile("(?i)\\s*[-|_—·]*\\s*(?:E站弹幕网|E站动漫|E站)\\s*$")
+	ezdmwHTMLCommentPattern = regexp.MustCompile("(?s)<!--.*?-->")
 	ezdmwNumericIDPattern = regexp.MustCompile("^[0-9]{1,12}$")
 )
 
@@ -141,7 +142,8 @@ func ezdmwNearbyTitle(raw string, start, end int) string {
 		if distance > 600 || distance >= bestDistance {
 			continue
 		}
-		title := ezdmwCleanTitle(cleanText(raw[match[2]:match[3]]))
+		paragraph := ezdmwHTMLCommentPattern.ReplaceAllString(raw[match[2]:match[3]], " ")
+		title := ezdmwCleanTitle(cleanText(paragraph))
 		if title != "" {
 			bestDistance = distance
 			bestTitle = title
