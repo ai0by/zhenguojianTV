@@ -249,7 +249,7 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 		return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址，请刷新章节或确认站点访问权限", chapter.Source)
 	}
 	parsed, _ := url.Parse(media.URL)
-	if strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") {
+	if strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") || (chapter.Source == sourceEZDMW && ezdmwPlaylistURL(media.URL)) {
 		playlist, finalURL, err := d.fetchMediaPlaylist(ctx, media.URL, media.Referer)
 		if err != nil {
 			return providerMedia{}, fmt.Errorf("获取播放列表失败: %w", err)
