@@ -83,6 +83,29 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 					t.Logf("iframe candidate: %s%s", parsedFrame.Host, parsedFrame.Path)
 				}
 			}
+			for _, key := range []string{"在线播放", "主线线路", "备用线路", "line_button_ban", "circuit_switch_ban", "onclick", "player", "video", "m3u8"} {
+				at := strings.Index(strings.ToLower(body), strings.ToLower(key))
+				if at >= 0 {
+					start := at - 160
+					if start < 0 {
+						start = 0
+					}
+					end := at + 520
+					if end > len(body) {
+						end = len(body)
+					}
+					snippet := regexp.MustCompile(`(?i)(https?://[^"'\\s]+)\\?[^"'\\s]*`).ReplaceAllString(body[start:end], "$1?REDACTED")
+					t.Logf("player markup around %q: %s", key, snippet)
+				}
+			}
+			attrPattern := regexp.MustCompile(`(?is)<[^>]+(?:onclick|data-url|data-src)=["'][^"']+["'][^>]*>`)
+			for index, tag := range attrPattern.FindAllString(body, -1) {
+				if index == 10 {
+					break
+				}
+				sanitized := regexp.MustCompile(`(?i)(https?://[^"'\\s]+)\\?[^"'\\s]*`).ReplaceAllString(tag, "$1?REDACTED")
+				t.Logf("player-related attribute tag: %s", sanitized)
+			}
 			scriptPattern := regexp.MustCompile("(?is)<script\\b.*?</script>")
 			logged := 0
 			for _, script := range scriptPattern.FindAllString(body, -1) {
