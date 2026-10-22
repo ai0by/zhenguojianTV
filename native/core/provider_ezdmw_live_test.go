@@ -32,7 +32,7 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 	if err != nil {
 		searchURL := strings.TrimRight(d.providerBaseURL(sourceEZDMW), "/") + "/Index/search.html?searchText=" + url.QueryEscape("学生会也有洞")
 		if body, fetchErr := d.fetchProviderText(ctx, searchURL, ezdmwBaseURL+"/"); fetchErr == nil {
-			sectionPattern := regexp.MustCompile(`(?is)<(?:section|div)\\b[^>]*id=["']some_drama["'][^>]*>`)
+			sectionPattern := regexp.MustCompile(`(?is)<(?:section|div)\b[^>]*id=["']some_drama["'][^>]*>`)
 			sectionAt := sectionPattern.FindStringIndex(body)
 			if sectionAt == nil {
 				t.Logf("live search diagnostics: bytes=%d title=%q; no some_drama container; occurrences=%d", len(body), extractPageTitle(body), strings.Count(strings.ToLower(body), "some_drama"))
