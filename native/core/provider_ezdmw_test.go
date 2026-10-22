@@ -71,6 +71,15 @@ func TestEZDMWMediaFromPlayerFrameURL(t *testing.T) {
 	}
 }
 
+func TestEZDMWListResURLIsRecognizedAsPlaylist(t *testing.T) {
+	if !ezdmwPlaylistURL("https://player.ezdmw.com/index/listres/resource_name/test/key/test/sign/abc.webp?lineOne=true") {
+		t.Fatal("E站 listres URL with webp suffix should be treated as HLS")
+	}
+	if ezdmwPlaylistURL("https://cdn.example.test/cover.webp") {
+		t.Fatal("ordinary webp image should not be treated as HLS")
+	}
+}
+
 func TestEZDMWPlaybackParserHandlesDirectMediaAndIframe(t *testing.T) {
 	pageURL := ezdmwBaseURL + "/Index/bangumi/101.html"
 	raw := "<video><source src=\"https://cdn.example.test/episode.m3u8?token=one&amp;part=two\"></video>"
