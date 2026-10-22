@@ -132,6 +132,30 @@ func TestEZDMWLiveCatalogDetailPlayback(t *testing.T) {
 				}
 			}
 		}
+		for _, host := range []string{"https://m.ezdmw.org", "https://www.ezdmw.org"} {
+			probeURL := host + "/Index/video/" + strings.TrimPrefix(chapters[0].VideoURL, "ezdmw-play://") + ".html"
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+			if reqErr != nil {
+				t.Logf("direct host probe request build failed: %v", reqErr)
+				continue
+			}
+			req.Header.Set("User-Agent", userAgent)
+			req.Header.Set("Referer", host+"/")
+			resp, probeErr := d.client.Do(req)
+			if probeErr != nil {
+				t.Logf("direct host probe %s failed: %v", host, probeErr)
+				continue
+			}
+			probeBody, _ := io.ReadAll(io.LimitReader(resp.Body, 80000))
+			resp.Body.Close()
+			lowerBody := strings.ToLower(string(probeBody))
+			t.Logf("direct host probe %s: HTTP %d bytes=%d title=%q direct_media=%t iframes=%d video_tags=%d object_tags=%d embed_tags=%d m3u8=%t",
+				host, resp.StatusCode, len(probeBody), extractPageTitle(string(probeBody)),
+				parseEZDMWPlayerMedia(string(probeBody), probeURL) != "",
+				len(ezdmwIframePattern.FindAllString(string(probeBody), -1)),
+				strings.Count(lowerBody, "<video"), strings.Count(lowerBody, "<object"),
+				strings.Count(lowerBody, "<embed"), strings.Contains(lowerBody, ".m3u8"))
+		}
 		t.Fatalf("live E站 playback resolution failed: %v", err)
 	}
 	parsed, err := url.Parse(media.URL)
