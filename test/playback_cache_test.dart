@@ -1,15 +1,17 @@
-import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/playback_cache.dart';
 import 'package:duanju_app/playback_preloader.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'fixtures.dart';
 
 const _drama = Drama(id: 'hongguo:1', source: 'hongguo', title: '甲剧', episodes: 4);
 
 Episode _episode(int number) =>
     Episode({'id': '$number', 'title': '第$number集', 'currentEpisode': number}, number);
 
-class _Repo extends AppRepository {
+/// 只关心"预载 / 预缓存"这两个调用，其余能力沿用 `FixtureRepository`。
+class _Repo extends FixtureRepository {
   final preloads = <String>[];
   final precaches = <String>[];
   final precacheSessions = <String>[];

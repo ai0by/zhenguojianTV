@@ -919,6 +919,10 @@ class LocalStore extends ChangeNotifier {
       PlaybackPreferences.fromJson(
         Map<String, dynamic>.from(library['playback'] as Map? ?? {}),
       );
+      // 0.8.12：预缓存偏好也要过一遍校验，坏值直接拒掉整份备份。
+      PlaybackCachePreferences.fromJson(
+        Map<String, dynamic>.from(library['precache'] as Map? ?? {}),
+      );
       DownloadPreferences.fromJson(
         Map<String, dynamic>.from(library['downloadPreferences'] as Map? ?? {}),
       );
