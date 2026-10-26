@@ -109,7 +109,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('source-sheet-clear')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text(name).last);
+      // 0.8.11 起站源变多（新增四个苹果CMS 采集站），后面的条目在 390×844 上
+      // 会落到弹窗可视区之外；不先滚到可见位置，tap 会打空、弹窗随后被关掉，
+      // 再找 source-sheet-confirm 就直接失败。
+      final target = find.text(name).last;
+      await tester.ensureVisible(target);
+      await tester.pumpAndSettle();
+      await tester.tap(target);
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('source-sheet-confirm')));
       await tester.pumpAndSettle();
