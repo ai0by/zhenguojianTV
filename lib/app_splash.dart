@@ -137,15 +137,22 @@ class _AppSplashState extends State<AppSplash> {
 
 /// 开屏页视觉。
 ///
-/// 0.8.10：换成美术提供的成品开屏图（手机 1080×1920 / 电视 1920×1080），
-/// 不再用代码拼品牌块。图里已经有「真果鉴TV + 好片随心看」，
-/// 这里只额外叠一条不确定进度线，表示"在准备"而不是"卡住了"。
+/// 0.8.11：只留美术给的成品开屏图（手机 1080×1920 / 电视 1920×1080）。
+///
+/// 原来在图上叠了一条不确定进度线，用户要求"只保留图片，其他都去掉"，
+/// 已经移除。进度线本来是为了表达"在准备"而不是"卡住了"，
+/// 但开屏本身有 2.2 秒硬超时，最长也就停这么久，去掉不影响可用性。
 class _SplashSurface extends StatelessWidget {
   const _SplashSurface({required this.television});
 
   final bool television;
 
-  static const _accent = Color(0xFFFF765F);
+  /// 与开屏图顶部主色一致（手机图取样 #FEF5F5，电视图 #FDF7F7）。
+  ///
+  /// 图片解码要 1~2 帧，这期间 `Image` 是透明的。如果不铺一层同色底，
+  /// 会露出 Stack 下层的首页（深色），观感就是"闪一下黑"——
+  /// 用户反馈的"闪了一下以前的加载页面"有一部分就是这个。
+  static const _backdrop = Color(0xFFFEF5F5);
 
   /// 开屏是浅色画面，状态栏/导航栏图标要翻成深色，
   /// 否则深色主题下白色图标压在白底上完全看不见。
@@ -161,86 +168,19 @@ class _SplashSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: _overlay,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Image.asset(
-            television
-                ? 'assets/splash/splash_tv.jpg'
-                : 'assets/splash/splash_phone.jpg',
-            fit: BoxFit.cover,
-            filterQuality: FilterQuality.medium,
-            // 测试环境没有真实资源包，这里兜底成纯色底，不让异常冒到上层。
-            errorBuilder: (context, error, stack) =>
-                const ColoredBox(color: Color(0xFFFFF6F4)),
-          ),
-          Align(
-            // 手机竖版新图（0.8.10 第三批）从高度约 0.50 往下就是红色胶片带，
-            // 品牌橙压在红底上几乎看不见，所以手机改用**白色**细线，位置下移到
-            // 0.90 的深红区域；电视横版底部是浅色，继续用品牌橙放在 0.84。
-            alignment: Alignment(0, television ? .84 : .90),
-            child: SizedBox(
-              width: 132,
-              height: 3,
-              child: _SplashBar(color: television ? _accent : Colors.white),
-            ),
-          ),
-        ],
+      child: ColoredBox(
+        color: _backdrop,
+        child: Image.asset(
+          television
+              ? 'assets/splash/splash_tv.jpg'
+              : 'assets/splash/splash_phone.jpg',
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.medium,
+          // 测试环境没有真实资源包，这里兜底成纯色底，不让异常冒到上层。
+          errorBuilder: (context, error, stack) =>
+              const ColoredBox(color: _backdrop),
+        ),
       ),
     );
   }
-}
-
-/// 不确定进度条：一条循环滑动的短线，比 `CircularProgressIndicator` 更安静。
-class _SplashBar extends StatefulWidget {
-  const _SplashBar({required this.color});
-
-  final Color color;
-
-  @override
-  State<_SplashBar> createState() => _SplashBarState();
-}
-
-class _SplashBarState extends State<_SplashBar>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(2),
-    child: ColoredBox(
-      // 开屏底色是浅色，轨道用主色的低透明度，白 10% 会完全看不见。
-      color: widget.color.withValues(alpha: .16),
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          final progress = _controller.value;
-          // 线段在 0..1 之间来回滑动，宽度固定 38%。
-          final start = (progress * 1.38 - .38).clamp(0.0, 1.0);
-          return Align(
-            alignment: Alignment(-1 + start * 2, 0),
-            child: FractionallySizedBox(
-              widthFactor: .38,
-              child: Container(
-                height: 3,
-                decoration: BoxDecoration(
-                  color: widget.color,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    ),
-  );
 }

@@ -1330,7 +1330,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (widget.store.sources.isNotEmpty)
             item(
               Icons.live_tv_rounded,
-              _group.name,
+              // 0.8.11：侧栏固定写「站源」。
+              //
+              // 多选时 `_group.name` 是「剧场+AI+旧版」这种拼接串，
+              // 侧栏宽度只有十几个字，直接顶出去（用户反馈"外面显示 X果+X果，
+              // 超长不好展示"）。点进去就是站源设置页，名字不影响判断。
+              '站源',
               key: const ValueKey('tv-nav-source'),
               onPressed: _openSourceSheet,
             ),

@@ -2,6 +2,8 @@
 <resources>
     <color name="ic_launcher_background">#FFFFFF</color>
     <!-- 开屏底色：与 assets/splash 里浅色开屏图顶部一致，原生冷启动到 Flutter
-         首帧之间不会出现颜色跳变。 -->
-    <color name="splash_background">#FFF6F4</color>
+         首帧之间不会出现颜色跳变。
+         0.8.11：取样自实际图片（手机图顶部 #FEF5F5、电视图 #FDF7F7），
+         取两者的交集值，两张图都能接上。 -->
+    <color name="splash_background">#FEF5F5</color>
 </resources>

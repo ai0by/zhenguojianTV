@@ -56,16 +56,19 @@ var (
 	huangguoAISlugs     = []string{"recommend", "newest", "ai-duanju", "ai-manju", "ai-huanlian", "ai-mogai", "ranks/hot"}
 	huangguoAITypeNames = map[string]string{"recommend": "精选推荐", "newest": "最近上新", "ai-duanju": "AI成人短剧", "ai-manju": "AI成人漫剧", "ai-huanlian": "AI换脸", "ai-mogai": "AI魔改", "ranks/hot": "排行榜"}
 
-	reDetailHref      = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/detail/([^"'/?#]+)[^"']*)["'][^>]*>.*?</a>`)
-	reDramaCardStart  = regexp.MustCompile(`(?is)<div\b[^>]*class=["'][^"']*\bhg-drama-card\b[^"']*["'][^>]*>`)
-	reVideoCard       = regexp.MustCompile(`(?is)<article\b[^>]*class=["'][^"']*\bvideo-card\b[^"']*["'][^>]*>.*?</article>`)
-	reAnyArticle      = regexp.MustCompile(`(?is)<article\b[^>]*>.*?</article>`)
-	reHuangguoLink    = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/(?:series|video)/([^"'/?#]+)[^"']*)["'][^>]*>.*?</a>`)
-	reAIEpisodeLink   = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/video/[^"']+)["'][^>]*>.*?</a>`)
-	reTitleTag        = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-	reH1Tag           = regexp.MustCompile(`(?is)<h1[^>]*>(.*?)</h1>`)
-	reDescMeta        = regexp.MustCompile(`(?is)<meta\b[^>]*(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']+)["'][^>]*>`)
-	reEpisodeNumber   = regexp.MustCompile(`(?i)(?:第\s*0*(\d+)\s*(?:集|话|期)|(?:更新至|共|全)\s*0*(\d+)\s*(?:集|话|期)|(?:episode|ep)\s*#?\s*0*(\d+))`)
+	reDetailHref     = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/detail/([^"'/?#]+)[^"']*)["'][^>]*>.*?</a>`)
+	reDramaCardStart = regexp.MustCompile(`(?is)<div\b[^>]*class=["'][^"']*\bhg-drama-card\b[^"']*["'][^>]*>`)
+	reVideoCard      = regexp.MustCompile(`(?is)<article\b[^>]*class=["'][^"']*\bvideo-card\b[^"']*["'][^>]*>.*?</article>`)
+	reAnyArticle     = regexp.MustCompile(`(?is)<article\b[^>]*>.*?</article>`)
+	reHuangguoLink   = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/(?:series|video)/([^"'/?#]+)[^"']*)["'][^>]*>.*?</a>`)
+	reAIEpisodeLink  = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/video/[^"']+)["'][^>]*>.*?</a>`)
+	reTitleTag       = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	reH1Tag          = regexp.MustCompile(`(?is)<h1[^>]*>(.*?)</h1>`)
+	reDescMeta       = regexp.MustCompile(`(?is)<meta\b[^>]*(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']+)["'][^>]*>`)
+	// 0.8.11：补 `ep-2` / `ep_2` 这种 URL 里的集号写法。
+	// 黄果详情页的选集链接是 `/video/<id>/ep-<n>/`，原来只认 `ep 2`，
+	// 从链接推出来的集号全部落空，只能按 DOM 顺序编号。
+	reEpisodeNumber   = regexp.MustCompile(`(?i)(?:第\s*0*(\d+)\s*(?:集|话|期)|(?:更新至|共|全)\s*0*(\d+)\s*(?:集|话|期)|(?:episode|ep)\s*[-_#]?\s*0*(\d+))`)
 	reResolution      = regexp.MustCompile(`(?i)RESOLUTION\s*=\s*(\d+)x(\d+)`)
 	reBandwidth       = regexp.MustCompile(`(?i)(?:AVERAGE-)?BANDWIDTH\s*=\s*(\d+)`)
 	reDataHLS         = regexp.MustCompile(`(?is)data-hls=["']([^"']+)["']`)
@@ -269,14 +272,19 @@ func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string)
 	}
 	drama := huangguoDetailMetadata(body, detailURL, sourceHuangguoAI, sourceID)
 	title := drama.DisplayTitle()
-	// 优先用页面里的权威分集数据（videoInitialData.epPlaySrcs）。
-	// 刷页面上链接会把热搜榜、猜你喜欢里**别的剧**误当分集，
-	// 这正是"不同剧名播出同样内容"的根因。
-	episodes := parseAIVideoInitialEpisodes(body, detailURL)
-	if len(episodes) == 0 {
-		// 退路：从 HTML 扫分集链接（已排除推荐位区块）。
-		episodes = parseHuangguoAIEpisodes(body, detailURL, sourceID)
-	}
+	// 0.8.11 修复（用户反馈"外面显示 42 集，进内容页只有 2 集"）：
+	//
+	// 原来优先用 `videoInitialData.epPlaySrcs`，**有数据就不再扫 HTML**。
+	// 但站点改版后这个字段只下发部分集的直链（按需签发，实测有的剧只剩 2 条），
+	// 于是分集列表被截断成 2 集，而列表卡片的总集数来自 `data-ep-base`，
+	// 两边对不上。
+	//
+	// 现在反过来：**页面里的选集链接是权威的全量列表**（服务端渲染，
+	// 形如 `/video/<id>/ep-<n>/`），先扫它；`epPlaySrcs` 只作为
+	// "已经知道播放地址"的补充，按集号灌进对应分集。
+	htmlEpisodes := parseHuangguoAIEpisodes(body, detailURL, sourceID)
+	initialEpisodes := parseAIVideoInitialEpisodes(body, detailURL)
+	episodes := mergeHuangguoAIEpisodes(htmlEpisodes, initialEpisodes)
 	if len(episodes) == 0 {
 		if media := parseAIVideoURL(body, detailURL); media != "" {
 			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: media}}
@@ -919,7 +927,11 @@ func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisod
 		}
 		seen[key] = true
 		seen[fullURL] = true
-		idx := episodeIndex(title, 0)
+		idx := episodeIndex(key, 0)
+		if idx <= 0 {
+			// 链接里没带集号（第 1 集就是 `/video/<id>/`），退回按钮文字。
+			idx = episodeIndex(title, 0)
+		}
 		if idx <= 0 {
 			idx = len(episodes) + 1
 		}
@@ -1154,6 +1166,52 @@ func parseAIVideoInitialEpisodes(rawHTML, pageURL string) []providerEpisode {
 	}
 	sortProviderEpisodes(episodes)
 	return episodes
+}
+
+// 合并"页面选集链接"与"epPlaySrcs 直链"两份分集数据。
+//
+// [paged] 来自 HTML 里的选集区，是**全量**但通常不含播放地址；
+// [initial] 来自 videoInitialData，含播放地址但**可能只有部分集**。
+//
+// 规则：以 [paged] 为骨架（集数、顺序、页面链接都取自它），
+// 按集号把 [initial] 的直链灌进去；[paged] 没覆盖到的集再用 [initial] 补。
+// 只有 [paged] 为空时才整份退回 [initial]。
+func mergeHuangguoAIEpisodes(paged, initial []providerEpisode) []providerEpisode {
+	if len(paged) == 0 {
+		return initial
+	}
+	if len(initial) == 0 {
+		return paged
+	}
+	media := make(map[int]string, len(initial))
+	for _, ep := range initial {
+		if ep.HLS == "" || ep.Index <= 0 {
+			continue
+		}
+		if _, exists := media[ep.Index]; !exists {
+			media[ep.Index] = ep.HLS
+		}
+	}
+	merged := make([]providerEpisode, 0, len(paged)+len(initial))
+	covered := make(map[int]bool, len(paged))
+	for _, ep := range paged {
+		if ep.Index > 0 {
+			covered[ep.Index] = true
+			if ep.HLS == "" {
+				ep.HLS = media[ep.Index]
+			}
+		}
+		merged = append(merged, ep)
+	}
+	for _, ep := range initial {
+		if ep.Index <= 0 || covered[ep.Index] {
+			continue
+		}
+		covered[ep.Index] = true
+		merged = append(merged, ep)
+	}
+	sortProviderEpisodes(merged)
+	return merged
 }
 
 func sortProviderEpisodes(episodes []providerEpisode) {
