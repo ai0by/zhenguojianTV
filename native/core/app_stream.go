@@ -45,6 +45,8 @@ type nativeStreamServer struct {
 	address    string
 	sessions   map[string]*nativeStreamSession
 	server     *http.Server
+	// 分片级磁盘缓存（0.8.12），跨播放会话共享，见 `app_media_cache.go`。
+	media *nativeMediaCache
 }
 
 func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Response, error) {
@@ -55,12 +57,24 @@ func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Re
 
 var nativePlaylistURI = regexp.MustCompile(`URI="([^"]+)"`)
 
-func newNativeStreamServer(d *Downloader) (*nativeStreamServer, error) {
+// newNativeStreamServer 起一个本机流代理。
+//
+// `caches` 可选：传引擎级的分片缓存（0.8.12），让预缓存与播放共用同一份
+// 磁盘索引。不传时按 `d.cfg.dataDir` 自建一份（单测路径）。
+func newNativeStreamServer(d *Downloader, caches ...*nativeMediaCache) (*nativeStreamServer, error) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, errors.New("无法初始化本机播放器")
 	}
 	stream := &nativeStreamServer{downloader: d, address: "http://" + listener.Addr().String(), sessions: map[string]*nativeStreamSession{}}
+	for _, cache := range caches {
+		if cache != nil {
+			stream.media = cache
+		}
+	}
+	if stream.media == nil && d != nil {
+		stream.media = newNativeMediaCache(d.cfg.dataDir)
+	}
 	server := &http.Server{Handler: http.HandlerFunc(stream.nativeServe), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
 	stream.server = server
 	go func() { _ = server.Serve(listener) }()
@@ -220,6 +234,18 @@ func looksLikePlaylist(data []byte) bool {
 	return strings.HasPrefix(text, "#EXTM3U")
 }
 
+// nativeServeCached 直接把磁盘缓存的分片回给播放器。
+//
+// 用 `http.ServeContent` 是因为它已经处理好 Range / HEAD / Content-Length
+// —— 播放器切集时会先发 Range 探测，自己手写容易漏。
+func (stream *nativeStreamServer) nativeServeCached(writer http.ResponseWriter, request *http.Request, asset nativeStreamAsset) {
+	writer.Header().Set("Content-Type", asset.contentType)
+	if asset.etag != "" {
+		writer.Header().Set("ETag", asset.etag)
+	}
+	http.ServeContent(writer, request, "", time.Time{}, bytes.NewReader(asset.data))
+}
+
 func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
@@ -252,6 +278,19 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	stop := context.AfterFunc(session.ctx, cancel)
 	defer stop()
 	writer.Header().Set("Cache-Control", "no-store")
+	// 0.8.12：预缓存过的分片直接走磁盘，不再等上游。
+	//
+	// 只在这一处读缓存、**不在播放路径上写缓存** —— 写缓存全部由
+	// `precache` / `prefetch` 后台完成，播放热路径保持原样，风险最小。
+	//
+	// 命中后**不回填 `session.assets`**：那样一整集的分片会常驻内存
+	// （30 段 × 2MB = 60MB/会话），电视盒子上很容易被系统回收。
+	if len(asset.data) == 0 {
+		if cached, ok := stream.media.load(asset.address); ok {
+			stream.nativeServeCached(writer, request, cached)
+			return
+		}
+	}
 	if len(asset.data) > 0 && asset.total > int64(len(asset.data)) {
 		if stream.nativeServePrefix(ctx, writer, request, session, asset) {
 			return

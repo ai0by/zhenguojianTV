@@ -12,6 +12,7 @@ import 'app_theme.dart';
 import 'background_downloads.dart';
 import 'display_mode.dart';
 import 'local_store.dart';
+import 'playback_cache_screen.dart';
 import 'profiles_screen.dart';
 import 'app_build.dart';
 import 'sources_screen.dart';
@@ -247,6 +248,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+              // 播放预缓存（0.8.12）：手机和电视共用这一份设置。
+              ListTile(
+                key: const ValueKey('precache-setting'),
+                leading: const Icon(Icons.bolt_rounded),
+                title: const Text('播放预缓存'),
+                subtitle: Text(
+                  widget.store.playbackCachePreferences.enabled
+                      ? '预缓存 ${widget.store.playbackCachePreferences.episodeLabel}'
+                            ' · 上限 ${widget.store.playbackCachePreferences.limitLabel}'
+                      : '已关闭 · 上限 ${widget.store.playbackCachePreferences.limitLabel}',
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => PlaybackCacheScreen(
+                      repository: widget.repository,
+                      store: widget.store,
+                    ),
+                  ),
+                ),
+              ),
               if (widget.store.profile.admin) ...[
                 ListTile(
                   leading: const Icon(Icons.settings_ethernet_rounded),

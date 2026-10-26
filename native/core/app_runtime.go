@@ -117,6 +117,14 @@ type nativeInput struct {
 	PlaybackSession string `json:"playbackSession"`
 	StartMS         int64  `json:"startMs"`
 	DurationMS      int64  `json:"durationMs"`
+	// 预缓存（0.8.12）：`Entry` 是已预载好的本机播放地址，`Budget` 是
+	// 本次允许写入磁盘的字节数，`Limit` 是缓存容量上限，见 app_precache.go。
+	// `ReuseSession` 用来复用已预载的播放会话 —— 不能复用 `Session` 字段，
+	// 那个字段被读请求的"调用方标识"占用了（`_read` 会覆盖它）。
+	Entry        string `json:"entry"`
+	ReuseSession string `json:"reuseSession"`
+	Budget       int64  `json:"budget"`
+	Limit        int64  `json:"limit"`
 }
 
 type nativeCatalogResult struct {
@@ -167,6 +175,9 @@ type nativeEngine struct {
 	catalogSaveError error
 	sourceSaveError  error
 	covers           *nativeCoverCache
+	// 播放分片的磁盘缓存（0.8.12），引擎级持有：设置页要在**没播过任何东西**
+	// 的情况下也能读到占用与上限，所以不能挂在懒创建的流服务上。
+	media            *nativeMediaCache
 	stream           *nativeStreamServer
 	playbacks        map[string]nativePlaybackChoice
 	playbackMu       sync.Mutex
@@ -327,8 +338,20 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	engine.loadCatalogCache()
 	engine.loadSourceRecords()
 	engine.covers = newNativeCoverCache(directory, d)
+	engine.media = newNativeMediaCache(directory)
 	engine.downloads = newNativeDownloads(engine)
 	return engine, nil
+}
+
+// mediaCache 取引擎级的分片磁盘缓存，没初始化时按需补上
+// （单测里会直接构造 `nativeEngine`，不走 `newNativeEngine`）。
+func (engine *nativeEngine) mediaCache() *nativeMediaCache {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.media == nil {
+		engine.media = newNativeMediaCache(engine.directory)
+	}
+	return engine.media
 }
 
 func NativeRequest(raw string) (result string) {
@@ -410,10 +433,13 @@ func nativeDispatch(input nativeInput) (any, error) {
 		duration = 10 * time.Minute
 	} else if input.Action == "preload" {
 		duration = 15 * time.Second
+	} else if input.Action == "precache" {
+		// 整集预缓存要下几十 MB，给足时间；用户切走时由 `cancelPrecache` 中断。
+		duration = 3 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
-	if input.Action == "preload" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
+	if input.Action == "preload" || input.Action == "precache" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
 		work, finish, err := engine.beginRead(ctx, input)
 		if err != nil {
 			return nil, err
@@ -434,6 +460,15 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.downloads.controlBatchExpected(ctx, input.JobIDs, input.Command, input.ExpectedVersions)
 	case "preload":
 		return engine.nativePreload(ctx, input)
+	case "precache":
+		// 0.8.12：把整集分片落到磁盘，见 app_precache.go。
+		return engine.nativePrecache(ctx, input)
+	case "mediaCacheStats":
+		return engine.nativeMediaCacheStats(), nil
+	case "clearMediaCache":
+		return engine.nativeClearMediaCache(), nil
+	case "setMediaCacheLimit":
+		return engine.nativeSetMediaCacheLimit(input.Limit), nil
 	case "prepareHandoff":
 		return engine.nativeResolve(ctx, input)
 	case "cancelRead":

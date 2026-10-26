@@ -87,9 +87,11 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 	}
 	choice.streamSession = ""
 	{
+		// 先拿缓存再进锁：`mediaCache()` 自己会加 `engine.mu`，不能嵌套。
+		cache := engine.mediaCache()
 		engine.mu.Lock()
 		if engine.stream == nil {
-			engine.stream, err = newNativeStreamServer(engine.downloader)
+			engine.stream, err = newNativeStreamServer(engine.downloader, cache)
 		}
 		stream := engine.stream
 		engine.mu.Unlock()

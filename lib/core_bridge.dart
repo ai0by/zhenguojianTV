@@ -9,6 +9,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'playback_cache.dart';
 import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'local_store.dart';
@@ -121,6 +122,36 @@ abstract class AppRepository {
     int quality = 0,
     bool online = false,
   }) async => null;
+
+  /// 预缓存（0.8.12）：把这一集的**全部分片**落到磁盘。
+  ///
+  /// 与 [preload] 的分工：`preload` 只解析地址、预热开头几 MB 到内存，
+  /// 切集就没了；`precache` 写磁盘、跨会话复用，切过去整集都不用等。
+  ///
+  /// [session] / [entry] 传上一集 `preload` 拿到的会话与播放地址，
+  /// 可以省掉一次重复解析；会话失效时原生侧会自己重新解析。
+  /// 返回本次实际写入的字节数（已缓存过的分片会跳过）。
+  Future<int> precache(
+    Drama drama,
+    Episode episode, {
+    int quality = 0,
+    String session = '',
+    String entry = '',
+    int budget = 0,
+  }) async => 0;
+  Future<void> cancelPrecache() async {}
+
+  /// 磁盘缓存用量（预缓存占用 / 条目数 / 上限）。
+  Future<PlaybackCacheUsage> mediaCacheUsage() async =>
+      const PlaybackCacheUsage();
+
+  /// 清空预缓存。
+  Future<PlaybackCacheUsage> clearMediaCache() async =>
+      const PlaybackCacheUsage();
+
+  /// 调整预缓存容量上限（字节）。
+  Future<PlaybackCacheUsage> setMediaCacheLimit(int bytes) async =>
+      const PlaybackCacheUsage();
   Future<void> cancelCatalog() async {}
   Future<void> cancelSuggestions() async {}
   Future<void> cancelRecommendations() async {}
@@ -366,6 +397,49 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<void> cancelPreload() => _cancelReads('preload');
+
+  @override
+  Future<void> cancelPrecache() => _cancelReads('precache');
+
+  @override
+  Future<int> precache(
+    Drama drama,
+    Episode episode, {
+    int quality = 0,
+    String session = '',
+    String entry = '',
+    int budget = 0,
+  }) async {
+    final result = await _read('precache', {
+      'action': 'precache',
+      'drama': drama.toJson(),
+      'chapter': episode.raw,
+      'index': episode.number,
+      'quality': quality,
+      'reuseSession': session,
+      'entry': entry,
+      'budget': budget,
+    });
+    return (result['bytes'] as num?)?.toInt() ?? 0;
+  }
+
+  @override
+  Future<PlaybackCacheUsage> mediaCacheUsage() async =>
+      PlaybackCacheUsage.fromJson(
+        await _call({'action': 'mediaCacheStats'}),
+      );
+
+  @override
+  Future<PlaybackCacheUsage> clearMediaCache() async =>
+      PlaybackCacheUsage.fromJson(
+        await _call({'action': 'clearMediaCache'}),
+      );
+
+  @override
+  Future<PlaybackCacheUsage> setMediaCacheLimit(int bytes) async =>
+      PlaybackCacheUsage.fromJson(
+        await _call({'action': 'setMediaCacheLimit', 'limit': bytes}),
+      );
 
   @override
   Future<PlaybackPlan?> preload(
@@ -619,6 +693,7 @@ class NativeRepository extends AppRepository {
         'metadata',
         'resolve',
         'preload',
+        'precache',
         'prepareHandoff',
         'enqueueDownloads',
         'localPlayback',
@@ -648,6 +723,8 @@ class NativeRepository extends AppRepository {
         Duration(
           seconds: action == 'moveDownloads'
               ? 620
+              : action == 'precache'
+              ? 190
               : action == 'preload'
               ? 20
               : 70,
@@ -683,6 +760,7 @@ class NativeRepository extends AppRepository {
             'recommendations',
             'metadata',
             'preload',
+            'precache',
             'prepareHandoff',
           }.contains(input['action'])) {
         unawaited(

@@ -2321,6 +2321,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           detail.episodes[_episodeIndex + 1],
           quality: _quality,
         );
+        _schedulePrecache(detail);
         return;
       }
     }
@@ -2333,6 +2334,29 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _preloader.clear();
   }
 
+  /// 预缓存后续 N 集（0.8.12）。
+  ///
+  /// 集数取设置里的「预缓存集数」，0 表示关闭。这里只负责"排哪些集"，
+  /// 串行下载与去重由 `PlaybackPreloader.schedulePrecache` 负责。
+  ///
+  /// 为什么不在这里判网络：`_syncPreload` 前面已经用 `_autoPlayBlocked`
+  /// 拦掉了"移动网络 + 没允许自动播放"的情况，本地文件也在更早处返回，
+  /// 走到这里就是"确实在联网播放"，预缓存与正在播的流是同一份带宽预算。
+  void _schedulePrecache(DramaDetail detail) {
+    final preferences = widget.store.playbackCachePreferences;
+    final start = _episodeIndex + 1;
+    final end = math.min(start + preferences.episodes, detail.episodes.length);
+    if (!preferences.enabled || start >= end) {
+      _preloader.schedulePrecache(detail.drama, const [], quality: _quality);
+      return;
+    }
+    _preloader.schedulePrecache(
+      detail.drama,
+      detail.episodes.sublist(start, end),
+      quality: _quality,
+    );
+  }
+
   /// 预载下一部剧的第 1 集（需要先拿到其剧集列表）。
   Future<void> _preloadNextDrama(Drama next) async {
     try {
@@ -2343,6 +2367,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _preloader.prepare(
         detail.drama,
         detail.episodes.first,
+        quality: _quality,
+      );
+      // 0.8.12：下一部也顺手预缓存开头几集（同样受设置集数约束）。
+      final preferences = widget.store.playbackCachePreferences;
+      final end = math.min(preferences.episodes, detail.episodes.length);
+      _preloader.schedulePrecache(
+        detail.drama,
+        preferences.enabled && end > 0
+            ? detail.episodes.sublist(0, end)
+            : const [],
         quality: _quality,
       );
     } catch (_) {

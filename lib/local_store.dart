@@ -7,6 +7,7 @@ import 'local_profiles.dart';
 import 'local_snapshot.dart';
 import 'models.dart';
 import 'playback_preferences.dart';
+import 'playback_cache.dart';
 import 'download_preferences.dart';
 import 'catalog_sort.dart';
 import 'follow_state.dart';
@@ -264,6 +265,21 @@ class LocalStore extends ChangeNotifier {
     }
   }
 
+  /// 播放预缓存偏好（0.8.12）：预缓存集数与磁盘缓存上限。
+  ///
+  /// 与 `playback` 分开存：播放偏好是"每集都用"的即时设置，
+  /// 这里是"后台跑"的缓存策略，备份 / 迁移时也更方便单独处理。
+  PlaybackCachePreferences get playbackCachePreferences {
+    if (locked) return const PlaybackCachePreferences();
+    try {
+      return PlaybackCachePreferences.fromJson(
+        jsonDecode(_string(_key('precache')) ?? '{}') as Map<String, dynamic>,
+      );
+    } catch (_) {
+      return const PlaybackCachePreferences();
+    }
+  }
+
   CatalogView get catalogView {
     if (locked) return const CatalogView();
     try {
@@ -441,6 +457,12 @@ class LocalStore extends ChangeNotifier {
   Future<void> setPlaybackPreferences(PlaybackPreferences value) {
     PlaybackPreferences.fromJson(value.toJson());
     return _setting(_key('playback'), jsonEncode(value.toJson()));
+  }
+
+  /// 播放预缓存偏好（0.8.12）。
+  Future<void> setPlaybackCachePreferences(PlaybackCachePreferences value) {
+    PlaybackCachePreferences.fromJson(value.toJson());
+    return _setting(_key('precache'), jsonEncode(value.toJson()));
   }
 
   Future<void> setDownloadPreferences(DownloadPreferences value) {
@@ -832,6 +854,9 @@ class LocalStore extends ChangeNotifier {
             'downloadPreferences': jsonDecode(
               _string(_key('downloadPreferences', profile.id)) ?? '{}',
             ),
+            'precache': jsonDecode(
+              _string(_key('precache', profile.id)) ?? '{}',
+            ),
             'catalogView': jsonDecode(
               _string(_key('catalogView', profile.id)) ?? '{}',
             ),
@@ -951,6 +976,7 @@ class LocalStore extends ChangeNotifier {
         _key('downloadPreferences', profile.id): jsonEncode(
           library['downloadPreferences'] ?? {},
         ),
+        _key('precache', profile.id): jsonEncode(library['precache'] ?? {}),
         _key('catalogView', profile.id): jsonEncode(
           library['catalogView'] ?? {},
         ),

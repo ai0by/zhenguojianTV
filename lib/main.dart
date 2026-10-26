@@ -15,6 +15,7 @@ import 'app_theme.dart';
 import 'back_guard.dart';
 import 'home_screen.dart';
 import 'local_store.dart';
+import 'playback_cache.dart';
 import 'profiles_screen.dart';
 import 'media_library.dart';
 import 'package_smoke.dart';
@@ -123,6 +124,13 @@ class _AppBootstrapState extends State<AppBootstrap>
           store = LocalStore(preferences);
           repository.access = store;
           MediaLibrary.attach(repository, store!);
+          // 0.8.12：把用户设置的预缓存上限推给原生侧。
+          // 原生不持久化这个值（设置是 Dart 侧的事），启动时对齐一次即可。
+          unawaited(
+            repository
+                .setMediaCacheLimit(store!.playbackCachePreferences.limitMB << 20)
+                .catchError((Object _) => const PlaybackCacheUsage()),
+          );
           LanController.current?.dispose();
           final link = LanController(
             repository,
