@@ -226,6 +226,13 @@ class LocalStore extends ChangeNotifier {
   /// 播放页还有一层自动降级（连续两次拿不到首帧时自动切软解），
   /// 这里只是给用户一个"手动强制"的开关。
   bool get tvCompatMode => !locked && (_bool(_key('tvCompatMode')) ?? false);
+
+  /// 弹幕开关（0.8.11）：默认开启。
+  ///
+  /// 只有红果的剧集有弹幕（播放计划里带 `danmakuId`），其余站源开关无效、
+  /// 入口也不显示。关掉后不再发起弹幕请求。
+  bool get danmakuEnabled =>
+      !locked && (_bool(_key('danmakuEnabled')) ?? true);
   String get source {
     if (locked) return '';
     final value = _string(_key('source')) ?? '';
@@ -414,6 +421,9 @@ class LocalStore extends ChangeNotifier {
   /// 电视兼容模式开关（0.8.3）。
   Future<void> setTvCompatMode(bool value) =>
       _setting(_key('tvCompatMode'), value);
+  /// 弹幕开关（0.8.11）。
+  Future<void> setDanmakuEnabled(bool value) =>
+      _setting(_key('danmakuEnabled'), value);
   Future<void> setHideVip(bool value) => _setting(_key('hideVip'), value);
   Future<void> setSource(String value) {
     if (!allowsSource(value)) return Future.error(StateError('当前用户没有此站源权限'));

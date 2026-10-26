@@ -108,7 +108,8 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceDuanju51, sourceYeguo, sourceXiangjiao, sourceCloudFront, sourceEZDMW:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceDuanju51, sourceYeguo, sourceXiangjiao, sourceCloudFront, sourceEZDMW,
+		sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		return true
 	default:
 		return false
@@ -136,6 +137,16 @@ func canonicalProviderSource(source string) string {
 		return sourceXiangjiao
 	case "ezdmw", "e站", "e站动漫", "ezdmw.org", "m.ezdmw.org", "www.ezdmw.org":
 		return sourceEZDMW
+	// 0.8.11：苹果CMS 采集站。名字 / 域名都收进来，局域网同步与旧存档里的
+	// `huaguo:123` 才能正确回落到对应站源。
+	case "huaguo", "花果", "花生", "www.zywest263.com", "zywest263.com":
+		return sourceHuaguo
+	case "wangguo", "网果", "短剧网", "www.duanju2.com", "duanju2.com":
+		return sourceWangguo
+	case "faguo", "发果", "168影院", "www.xzyx168.com", "xzyx168.com":
+		return sourceFaguo
+	case "wuguo", "伍果", "五五", "www.duanju55.com", "duanju55.com":
+		return sourceWuguo
 	case "cloudfront":
 		return sourceCloudFront
 	default:
@@ -248,6 +259,8 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return d.fetchLegacyChapters(ctx, sourceID)
 	case sourceEZDMW:
 		return d.fetchEZDMWChapters(ctx, sourceID)
+	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
+		return d.fetchMaccmsChapters(ctx, canonicalProviderSource(source), sourceID)
 	default:
 		return "", nil, fmt.Errorf("unsupported provider source: %s", source)
 	}
@@ -285,6 +298,9 @@ func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string)
 	htmlEpisodes := parseHuangguoAIEpisodes(body, detailURL, sourceID)
 	initialEpisodes := parseAIVideoInitialEpisodes(body, detailURL)
 	episodes := mergeHuangguoAIEpisodes(htmlEpisodes, initialEpisodes)
+	// 最后一层兜底：页面选集区抓漏时，按「更新至 N 集」补齐，保证内页集数
+	// 和列表卡片一致（见 padHuangguoAIEpisodes 的注释）。
+	episodes = padHuangguoAIEpisodes(episodes, detailURL, sourceID, nativeEpisodeCount(drama.TotalEpisode))
 	if len(episodes) == 0 {
 		if media := parseAIVideoURL(body, detailURL); media != "" {
 			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: media}}
@@ -1212,6 +1228,50 @@ func mergeHuangguoAIEpisodes(paged, initial []providerEpisode) []providerEpisode
 	}
 	sortProviderEpisodes(merged)
 	return merged
+}
+
+// 按详情页的总集数把分集列表补全。
+//
+// 站点的选集区会随改版变化（折叠、懒加载、换 class），抓漏几集是常态；
+// 而「更新至 42 集」这种文案一直都在。列表卡片上的集数本来就来自这个数字，
+// 内页必须和它对齐，否则用户看到的就是"外面 42 集、进去 2 集"。
+//
+// 补出来的分集只带页面地址（`/video/<id>/ep-<n>/`），播放地址留空 ——
+// `resolveProviderMedia` 对黄果本来就是按 PageURL 现场取流的，
+// 所以补齐的集点进去照样能播，不会变成死链。
+func padHuangguoAIEpisodes(episodes []providerEpisode, detailURL, sourceID string, total int) []providerEpisode {
+	if total <= 0 || len(episodes) >= total {
+		return episodes
+	}
+	parsed, err := url.Parse(detailURL)
+	if err != nil || parsed.Host == "" {
+		return episodes
+	}
+	seen := make(map[int]bool, len(episodes))
+	for _, ep := range episodes {
+		if ep.Index > 0 {
+			seen[ep.Index] = true
+		}
+	}
+	origin := parsed.Scheme + "://" + parsed.Host
+	escaped := url.PathEscape(sourceID)
+	for i := 1; i <= total; i++ {
+		if seen[i] {
+			continue
+		}
+		link := fmt.Sprintf("%s/video/%s/ep-%d/", origin, escaped, i)
+		if i == 1 {
+			link = fmt.Sprintf("%s/video/%s/", origin, escaped)
+		}
+		episodes = append(episodes, providerEpisode{
+			Key:   fmt.Sprintf("ep-%d", i),
+			Title: fmt.Sprintf("第%d集", i),
+			URL:   link,
+			Index: i,
+		})
+	}
+	sortProviderEpisodes(episodes)
+	return episodes
 }
 
 func sortProviderEpisodes(episodes []providerEpisode) {

@@ -13,9 +13,17 @@ class SourceSite {
       id == '51duanju' ||
       id == 'yeguo' ||
       id == 'xiangjiao' ||
-      id == 'ezdmw';
-  bool get pagedSearch =>
-      id == 'huangju' || id == '51duanju' || id == 'yeguo' || id == 'ezdmw';
+      id == 'ezdmw' ||
+      // 苹果CMS 采集站（0.8.11）：网果的搜索页被 WAF 拦死（返回"安全验证"），
+      // 只走本地缓存搜索，所以不在这个列表里。
+      id == 'huaguo' ||
+      id == 'faguo' ||
+      id == 'wuguo';
+  bool get pagedSearch => switch (id) {
+    // 花果的搜索页不认 page 参数（第 2 页返回空结果），只给第一页。
+    'huangju' || '51duanju' || 'yeguo' || 'ezdmw' || 'faguo' || 'wuguo' => true,
+    _ => false,
+  };
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => switch (id) {
     'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
@@ -36,6 +44,11 @@ class SourceSite {
   static const yeguo = SourceSite('yeguo', '野果', '热播 · 全集正片校验');
   static const xiangjiao = SourceSite('xiangjiao', '香蕉', '热播 · 分集权限识别');
   static const ezdmw = SourceSite('ezdmw', 'E站', '动漫 · 新番 · 完结');
+  // 苹果CMS 采集站（0.8.11）。四个站都是整部剧一个视频，只有发果按集拆开。
+  static const huaguo = SourceSite('huaguo', '花果', '短剧 · 花生短剧');
+  static const wangguo = SourceSite('wangguo', '网果', '短剧 · 短剧网');
+  static const faguo = SourceSite('faguo', '发果', '短剧 · 168 影院');
+  static const wuguo = SourceSite('wuguo', '伍果', '短剧 · 五五短剧');
   static const huangguoVideo = SourceSite('huangguo-video', '剧场', '视频剧集');
   static const huangguoAI = SourceSite('huangguoai', 'AI', 'AI 短剧');
   static const cloudfront = SourceSite('cloudfront', '旧版', '旧 API 剧库');
@@ -52,6 +65,10 @@ class SourceSite {
     yeguo,
     xiangjiao,
     ezdmw,
+    huaguo,
+    wangguo,
+    faguo,
+    wuguo,
     huangguoVideo,
     huangguoAI,
     cloudfront,
@@ -72,6 +89,10 @@ class SourceSite {
           duanju51,
           yeguo,
           ezdmw,
+          huaguo,
+          wangguo,
+          faguo,
+          wuguo,
           huangguoVideo,
           huangguoAI,
           cloudfront,
@@ -306,6 +327,7 @@ class PlaybackPlan {
     this.routeIndex = 0,
     this.routeCount = 1,
     this.local = false,
+    this.danmakuId = '',
   });
   final String url;
   final Map<String, String> headers;
@@ -318,7 +340,12 @@ class PlaybackPlan {
   final int routeIndex;
   final int routeCount;
   final bool local;
+
+  /// 弹幕（0.8.11）：只有红果会返回这个 id，其余站源为空字符串。
+  /// 为空表示本集没有弹幕可看，播放器据此隐藏弹幕开关。
+  final String danmakuId;
   bool get hasAlternative => session.isNotEmpty && routeIndex + 1 < routeCount;
+  bool get supportsDanmaku => !local && session.isNotEmpty && danmakuId.isNotEmpty;
   factory PlaybackPlan.fromJson(Map<String, dynamic> json) => PlaybackPlan(
     url: json['url'] as String? ?? '',
     local: json['local'] == true,
@@ -336,6 +363,7 @@ class PlaybackPlan {
     routeCount: intValue(json['routeCount']) > 0
         ? intValue(json['routeCount'])
         : 1,
+    danmakuId: json['danmakuId'] as String? ?? '',
   );
 }
 

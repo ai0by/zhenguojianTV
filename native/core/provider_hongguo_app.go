@@ -47,6 +47,10 @@ type hongguoAppClient struct {
 	searchPending  map[string]*hongguoSearchCall
 	suggestions    map[string]hongguoSuggestionEntry
 	suggestPending map[string]*hongguoSuggestionCall
+	// 弹幕（0.8.11）：按 "剧集:视频:起:止" 缓存 5 分钟，失败缓存 15 秒，
+	// 避免同一段反复拖动时把请求打爆。
+	danmaku        map[string]hongguoDanmakuCacheEntry
+	danmakuPending map[string]*hongguoDanmakuCall
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
@@ -57,6 +61,7 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 			details: map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
+			danmaku: map[string]hongguoDanmakuCacheEntry{}, danmakuPending: map[string]*hongguoDanmakuCall{},
 		}
 	})
 	return downloader.hongguo
@@ -176,6 +181,19 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		request.Header.Set("Accept", "application/json")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
+		// 0.8.11：弹幕走红果的**评论接口**，它用的是另一套签名
+		// （X-Gorgon / X-Argus / X-Ladon），而且必须带这两个业务头，
+		// 少一个就返回空列表。上下文里带 hongguoCommentKey 时切过去。
+		comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
+		var commentNonce hongguoCommentNonce
+		if comment {
+			commentNonce, err = newHongguoCommentNonce()
+			if err != nil {
+				return nil, errors.New("无法准备红果弹幕请求")
+			}
+			request.Header.Set("Comment-Source", "601")
+			request.Header.Set("Server-Channel", "1000")
+		}
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
@@ -185,7 +203,9 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			now := time.Now()
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()
-			if signed {
+			if comment {
+				signHongguoCommentRequest(prepared, commentNonce, now)
+			} else if signed {
 				signHongguoAppRequest(prepared, body, prepared.URL.RawQuery, deviceID, now)
 			}
 		})

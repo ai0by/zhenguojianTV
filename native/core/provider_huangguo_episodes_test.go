@@ -87,3 +87,46 @@ func TestMergeHuangguoAIEpisodesFallsBackToInitialData(t *testing.T) {
 		t.Fatalf("退路分集数量 = %d，期望 2", len(merged))
 	}
 }
+
+// 选集区抓漏时，按详情页总集数补齐 —— 保证内页集数和列表卡片一致。
+func TestPadHuangguoAIEpisodesFillsToTotal(t *testing.T) {
+	paged := parseHuangguoAIEpisodes(
+		huangguoEpisodeListHTML("117", 2),
+		"https://huangguoai.com/detail/117/",
+		"117",
+	)
+	padded := padHuangguoAIEpisodes(paged, "https://huangguoai.com/detail/117/", "117", 42)
+	if len(padded) != 42 {
+		t.Fatalf("补齐后分集数量 = %d，期望 42", len(padded))
+	}
+	for i, ep := range padded {
+		if ep.Index != i+1 {
+			t.Fatalf("第 %d 条集号 = %d，期望 %d", i, ep.Index, i+1)
+		}
+	}
+	// 补齐出来的分集只带页面地址，播放地址留空（由 resolve 现场取流）。
+	if padded[41].HLS != "" {
+		t.Fatalf("补齐的第 42 集不应带直链，实际 %q", padded[41].HLS)
+	}
+	if !strings.HasSuffix(padded[41].URL, "/video/117/ep-42/") {
+		t.Fatalf("第 42 集页面地址 = %q", padded[41].URL)
+	}
+	// 第 1 集在站点上就是 /video/<id>/，不带 ep-1。
+	if !strings.HasSuffix(padded[0].URL, "/video/117/") {
+		t.Fatalf("第 1 集页面地址 = %q", padded[0].URL)
+	}
+}
+
+// 总集数未知（或已经够数）时不能凭空造分集。
+func TestPadHuangguoAIEpisodesLeavesCompleteListAlone(t *testing.T) {
+	paged := parseHuangguoAIEpisodes(
+		huangguoEpisodeListHTML("117", 42),
+		"https://huangguoai.com/detail/117/",
+		"117",
+	)
+	for _, total := range []int{0, 42, 30} {
+		if got := len(padHuangguoAIEpisodes(paged, "https://huangguoai.com/detail/117/", "117", total)); got != 42 {
+			t.Fatalf("total=%d 时补成了 %d 集，期望保持 42", total, got)
+		}
+	}
+}

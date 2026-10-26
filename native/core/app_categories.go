@@ -80,7 +80,7 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		return all, nil
 	case sourceDuanju51:
 		return append(all, duanju51Categories...), nil
-	case sourceYeguo, sourceXiangjiao, sourceEZDMW:
+	case sourceYeguo, sourceXiangjiao, sourceEZDMW, sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		return all, nil
 	}
 	engine.mu.Lock()

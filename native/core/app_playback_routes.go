@@ -15,6 +15,10 @@ type nativePlaybackChoice struct {
 	qualities     []int
 	streamSession string
 	created       time.Time
+	// 弹幕（0.8.11）：红果专属。播放会话建立时把剧集 id 和视频 id 记下来，
+	// 前端按会话拉弹幕，就不必再传一遍这两个 id（也避免传错）。
+	danmakuSeries string
+	danmakuVideo  string
 }
 
 func nativePlaybackChoices(media providerMedia, quality int) nativePlaybackChoice {
@@ -73,6 +77,7 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 		URL: media.URL, Headers: map[string]string{"User-Agent": userAgent, "Referer": media.Referer},
 		Key: hex.EncodeToString(media.CENCKey), Quality: media.Quality, Qualities: choice.qualities,
 		RouteIndex: choice.index, RouteCount: len(choice.media), Session: hex.EncodeToString(tokenBytes),
+		DanmakuID: choice.danmakuVideo,
 	}
 	if media.credentials != nil && !media.credentials.expires.IsZero() {
 		if !time.Now().Before(media.credentials.expires) {

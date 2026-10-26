@@ -95,6 +95,30 @@ void main() {
     expect(sources['ezdmw']?.pagedSearch, isTrue);
   });
 
+  // 0.8.11：新增四个苹果CMS 采集站。它们共用一套适配器，差异只在路由配置里，
+  // 但搜索能力不一样 —— 网果的搜索页被 WAF 拦死，花果的搜索页不认 page，
+  // 这两条如果哪天被"顺手统一"了，用户点搜索就会看到一个空列表或重复的第一页。
+  test('apple cms sources declare their real search capabilities', () {
+    final sources = {
+      for (final source in SourceSite.knownValues) source.id: source,
+    };
+    for (final id in ['huaguo', 'wangguo', 'faguo', 'wuguo']) {
+      expect(SourceSite.isAvailable(id), isTrue, reason: '$id 应可选');
+    }
+    expect(sources['huaguo']?.name, '花果');
+    expect(sources['wangguo']?.name, '网果');
+    expect(sources['faguo']?.name, '发果');
+    expect(sources['wuguo']?.name, '伍果');
+
+    expect(sources['huaguo']?.onlineSearch, isTrue);
+    expect(sources['huaguo']?.pagedSearch, isFalse);
+    expect(sources['wangguo']?.onlineSearch, isFalse);
+    expect(sources['faguo']?.onlineSearch, isTrue);
+    expect(sources['faguo']?.pagedSearch, isTrue);
+    expect(sources['wuguo']?.onlineSearch, isTrue);
+    expect(sources['wuguo']?.pagedSearch, isTrue);
+  });
+
   testWidgets(
     'source update prevents duplicate submits and can stop without losing cache',
     (tester) async {

@@ -9,6 +9,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'core_bridge.dart';
+import 'danmaku_controller.dart';
+import 'danmaku_overlay.dart';
 import 'app_layout.dart';
 import 'detail_screen.dart';
 import 'follow_state.dart';
@@ -1660,6 +1662,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   final _subscriptions = <StreamSubscription<dynamic>>[];
   DramaDetail? _detail;
   PlaybackPlan? _plan;
+
+  /// 弹幕（0.8.11）：只有红果的剧集有弹幕，控制器自己判断支持与否。
+  late final DanmakuController _danmaku;
+  bool _danmakuEnabled = true;
   String? _error;
   bool _loading = true;
   bool _ready = false;
@@ -1945,6 +1951,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _quality = preferences.quality;
     // 电视兼容模式（0.8.3）：用户手动强制软解时，从第一次 open 就生效。
     _softwareDecode = widget.store.tvCompatMode;
+    // 弹幕（0.8.11）：控制器自己判断"本集有没有弹幕"，这里只负责开关偏好。
+    _danmakuEnabled = widget.store.danmakuEnabled;
+    _danmaku = DanmakuController(widget.repository)
+      ..setEnabled(_danmakuEnabled);
     // 单剧模式（0.2.29）：从指定集开始播放（详情页/下载页点的是第几集）。
     _episodeIndex = widget.initialEpisodeIndex;
     _pendingStart = widget.initialPosition;
@@ -2216,6 +2226,25 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// - 「连播下一部」→ 下一部剧的第 1 集（需父级传入 `nextDrama`）。
   ///
   /// 不预载的情况：本地文件模式、单剧模式、加载中/出错、当前不在播放。
+  /// 弹幕（0.8.11）：把播放状态喂给弹幕控制器。
+  ///
+  /// 只在位置/缓冲/播放状态变化时调用（挂在既有 tick 上），不额外起定时器。
+  /// `available` 用"已经出过画面"来判断 —— 首帧之前不拉弹幕，
+  /// 否则换集瞬间会把上一集的弹幕闪出来。
+  void _syncDanmaku() {
+    final state = _player?.state;
+    if (state == null) return;
+    _danmaku.update(
+      position: state.position,
+      duration: state.duration,
+      speed: state.rate,
+      playing: state.playing,
+      buffering: state.buffering,
+      foreground: _foreground && !_closed,
+      available: _hasVideoFrame || state.playing,
+    );
+  }
+
   void _syncPreload() {
     if (_closed) return;
     // 0.7.3（XQ-0107）：移动网络下不自动播放时也不预加载，避免后台跑流量。
@@ -2538,6 +2567,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           // 选集网格等），是卡顿的直接来源之一。
           _refreshFullscreen();
           _tick.value++;
+          // 弹幕（0.8.11）：跟着播放位置推进时间窗。
+          _syncDanmaku();
           // 预载（0.2.31）：位置/缓冲变化时评估是否需要提前准备下一集/下一部。
           _syncPreload();
           // 局域网推送（0.6.4）：**位置推进后**才回报握手。
@@ -2762,6 +2793,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _closed = true;
+    _danmaku.dispose();
     // 0.7.5：进度预览与亮度通知器释放（两者都由本页 State 持有）。
     _seekPreview.dispose();
     // 局域网推送（0.6.4）：注销本页的"正在播放"注册，并回报接收端已退出。
@@ -3590,6 +3622,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       if (!_attemptAlive(player)) return;
       _detail = detail;
       _plan = plan;
+      // 弹幕（0.8.11）：换集后重挂计划，控制器会清空上一集的缓存。
+      _danmaku.setPlan(plan);
       _episodeIndex = index;
       // 详情就绪后上报，让父级知道本页还能否切下一集（决定滑动语义）。
       _reportEpisodeState();
@@ -3948,8 +3982,34 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 亮度不再用画面滤镜（0.7.8）：改调窗口亮度，滤镜层直接透传。
   Widget _applyBrightness(Widget child) => child;
 
-  Future<void> _setSpeed(double value) async {
+  /// 弹幕层（0.8.11）：盖在视频上。
+  ///
+  /// 放在 `_applyBrightness` 之内，保证亮度和弹幕一起受同一个变换影响；
+  /// `DanmakuOverlay` 自己带 `IgnorePointer`，单击/双击/长按全部穿透到下层手势层。
+  /// `aspectRatio` 未知（首帧前）时按竖版 9:16 兜底，拿到真实比例后自然重排。
+  Widget _withDanmaku(Widget video) => Stack(
+    fit: StackFit.expand,
+    children: [
+      video,
+      Positioned.fill(
+        child: DanmakuOverlay(
+          controller: _danmaku,
+          aspectRatio: _aspectRatio > 0 ? _aspectRatio : 9 / 16,
+        ),
+      ),
+    ],
+  );
+
+  /// 弹幕开关（0.8.11）：只有红果的剧集有这个按钮。
+  Future<void> _toggleDanmaku() async {
     if (_closed) return;
+    final next = !_danmakuEnabled;
+    setState(() => _danmakuEnabled = next);
+    _danmaku.setEnabled(next);
+    await widget.store.setDanmakuEnabled(next);
+  }
+
+  Future<void> _setSpeed(double value) async {    if (_closed) return;
     setState(() => _speed = value);
     await _interactions?.applySpeed();
     await widget.store.setPlaybackPreferences(
@@ -4863,11 +4923,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                   children: [
                     if (video != null)
                       _applyBrightness(
-                        Video(
-                          controller: video,
-                          controls: (_) => const SizedBox.shrink(),
-                          // 全屏时铺满整个屏幕。
-                          fit: BoxFit.contain,
+                        _withDanmaku(
+                          Video(
+                            controller: video,
+                            controls: (_) => const SizedBox.shrink(),
+                            // 全屏时铺满整个屏幕。
+                            fit: BoxFit.contain,
+                          ),
                         ),
                       )
                     else
@@ -5136,6 +5198,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             label: _qualityLabel,
                                             onPressed: _openQualityMenu,
                                           ),
+                                          // 弹幕开关（0.8.11）：只有红果剧集显示。
+                                          if (_plan?.supportsDanmaku ?? false)
+                                            _sideButton(
+                                              key: const ValueKey(
+                                                'fullscreen-danmaku',
+                                              ),
+                                              icon: _danmakuEnabled
+                                                  ? Icons
+                                                        .subtitles_rounded
+                                                  : Icons
+                                                        .subtitles_off_rounded,
+                                              label: _danmakuEnabled
+                                                  ? '弹幕'
+                                                  : '弹幕关',
+                                              onPressed: _toggleDanmaku,
+                                            ),
                                           _sideButton(
                                             key: const ValueKey(
                                               'fullscreen-episodes',
@@ -5315,10 +5393,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           widget.videoBuilder!(const SizedBox.shrink())
         else if (video != null && !_landscape)
           _applyBrightness(
-            Video(
-              controller: video,
-              controls: (_) => const SizedBox.shrink(),
-              fit: BoxFit.contain,
+            _withDanmaku(
+              Video(
+                controller: video,
+                controls: (_) => const SizedBox.shrink(),
+                fit: BoxFit.contain,
+              ),
             ),
           )
         else if (_landscape)
@@ -5769,6 +5849,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             label: _qualityLabel,
                                             onPressed: _openQualityMenu,
                                           ),
+                                          // 弹幕开关（0.8.11）：只有红果剧集显示。
+                                          if (_plan?.supportsDanmaku ?? false)
+                                            _sideButton(
+                                              key: const ValueKey(
+                                                'feed-danmaku',
+                                              ),
+                                              icon: _danmakuEnabled
+                                                  ? Icons
+                                                        .subtitles_rounded
+                                                  : Icons
+                                                        .subtitles_off_rounded,
+                                              label: _danmakuEnabled
+                                                  ? '弹幕'
+                                                  : '弹幕关',
+                                              onPressed: _toggleDanmaku,
+                                            ),
                                           _sideButton(
                                             key: const ValueKey('feed-episodes'),
                                             icon: Icons.grid_view_rounded,

@@ -9,6 +9,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'local_store.dart';
 import 'app_build.dart';
@@ -103,6 +104,17 @@ abstract class AppRepository {
   ) async => throw AppFailure('当前环境不支持资源设置');
   final catalogUpdates = CatalogUpdates();
   Future<void> cancelPreload() async {}
+
+  /// 弹幕（0.8.11）：按播放会话 + 时间窗拉取，只有红果支持。
+  ///
+  /// [PlaybackPlan.danmakuId] 为空表示本集没有弹幕，调用方应该先看
+  /// [PlaybackPlan.supportsDanmaku]，不要拿异常当"不支持"来判断。
+  Future<DanmakuPage> danmaku(
+    PlaybackPlan plan, {
+    required int startMs,
+    required int durationMs,
+  }) async => throw AppFailure('当前环境不支持弹幕');
+  Future<void> cancelDanmaku() async {}
   Future<PlaybackPlan?> preload(
     Drama drama,
     Episode episode, {
@@ -264,6 +276,32 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<void> cancelHandoff() => _cancelReads('handoff');
+
+  @override
+  Future<DanmakuPage> danmaku(
+    PlaybackPlan plan, {
+    required int startMs,
+    required int durationMs,
+  }) async {
+    _authorize('hongguo');
+    if (!plan.supportsDanmaku) {
+      throw AppFailure('本集暂不支持弹幕');
+    }
+    return DanmakuPage.fromJson(
+      await _read('danmaku', {
+        'action': 'danmaku',
+        'playbackSession': plan.session,
+        'startMs': startMs,
+        'durationMs': durationMs,
+      }),
+      episodeId: plan.danmakuId,
+      startMs: startMs,
+      durationMs: durationMs,
+    );
+  }
+
+  @override
+  Future<void> cancelDanmaku() => _cancelReads('danmaku');
 
   void _adminPermission() {
     if (access != null && (access!.locked || !access!.profile.admin)) {

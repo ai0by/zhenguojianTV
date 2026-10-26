@@ -35,6 +35,14 @@ Future<void> main(List<String> arguments) async {
     await runPackageSmoke(arguments);
     return;
   }
+  // 0.8.11：开屏图先解进图片缓存，再起界面。
+  //
+  // 不预加载的话，Flutter 首帧画出来时 `Image.asset` 还没解码完，用户看到的是
+  // "一层纯色 → 整张图突然出现"的硬切，就是反馈里的"开屏闪了一下"。
+  // 这段等待期间原生启动窗口显示的是同色底（`splash_background`），
+  // 所以观感上只是开屏图稍微晚一点点出现，不会跳。
+  final device = await AppDevice.detect();
+  await precacheSplashImage(device.television);
   runApp(const AppBootstrap());
 }
 

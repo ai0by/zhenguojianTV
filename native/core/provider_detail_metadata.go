@@ -100,5 +100,13 @@ func huangguoDetailMetadata(body, pageURL, source, sourceID string) Drama {
 	drama.Name, drama.Intro = drama.Title, drama.Desc
 	meta := cleanText(huangguoClassBlock(huangguoNonContent.ReplaceAllString(body, ""), "hg-web-detail__meta"))
 	drama.ReleaseStatus = releaseStatusFromRemark(meta)
+	// 0.8.11：详情页的「更新至 42 集 / 全 21 集」是**总集数**的权威来源。
+	//
+	// 分集列表一旦因为页面改版少抓了（用户反馈"外面 42 集、内页 2 集"），
+	// 这里拿到的数字就是补齐的依据 —— 见 padHuangguoAIEpisodes。
+	if total := episodeIndex(meta, 0); total > 0 {
+		drama.TotalEpisode = total
+		drama.EpisodeCount = total
+	}
 	return drama
 }

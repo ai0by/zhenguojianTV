@@ -135,13 +135,40 @@ class _AppSplashState extends State<AppSplash> {
   }
 }
 
+/// 把开屏图提前解进图片缓存。
+///
+/// 这是"开屏不闪"的关键一步：`Image.asset` 的解码是异步的，不预加载的话
+/// Flutter 首帧画出来时图片还没就绪，用户看到的是"一层纯色 → 突然出现整张图"
+/// 的硬切，也就是反馈里的"闪了一下"。
+///
+/// 在 `runApp` 之前调用，期间原生启动窗口显示的是同色底（`splash_background`），
+/// 所以多等的这一百来毫秒观感上就是"开屏图慢慢显出来"，不会跳。
+Future<void> precacheSplashImage(bool television) async {
+  final provider = AssetImage(
+    television ? 'assets/splash/splash_tv.jpg' : 'assets/splash/splash_phone.jpg',
+  );
+  final completer = Completer<void>();
+  void finish() {
+    if (!completer.isCompleted) completer.complete();
+  }
+
+  final stream = provider.resolve(ImageConfiguration.empty);
+  stream.addListener(
+    ImageStreamListener(
+      (image, synchronous) => finish(),
+      onError: (error, stack) => finish(),
+    ),
+  );
+  // 资源缺失 / 解码失败时不能卡住启动，最多等 2 秒就放行。
+  await completer.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+}
+
 /// 开屏页视觉。
 ///
-/// 0.8.11：只留美术给的成品开屏图（手机 1080×1920 / 电视 1920×1080）。
+/// 0.8.11：只留美术给的成品开屏图（手机 1080×1920 / 电视 1920×1080），
+/// 外加一条极细的加载线 —— 用户要求"只有图和加载信息"。
 ///
-/// 原来在图上叠了一条不确定进度线，用户要求"只保留图片，其他都去掉"，
-/// 已经移除。进度线本来是为了表达"在准备"而不是"卡住了"，
-/// 但开屏本身有 2.2 秒硬超时，最长也就停这么久，去掉不影响可用性。
+/// 图上不再有任何品牌块 / 文字 / 花哨动效，避免和图片本身打架。
 class _SplashSurface extends StatelessWidget {
   const _SplashSurface({required this.television});
 
@@ -149,9 +176,8 @@ class _SplashSurface extends StatelessWidget {
 
   /// 与开屏图顶部主色一致（手机图取样 #FEF5F5，电视图 #FDF7F7）。
   ///
-  /// 图片解码要 1~2 帧，这期间 `Image` 是透明的。如果不铺一层同色底，
-  /// 会露出 Stack 下层的首页（深色），观感就是"闪一下黑"——
-  /// 用户反馈的"闪了一下以前的加载页面"有一部分就是这个。
+  /// 预加载之后这一层基本看不到，但资源缺失 / 解码异常时它是最后的兜底，
+  /// 不能让下层深色首页露出来。
   static const _backdrop = Color(0xFFFEF5F5);
 
   /// 开屏是浅色画面，状态栏/导航栏图标要翻成深色，
@@ -170,17 +196,91 @@ class _SplashSurface extends StatelessWidget {
       value: _overlay,
       child: ColoredBox(
         color: _backdrop,
-        child: Image.asset(
-          television
-              ? 'assets/splash/splash_tv.jpg'
-              : 'assets/splash/splash_phone.jpg',
-          fit: BoxFit.cover,
-          filterQuality: FilterQuality.medium,
-          // 测试环境没有真实资源包，这里兜底成纯色底，不让异常冒到上层。
-          errorBuilder: (context, error, stack) =>
-              const ColoredBox(color: _backdrop),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.asset(
+              television
+                  ? 'assets/splash/splash_tv.jpg'
+                  : 'assets/splash/splash_phone.jpg',
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.medium,
+              // 测试环境没有真实资源包，这里兜底成纯色底，不让异常冒到上层。
+              errorBuilder: (context, error, stack) =>
+                  const ColoredBox(color: _backdrop),
+            ),
+            Align(
+              // 竖版图从高度 0.5 往下是红色胶片带，白线放 0.90 的深红区才看得见；
+              // 横版底部是浅色，品牌橙放在 0.84。
+              alignment: Alignment(0, television ? .84 : .90),
+              child: SizedBox(
+                width: 96,
+                height: 2,
+                child: _SplashBar(
+                  color: television ? const Color(0xFFFF765F) : Colors.white,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
+
+/// 加载指示：一条细线在轨道里缓慢滑动。
+///
+/// 比 `CircularProgressIndicator` 安静得多，也不会和开屏图抢注意力。
+/// 刻意做得又细又短（96×2），远看只是"有一点东西在动"，不喧宾夺主。
+class _SplashBar extends StatefulWidget {
+  const _SplashBar({required this.color});
+
+  final Color color;
+
+  @override
+  State<_SplashBar> createState() => _SplashBarState();
+}
+
+class _SplashBarState extends State<_SplashBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: BorderRadius.circular(1),
+    child: ColoredBox(
+      // 轨道用同色的低透明度：浅底上白 16% 几乎不可见，正好只留滑动的那一段。
+      color: widget.color.withValues(alpha: .16),
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          final progress = _controller.value;
+          // 线段在 0..1 之间来回滑动，宽度固定 38%。
+          final start = (progress * 1.38 - .38).clamp(0.0, 1.0);
+          return Align(
+            alignment: Alignment(-1 + start * 2, 0),
+            child: FractionallySizedBox(
+              widthFactor: .38,
+              child: Container(
+                height: 2,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    ),
+  );
 }
