@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -220,15 +221,25 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	// 原先这里还有一级第三方解析（djapi.999888456.xyz）。实测该接口
 	// 解密后固定返回 {"parse":0,"url":""}，多剧多轮均无地址，已移除，
 	// 避免用户等待一个必然失败的请求。
-	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；公开片源失败：%v；网页取流失败：%w", publicError(nativeErr), publicError(publicErr), pageErr)
+	//
+	// 0.8.14：红果对游客收紧了取流（App 正片接口回空、网页改 protectedPlayback、
+	// 公开片源退化成 10 秒预告），三条链路同时失效时给出可操作的提示，
+	// 而不是让用户对着一块"只能播 10 秒"的画面猜。
+	return providerMedia{}, fmt.Errorf(
+		"红果已开启播放保护，当前取不到正片（App：%v；公开片源：%v；网页：%v）。请换用其它站源观看该剧",
+		publicError(nativeErr), publicError(publicErr), pageErr)
 }
 
 // resolveHongguoPublicMedia 使用红果网页播放器同款的公开片源。
 //
-// 站点前端把免费试看集直接映射到 /video/public/{vid}/360p.mp4（见
-// player.3d3aa477ab.js 中的 "/video/public/" 分支），该地址不带签名、
-// 不带 Cookie，实测返回 video/mp4 且支持 Range。它只覆盖每部剧的前几集
-// （实测为前 3 集），因此仅作为 App 取流失败时的兜底，不能替代主链路。
+// 站点前端把公开集映射到 /video/public/{vid}/360p.mp4（见
+// player 的 "/video/public/" 分支），该地址不带签名、不带 Cookie，返回
+// video/mp4 且支持 Range。
+//
+// **0.8.14 起这里只作为最后兜底，而且必须校验时长**：2026-10-27 实测，
+// 这个 360p 已经从"完整正片"换成了**固定 10.00 秒的预告**（mvhd
+// duration=10000 / timescale=1000），旧链路把它当正片返回，于是每集只播
+// 10 秒就结束。现在先读 64KB 头部判断真实时长，明显短于正片的一律拒收。
 func (d *Downloader) resolveHongguoPublicMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
@@ -246,24 +257,41 @@ func (d *Downloader) resolveHongguoPublicMedia(ctx context.Context, videoID stri
 			continue
 		}
 		request.Header.Set("User-Agent", userAgent)
-		request.Header.Set("Range", "bytes=0-1")
+		// 多读一点：要顺带从 mp4 头部判断时长（见 hongguoPreviewMaxDuration）。
+		request.Header.Set("Range", "bytes=0-65535")
 		response, err := d.doCatalogRequestWithTimeout(request, providerTimeout)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		response.Body.Close()
 		if response.StatusCode != http.StatusPartialContent && response.StatusCode != http.StatusOK {
+			response.Body.Close()
 			lastErr = fmt.Errorf("红果公开片源不可用（HTTP %d）", response.StatusCode)
 			continue
 		}
 		contentType := strings.ToLower(response.Header.Get("Content-Type"))
 		if !strings.Contains(contentType, "video/") && !strings.Contains(contentType, "mp4") {
+			response.Body.Close()
 			lastErr = errors.New("红果公开片源返回的不是视频内容")
 			continue
 		}
+		prefix, readErr := io.ReadAll(io.LimitReader(response.Body, hongguoMediaProbeBytes))
+		response.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		duration, durationErr := hongguoMediaDurationFromPrefix(prefix)
+		if durationErr != nil {
+			// 读不出时长就按"未知"处理，不因此误伤正常片源。
+			duration = 0
+		}
+		if hongguoLooksLikePreview(duration) {
+			lastErr = fmt.Errorf("红果公开片源只有 %.0f 秒预告，不是正片", duration.Seconds())
+			continue
+		}
 		d.rememberProviderHost(sourceHongguo, base)
-		return providerMedia{URL: address, Referer: "", Quality: 360}, nil
+		return providerMedia{URL: address, Referer: "", Quality: 360, Duration: duration}, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("红果公开片源没有可用域名")

@@ -20,8 +20,8 @@ func newHongguoDeviceID() string {
 }
 
 // hongguoSignVersionName 是签名里参与指纹计算的客户端版本号，
-// 必须与 query 中的 version_name 保持一致。
-const hongguoSignVersionName = "7.3.5.32"
+// 必须与 query 中的 version_name 保持一致（两者共用 hongguoAppVersionName）。
+const hongguoSignVersionName = hongguoAppVersionName
 
 // 注意不是常见的"20 字节固定密钥异或"版本，而是 RC4 变体 + 位反转。
 func hongguoXGorgon(query string, body []byte, timestamp, random uint32) string {

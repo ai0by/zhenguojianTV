@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		},
 		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
 	}
-	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/multi_video_model/v1/", nil, payload)
+	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/multi_video_model/v1/", hongguoPlayerQuery(), payload)
 	if err != nil {
 		return providerMedia{}, err
 	}
@@ -54,6 +55,14 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	}
 	if len(model) == 0 {
 		return providerMedia{}, errors.New("红果 App 未返回该集播放信息")
+	}
+	// 0.8.14：`video_model` 自己就带了 video_list 与 video_duration，
+	// 先用它，省掉 fallback_api 那一跳网络请求（也少一处失败可能）。
+	if media, err := selectHongguoAppVideoList(model); err == nil {
+		if err := hongguoRejectPreview(media); err != nil {
+			return providerMedia{}, err
+		}
+		return media, nil
 	}
 	fallback := hongguoFallbackAddress(model["fallback_api"])
 	if fallback == "" {
@@ -70,7 +79,44 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	if len(info) == 0 {
 		return providerMedia{}, errors.New("红果 App 未返回该集片源清单")
 	}
-	return selectHongguoAppVideoList(info)
+	media, err := selectHongguoAppVideoList(info)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	if err := hongguoRejectPreview(media); err != nil {
+		return providerMedia{}, err
+	}
+	return media, nil
+}
+
+// hongguoRejectPreview 挡掉"只给预告"的片源（0.8.14）。
+//
+// 红果短剧单集 60~120 秒，预告固定 10 秒；`video_duration` 明显偏短时
+// 说明官方只给了预告，宁可报错也不要让用户以为能看全集。
+func hongguoRejectPreview(media providerMedia) error {
+	if hongguoLooksLikePreview(media.Duration) {
+		return fmt.Errorf("红果只返回了 %.0f 秒预告，未取得正片", media.Duration.Seconds())
+	}
+	return nil
+}
+
+// hongguoPlayerQuery 补齐真实客户端取流时带的 query 参数（0.8.14）。
+//
+// 2026-10-27 实测：缺这些参数时 /novel/player/multi_video_model/v1/ 恒定
+// 返回 HTTP 200 + 空 body（连续 35 次 0 命中），补齐后能偶发拿到
+// video_model。目录 / 详情接口不需要，所以只在取流时附加，避免影响它们。
+func hongguoPlayerQuery() url.Values {
+	return url.Values{
+		"channel":                 {"oppo_8662_64"},
+		"host_abi":                {"arm64-v8a"},
+		"dragon_device_type":      {"pad"},
+		"pv_player":               {hongguoAppVersionCode},
+		"compliance_status":       {"0"},
+		"need_personal_recommend": {"1"},
+		"player_so_load":          {"1"},
+		"is_android_pad_screen":   {"0"},
+		"rom_version":             {"BP2A.250605.031.A3+release-keys"},
+	}
 }
 
 // hongguoFallbackAddress 兼容 fallback_api 的三种形态：
@@ -140,8 +186,31 @@ func (downloader *Downloader) hongguoAppJSON(ctx context.Context, rawURL string)
 // （h264 > hevc/bytevc1 > bytevc2）。bytevc2 属于新编码，多数 TV 播放器
 // 无法解码，因此只在没有任何其它可用档位时才作为兜底，避免出现
 // "整部剧一集都播不了"。
+// hongguoVideoSeed 取解密种子（0.8.14）。
+//
+// `fallback_api` 那条链路的 key_seed 在 video_info.data 顶层；
+// 而 `video_model` 自己带 video_list 时，key_seed 有可能被放进
+// video_info / data / encrypt_info 里。这里按几个已知落点依次找，
+// 找不到就返回空串（调用方会当成"地址是明文"处理，不会崩）。
+func hongguoVideoSeed(info map[string]any) string {
+	if seed := mapString(info, "key_seed"); seed != "" {
+		return seed
+	}
+	for _, path := range [][]string{
+		{"video_info", "data"},
+		{"video_info"},
+		{"data"},
+		{"video_model"},
+	} {
+		if seed := mapString(nestedMap(info, path...), "key_seed"); seed != "" {
+			return seed
+		}
+	}
+	return ""
+}
+
 func selectHongguoAppVideoList(info map[string]any) (providerMedia, error) {
-	seed, _ := decodeHongguoBase64(mapString(info, "key_seed"))
+	seed, _ := decodeHongguoBase64(hongguoVideoSeed(info))
 	rows := hongguoVideoRows(info["video_list"])
 	if len(rows) == 0 {
 		return providerMedia{}, errors.New("红果 App 未返回可用清晰度")
