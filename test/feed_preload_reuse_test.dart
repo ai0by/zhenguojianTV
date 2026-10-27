@@ -113,6 +113,19 @@ int _currentPage(WidgetTester tester) {
   return (controller.page ?? controller.initialPage.toDouble()).round();
 }
 
+/// 取一个**落在视频画面内**的起手点（0.8.13）。
+///
+/// 小屏改成"视频 + 信息面板"两段式布局后，下半屏是可滚动的面板，
+/// 从那里起手只会滚动面板、不会切集/翻页；视频画面本身只有约 236 高，
+/// 正中的「播放」按钮与顶部 60px 禁滑条也要避开。
+Offset _videoPoint(WidgetTester tester) {
+  final stage = find.byKey(const ValueKey('feed-stage'));
+  final rect = stage.evaluate().isEmpty
+      ? tester.getRect(find.byType(VerticalFeedScreen))
+      : tester.getRect(stage);
+  return rect.centerLeft + const Offset(24, 0);
+}
+
 void main() {
   late LocalStore store;
 
@@ -148,12 +161,9 @@ void main() {
     repo.resolves.clear();
     repo.releases.clear();
 
-    await tester.fling(
-      find.byType(PageView),
-      const Offset(0, -400),
-      1200,
-      initialOffset: const Offset(210, 500),
-    );
+    // 0.8.13：小屏改了两段式布局，起点必须落在视频画面内，
+    // 否则手势只会滚动下方信息面板、不会翻页。
+    await tester.flingFrom(_videoPoint(tester), const Offset(0, -400), 1200);
     await _pump(tester, 120);
 
     final secondPage = _currentPage(tester);
@@ -210,14 +220,8 @@ void main() {
     expect(repo.preloads, contains('甲剧2'), reason: '应预加载第 2 集');
 
     repo.resolves.clear();
-    await tester.fling(
-      find.byType(PageView).evaluate().isEmpty
-          ? find.byType(VerticalFeedScreen)
-          : find.byType(PageView),
-      const Offset(0, -400),
-      1200,
-      initialOffset: const Offset(210, 500),
-    );
+    // 0.8.13：同上，起点取视频画面左侧空白处。
+    await tester.flingFrom(_videoPoint(tester), const Offset(0, -400), 1200);
     await _pump(tester, 120);
 
     expect(repo.resolves, isEmpty, reason: '切下一集不应重新解析');

@@ -5984,6 +5984,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       return Column(
         children: [
           SizedBox(
+            // 测试用：手势起点要落在画面内（见 `feed_horizontal_swipe_test`）。
+            key: const ValueKey('feed-stage'),
             width: constraints.maxWidth,
             height: videoHeight,
             child: stage,

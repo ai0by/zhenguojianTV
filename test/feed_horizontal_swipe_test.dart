@@ -63,6 +63,20 @@ int _currentPage(WidgetTester tester) {
   return (controller.page ?? controller.initialPage.toDouble()).round();
 }
 
+/// 取一个**落在视频画面内**的起手点（0.8.13）。
+///
+/// 小屏改成"视频 + 信息面板"两段式布局后，下半屏是可滚动的面板，
+/// 从那里起手只会滚动面板、不会翻页；而视频画面只有约 236 高，
+/// 正中的「播放」按钮、顶部的 60px 禁滑条也不能碰。
+/// 所以这里读画面实际矩形，取左侧中点再往内挪 24px。
+Offset _videoPoint(WidgetTester tester) {
+  final stage = find.byKey(const ValueKey('feed-stage'));
+  final rect = stage.evaluate().isEmpty
+      ? tester.getRect(find.byType(VerticalFeedScreen))
+      : tester.getRect(stage);
+  return rect.centerLeft + const Offset(24, 0);
+}
+
 void main() {
   late LocalStore store;
 
@@ -111,7 +125,7 @@ void main() {
 
     final first = _currentPage(tester);
     await tester.dragFrom(
-      const Offset(210, 120),
+      _videoPoint(tester),
       const Offset(150, 40),
       touchSlopX: 0,
       touchSlopY: 0,
@@ -159,7 +173,7 @@ void main() {
     await _pump(tester, 20);
 
     final first = _currentPage(tester);
-    final gesture = await tester.startGesture(const Offset(210, 120));
+    final gesture = await tester.startGesture(_videoPoint(tester));
     await gesture.moveBy(const Offset(0, 30));
     await tester.pump(const Duration(milliseconds: 16));
     await gesture.moveBy(const Offset(120, -8));
@@ -206,11 +220,12 @@ void main() {
     await _pump(tester, 20);
 
     final first = _currentPage(tester);
-    await tester.fling(
-      find.byType(PageView),
+    // 手势必须从**画面**内起手：小屏两段式布局下，下半屏是信息面板的列表，
+    // 从那里起手只会滚动面板、不会翻页。
+    await tester.flingFrom(
+      _videoPoint(tester),
       const Offset(0, -400),
       1200,
-      initialOffset: const Offset(210, 120),
     );
     await _pump(tester, 120);
     final after = _currentPage(tester);
