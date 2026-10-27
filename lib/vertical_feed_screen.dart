@@ -4421,12 +4421,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       return;
     }
     final columns = _episodeGridColumns;
-    // 让网格滚动到当前集附近（网格高度固定，先按行号估算偏移）。
+    // 让网格滚动到当前集附近。
+    //
+    // 0.8.14：行高改成按实际格宽算（原来是写死的 76，6 列时偏差明显，
+    // 长剧打开选集经常停在错误的位置）。格宽 = (可用宽 - 间距) / 列数，
+    // 行高 = 格宽 / childAspectRatio + 行间距。
+    const gridPadding = 16.0;
+    const gridSpacing = 10.0;
+    const cellAspect = 1.5;
+    final gridWidth = MediaQuery.sizeOf(context).width - gridPadding * 2;
+    final cellWidth =
+        (gridWidth - gridSpacing * (columns - 1)) / columns;
+    final rowExtent = cellWidth / cellAspect + gridSpacing;
     final gridController = ScrollController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!gridController.hasClients) return;
       final row = currentIndex ~/ columns;
-      const rowExtent = 76.0;
       final target = (row * rowExtent - rowExtent).clamp(
         0.0,
         gridController.position.maxScrollExtent,
@@ -4508,11 +4518,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     if (value != null && mounted) await _playEpisode(value);
   });
 
-  /// 选集网格列数：竖屏 4 列、横屏 8 列（横屏横向空间更大）。
+  /// 选集网格列数：竖屏 6 列、横屏 8 列（横屏横向空间更大）。
+  ///
+  /// 0.8.14：竖屏从 5 列提到 6 列 —— 短剧动辄几十上百集，6 列一屏能多看到
+  /// 一整行，和红果的密度更接近；窄屏（<400）仍用 5 列，免得数字挤成一团。
   int get _episodeGridColumns {
     final size = MediaQuery.sizeOf(context);
     if (size.width > size.height) return 8;
-    return size.width >= 400 ? 5 : 4;
+    return size.width >= 400 ? 6 : 5;
   }
 
   void _toast(String message) {
@@ -5686,12 +5699,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                           if (_canPush) _pushButton(),
                           // 0.8.14：小屏把全屏按钮放到画面右下角。
                           if (staged) _stageFullscreenButton(),
-                          // 中央播放/暂停按钮（0.8.14）。
+                          // 中央播放按钮：**只在暂停时显示**。
                           //
-                          // 暂停时一直显示；播放中只在控件层可见时显示 ——
-                          // 也就是"点一下画面中间就出现"，与红果短剧一致。
-                          // 播放中常驻会一直挡住画面，所以不做常驻。
-                          if ((!(state?.playing ?? false) || visible) &&
+                          // 0.8.14 试过"播放中也显示（点画面就出现）"，结果
+                          // 这个按钮正好压在画面正中，把双击暂停的手势全吃了
+                          // —— `feed_stall_recovery_test` 的"双击后应处于暂停态"
+                          // 直接红。按钮是 IconButton，会拦下点击，没法让双击穿透。
+                          // 所以维持原逻辑：暂停时给大按钮，播放中靠底部控件。
+                          if (!(state?.playing ?? false) &&
                               !_loading &&
                               _error == null &&
                               !_panelOpen)
