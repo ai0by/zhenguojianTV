@@ -45,68 +45,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _busy = false;
   String? _message;
 
-  /// 红果登录态（0.8.14）。
-  ///
-  /// 红果对匿名访问只放 10 秒预告，正片需要登录。这里让用户把网页登录后
-  /// 的 Cookie 粘进来，交给原生侧带到取流请求上（见 provider_hongguo_cookie.go）。
-  Future<void> _editHongguoCookie() async {
-    final controller = TextEditingController(text: widget.store.hongguoCookie);
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('红果登录态'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '红果未登录时只能看 10 秒预告。\n'
-              '用浏览器打开 hongguoduanju.com 并登录，'
-              '在开发者工具 → Network 里复制请求头 Cookie 的整行内容粘到这里。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              minLines: 3,
-              maxLines: 6,
-              style: const TextStyle(fontSize: 12),
-              decoration: const InputDecoration(
-                hintText: 'sessionid=...; ttwid=...',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, ''),
-            child: const Text('清除'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (value == null || !mounted) return;
-    await widget.store.setHongguoCookie(value);
-    if (!mounted) return;
-    await widget.repository.setHongguoCookie(widget.store.hongguoCookie);
-    if (!mounted) return;
-    setState(() {
-      _message = widget.store.hongguoCookie.isEmpty
-          ? '已清除红果登录态'
-          : '红果登录态已保存';
-    });
-  }
-
   Future<void> _chooseTheme() async {
     final selected = await showDialog<String>(
       context: context,
@@ -331,19 +269,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
-              ),
-              // 红果登录态（0.8.14）：红果对匿名访问只给 10 秒预告。
-              ListTile(
-                key: const ValueKey('hongguo-cookie-setting'),
-                leading: const Icon(Icons.lock_outline_rounded),
-                title: const Text('红果登录态'),
-                subtitle: Text(
-                  widget.store.hongguoCookie.isEmpty
-                      ? '未配置 · 红果正片需要登录后才能取到'
-                      : '已配置 · 过期后重新粘贴即可',
-                ),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: _editHongguoCookie,
               ),
               if (widget.store.profile.admin) ...[
                 ListTile(

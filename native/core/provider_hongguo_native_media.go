@@ -27,6 +27,10 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
+	// 0.8.14：取流接口只认服务端注册过的设备。本地随机生成的 device_id 会被
+	// 静默拒绝（200 + 空正文），所以先保证设备已注册（见 provider_hongguo_device.go）。
+	// 注册失败不阻断：退回旧设备继续试，让上层错误信息带上真实原因。
+	deviceErr := downloader.ensureHongguoDevice(ctx)
 	payload := map[string]any{
 		"biz_param": map[string]any{
 			"detail_page_version":       0,
@@ -54,6 +58,10 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		}
 	}
 	if len(model) == 0 {
+		// 空正文最常见的原因是设备没注册成功（服务端不认这个 device_id）。
+		if deviceErr != nil {
+			return providerMedia{}, fmt.Errorf("红果设备注册失败（%v），该集播放信息为空", deviceErr)
+		}
 		return providerMedia{}, errors.New("红果 App 未返回该集播放信息")
 	}
 	// 0.8.14：`video_model` 自己就带了 video_list 与 video_duration，

@@ -36,16 +36,28 @@ type hongguoCatalogCursor struct {
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
+// hongguoCatalogStateVersion 是红果 App 侧状态的版本号。
+//
+// 1 → 2（0.8.14）：多了 Registered 字段。Version 1 里存的 DeviceID 是本地
+// 随机生成的，服务端不认（取流返回空正文），所以旧状态必须丢弃重注册。
+const hongguoCatalogStateVersion = 2
+
 type hongguoCatalogState struct {
-	Version   int                             `json:"version"`
-	DeviceID  string                          `json:"deviceId"`
-	InstallID string                          `json:"installId"`
-	Feeds     map[string]hongguoCatalogCursor `json:"feeds"`
+	Version   int    `json:"version"`
+	DeviceID  string `json:"deviceId"`
+	InstallID string `json:"installId"`
+	// Registered 表示 DeviceID/InstallID 是向服务端注册过的真实设备号。
+	// 0.8.14 之前这两个值是本地随机生成的，服务端不认 —— 取流接口会返回
+	// 200 + 空正文。旧的持久化数据（Version 1）一律视为未注册，重新注册。
+	Registered bool                            `json:"registered,omitempty"`
+	Feeds      map[string]hongguoCatalogCursor `json:"feeds"`
 }
 
 type hongguoAppClient struct {
-	mu             sync.Mutex
-	catalogMu      sync.Mutex
+	mu        sync.Mutex
+	catalogMu sync.Mutex
+	// deviceMu 串行化游客设备注册，避免并发取流时重复注册（0.8.14）。
+	deviceMu       sync.Mutex
 	baseURL        string
 	state          hongguoCatalogState
 	details        map[string]hongguoDetailEntry
@@ -64,7 +76,7 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 	downloader.hongguoOnce.Do(func() {
 		downloader.hongguo = &hongguoAppClient{
 			baseURL: hongguoAppBaseURL,
-			state:   hongguoCatalogState{Version: 1, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
+			state:   hongguoCatalogState{Version: hongguoCatalogStateVersion, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
 			details: map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
@@ -87,7 +99,7 @@ func cloneHongguoCatalogState(state *hongguoCatalogState) *hongguoCatalogState {
 }
 
 func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) {
-	if state == nil || state.Version != 1 || !hongguoNumericID.MatchString(state.DeviceID) || !hongguoNumericID.MatchString(state.InstallID) {
+	if state == nil || state.Version != hongguoCatalogStateVersion || !hongguoNumericID.MatchString(state.DeviceID) || !hongguoNumericID.MatchString(state.InstallID) {
 		return
 	}
 	cloned := cloneHongguoCatalogState(state)
@@ -118,7 +130,7 @@ func (downloader *Downloader) hongguoCatalogSnapshot() *hongguoCatalogState {
 }
 
 func hongguoCatalogInitialized(state *hongguoCatalogState) bool {
-	if state != nil && state.Version == 1 {
+	if state != nil && state.Version == hongguoCatalogStateVersion {
 		for _, cursor := range state.Feeds {
 			if cursor.Initialized {
 				return true
@@ -188,10 +200,6 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		request.Header.Set("Accept", "application/json")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
-		// 0.8.14：配置了红果登录态就带上（取流接口对匿名请求返回空正文）。
-		if cookie := downloader.hongguoCookieHeader(); cookie != "" {
-			request.Header.Set("Cookie", cookie)
-		}
 		// 0.8.11：弹幕走红果的**评论接口**，它用的是另一套签名
 		// （X-Gorgon / X-Argus / X-Ladon），而且必须带这两个业务头，
 		// 少一个就返回空列表。上下文里带 hongguoCommentKey 时切过去。

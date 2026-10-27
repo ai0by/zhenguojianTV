@@ -222,16 +222,10 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	// 解密后固定返回 {"parse":0,"url":""}，多剧多轮均无地址，已移除，
 	// 避免用户等待一个必然失败的请求。
 	//
-	// 0.8.14：红果对匿名访问关闭了正片（App 正片接口回空、网页改
-	// protectedPlayback、公开片源退化成 10 秒预告）。三条链路同时失效时
-	// 给出可操作的提示 —— 配置登录态是目前唯一稳定的出路。
-	if !d.hongguoCookieConfigured() {
-		return providerMedia{}, fmt.Errorf(
-			"红果需要登录才能看正片。请到「设置 → 红果登录态」粘贴网页 Cookie（App：%v；公开片源：%v；网页：%v）",
-			publicError(nativeErr), publicError(publicErr), pageErr)
-	}
+	// 0.8.14：三条链路都失败时把各级原因摊开。App 链路是主链路，它失败
+	// 通常是设备注册没成功或该集确实没有地址。
 	return providerMedia{}, fmt.Errorf(
-		"红果取不到正片，登录态可能已过期，请重新获取 Cookie（App：%v；公开片源：%v；网页：%v）",
+		"红果取不到该集播放地址（App：%v；公开片源：%v；网页：%v）",
 		publicError(nativeErr), publicError(publicErr), pageErr)
 }
 
@@ -306,32 +300,29 @@ func (d *Downloader) resolveHongguoPublicMedia(ctx context.Context, videoID stri
 
 // resolveHongguoWebMedia 走网页播放页（服务端渲染）。
 //
-// 0.8.14：这是**配置了登录态之后最可靠的一条链路**。红果的播放页由服务端
-// 渲染，匿名访问时 `protectedPlayback: true`、`videoList` 为空，前端 JS
-// 只能拼出 10 秒预告；带上有效 sessionid 后 SSR 才会把真实片源渲染进
-// `videoList`。所以这里统一走 fetchHongguoText（配置了 Cookie 就带上）。
+// 这是兜底链路：红果的播放页由服务端渲染，匿名访问时
+// `protectedPlayback: true`、`videoList` 为空，前端 JS 只能拼出 10 秒预告，
+// 所以正常情况下拿不到正片 —— 主链路是 App 取流（见 resolveHongguoAppMedia）。
+// 这里保留是因为站点偶尔会放开部分剧集，命中时能多一条路。
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
 	pageURL := hongguoBaseURL + "/player/" + url.PathEscape(seriesID) + "/" + url.PathEscape(videoID)
-	body, err := d.fetchHongguoText(ctx, pageURL, hongguoBaseURL+"/")
+	body, err := d.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
 	if err != nil {
 		return providerMedia{}, err
 	}
 	page := routerLoaderMap(parseRouterData(body), "player_", "player_page")
-	if mapString(page, "vid") != videoID || mapString(page, "series_id") != seriesID {
-		return providerMedia{}, fmt.Errorf("红果未返回所请求的剧集，可能仅允许网页试看；请在站点确认该集的访问权限")
+	if vid := mapString(page, "vid"); vid != "" && vid != videoID {
+		return providerMedia{}, errors.New("红果未返回所请求的剧集")
 	}
 	info, _ := page["video_player_info"].(map[string]any)
 	addresses := hongguoWebAddresses(page)
 	if len(addresses) == 0 {
-		if !d.hongguoCookieConfigured() {
-			return providerMedia{}, errors.New("红果该集需要登录才能播放，请到「设置 → 红果登录态」粘贴网页 Cookie 后重试")
-		}
-		return providerMedia{}, errors.New("红果该集未提供播放地址，登录态可能已过期，请重新获取 Cookie")
+		return providerMedia{}, errors.New("红果网页未提供播放地址（未登录时只放预告）")
 	}
 	duration, _ := strconv.ParseFloat(hongguoWebDuration(page, info), 64)
 	// 与公开片源同一套判断：不足 20 秒说明拿到的还是预告，不能当正片播。
 	if hongguoLooksLikePreview(time.Duration(duration * float64(time.Second))) {
-		return providerMedia{}, fmt.Errorf("红果网页只返回了 %.0f 秒预告，登录态可能无效", duration)
+		return providerMedia{}, fmt.Errorf("红果网页只返回了 %.0f 秒预告", duration)
 	}
 	media := providerMedia{URL: addresses[0], Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}
 	for _, address := range addresses {
@@ -344,7 +335,7 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 
 // hongguoWebAddresses 从播放页里收集片源地址。
 //
-// 匿名时只有 `video_player_info`（通常为空）；登录后真实片源会出现在
+// 匿名时只有 `video_player_info`（通常为空）；站点放开时真实片源会出现在
 // `videoList`（清晰度 → 片源对象）。两处都扫，任一命中即可。
 func hongguoWebAddresses(page map[string]any) []string {
 	var addresses []string

@@ -6,15 +6,18 @@
 
 ---
 
-### 0.8.14 · 红果登录态取流
+### 0.8.14 · 红果游客取流打通
 
-- **红果"点开只能看 10 秒"的根因找到了：匿名访问已经拿不到正片。** 不是播放器的问题，三条匿名链路同时失效：公开片源 `hongguoduanju.com/video/public/{vid}/360p.mp4` 只有前 3 集存在、而且全是**固定 10.00 秒的预告**（mp4 头里 `duration=10000 / timescale=1000`），第 4 集起直接 404，480p 以上一律 404；网页播放页是服务端渲染的，匿名时 `protectedPlayback: true`、`videoList` 为空，前端 JS 只会拼出上面那个预告地址；App 取流接口对匿名请求返回 `200 + 空正文`。旧代码只探测 `Range: bytes=0-1` + `Content-Type: video/mp4` 就把地址当正片交出去 —— 于是预告被当成正片播，这就是"试看 10 秒"。
-- **新增「设置 → 红果登录态」，这是现在唯一稳定的主链路。** 在浏览器登录 hongguoduanju.com，把请求头里的 Cookie 整行粘进来（支持 `Cookie: ...` 整行、多行、带分号结尾等粘贴形态）。之后取流会带上它：网页播放页的 SSR 会渲染出真实片源（`videoList`），App 接口也会带上同一个 Cookie。登录态按用户档案隔离，切换档案自动同步；不填也能用，只是大概率拿不到正片。
-- **取流前先验真实时长**：拿到候选地址后读片源头部 64KB（红果的 mp4 把 `moov` 前置，64KB 足够读到 `mvhd`），解析出 `timescale / duration` 算出片长；m3u8 则累加 `#EXTINF`。**不足 20 秒直接判定为预告并拒收**，继续试下一级链路。20 秒这条线是按短剧单集通常 40~120 秒定的，正常正片不会被误杀；网页链路拿到的地址同样过这一关，登录态失效退回预告时也不会假播。
-- **App 取流按真实客户端补齐 9 个播放器参数**：`channel` / `host_abi` / `dragon_device_type` / `pv_player` / `compliance_status` / `need_personal_recommend` / `player_so_load` / `is_android_pad_screen` / `rom_version`。命中时 `video_model` 自带 5 档 `video_list` 与 `video_duration`，直接用，省掉 `fallback_api` 一跳。
-- 三条链路都失败时不再含糊：没配置登录态会提示「红果需要登录才能看正片，请到设置里粘贴 Cookie」；配置了则提示登录态可能已过期。
+- **红果"点开只能看 10 秒"的真因找到了：`device_id` 是本地随机生成的，服务端根本不认。** 以前 App 取流用的是本地随机拼出来的设备号，取流接口 `POST /novel/player/multi_video_model/v1/` 对这类**未注册设备**静默拒绝 —— 返回 `200` + **空正文**。所以不是签名问题、不是参数问题、也不是上游关门，而是身份没落地。对照实验同时刻同接口：随机 `device_id` → 3/3 空正文，注册过的设备 → 稳定 24.6KB 真实 `video_model`。
+- **取流前先注册一个游客设备**（`provider_hongguo_device.go`）：`POST log.snssdk.com/service/2/device_register/?aid=8662`，按 `ss_app_log` 格式提交设备信息（`package=com.phoenix.read`、`guest_mode=1`、随机 `cdid`/`openudid`/`clientudid` 等），拿回 `device_id_str` / `install_id_str` / `device_token` 并写回状态。**`?aid=8662` 必须带**，不带只会返回 `device_id:0`。注册是懒触发的，`deviceMu` 串行化避免并发取流重复注册；注册失败不阻断取流，只是错误信息里会带上真实原因。
+- **拿到的是正片**：`video_duration = 147.935`（与网页 SEO 的 147.934 吻合）、`video_list` 5 档清晰度（360/480/540/720/1080）且 `main_url` 是**明文**地址、`fallback_api` 那跳可以省掉。多集（第 1 / 2 / 40 集）、换新设备均验证通过，全程不需要登录、Cookie、签名。
+- **内容加密本来就能解，不用写解密代理**：上游是 `cenc-aes-ctr`（`encv` + `tenc` + `senc`），而 `video_model.spade_a` 派生 CENC key 的算法仓库里**早就有**（`hongguoContentKey`，`app_v2` 分支）。`providerMedia.CENCKey` → `nativePlan.Key` → `PlaybackPlan.decryptionKey` → libmpv `decryption_key` 这条通路也是现成的，所以这次只补了"设备注册"一件事。实测 300/300 个 sample 解密通过，`bytevc2`（字节自研 H.266 系）集同样能派生 key。
+- **状态版本升到 2，旧的设备号一律丢弃重注册**：Version 1 里存的是本地随机值，留着只会继续拿到空正文。
+- **清理掉 0.8.14 早前那套 Cookie 登录态方案**：删除 `provider_hongguo_cookie.go`、`app_runtime.go` 里的 Cookie 字段、Dart 侧 `setHongguoCookie` 通路、`local_snapshot` 的 `hongguoCookie` 键，以及「设置 → 红果登录态」入口。游客链路已经是主链路，不再需要手工粘 Cookie。
+- **保留时长校验**：拿到候选地址后读片源头部解析 `mvhd`（m3u8 则累加 `#EXTINF`），**不足 20 秒判定为预告并拒收**，继续试下一级链路。公开片源那条 360p 至今仍是固定 10.00 秒的预告，这一关能把假片源挡在播放器之外。
+- **App 取流按真实客户端补齐 9 个播放器参数**：`channel` / `host_abi` / `dragon_device_type` / `pv_player` / `compliance_status` / `need_personal_recommend` / `player_so_load` / `is_android_pad_screen` / `rom_version`。
 
-> **实测记录（2026-10-27）**：公开片源逐集验证 —— 只有第 1~3 集存在且全是 10.00 秒，第 4 集起 404；网页播放页 `protectedPlayback: true`、`videoList` 为空；App 详情接口正常（92KB / 80 集，说明签名、设备 ID、UA 都没问题），但取流接口 21 次单发请求全部 `200 + 空正文`（签名与不签名、v1 与 v2、同族节点、`aid` 换成番茄系、带 `ttwid` 都试过），而不存在的路由返回 404 —— 说明接口还在，只是对匿名请求静默拒绝。另有一个开源红果下载器同样需要 `x-tt-token` 与登录 Cookie，可以互相印证。
+> **实测记录（2026-10-27）**：游客设备注册后 `video_model` 返回 24.6KB 真实数据，下载片源 `206` + `mvhd 147.93s`；`spade_a` 派生的 key 与仓库现有 `hongguoContentKey` 结果完全一致（`c4c6423f...`），`tenc` 为 `per_sample_iv_size=8`、`scheme=cenc`，`senc` 长度自校验 `8 + 4 + 4 + 4438×8 = 35520` ✓。求解密时踩过两个坑，写在这里免得重犯：① `senc` 的 IV 起点必须跳过 `sample_count` 那 4 字节，否则会把 `00001156`(=4438) 当成 IV 开头；② HEVC **NAL type 0（TRAIL_N）是合法的**，判据要 `0 <= type <= 40`，按 `1 <= type` 判会误杀三成 sample。另：扫码登录这条路走不通 —— 字节通用 `sso.douyin.com/passport/web/get_qrcode/` 返回 403「路由已封禁」，番茄系 passport 接口 404，红果前端登录组件在按需 chunk 里也搜不到任何 passport / qrcode 痕迹，所以不做。
 
 ### 0.8.13 · 小屏播放页：简介与选集
 
