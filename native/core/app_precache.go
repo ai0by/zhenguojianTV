@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // 整集预缓存（0.8.12）。
@@ -23,7 +24,51 @@ const (
 	nativePrecacheBudgetMax     = 256 << 20
 	// 单集最多拉多少个分片，防止恶意/异常播放列表把队列拖死。
 	nativePrecacheSegmentMax = 400
+	// 预缓存的**目标带宽**（字节/秒）。
+	//
+	// 0.8.12 首版是全速下载：一集 20~40MB 几分钟内拉完，而它和正在播放的
+	// 那一路共用同一条出口 —— 播放器缓冲被打空，用户看到的就是
+	// "看一会儿卡一下，退出再进又好了"。这里按 1.2MB/s 让路：
+	// 短剧一集 40~120 秒，40MB 的集大约 33 秒下完，仍能在看下一集前准备好。
+	nativePrecacheRate = 1200 << 10
+	// 段间最小间隔，避免小分片把上游打成连发请求（部分站源会因此限流）。
+	nativePrecacheGap = 60 * time.Millisecond
 )
+
+// nativePrecachePacer 按目标带宽给预缓存"踩刹车"。
+//
+// 做法是最朴素的匀速模型：已写 N 字节，就应该已经花掉 N/rate 秒；
+// 实际花得更少，就补睡差额。不用令牌桶是因为这里没有并发，
+// 单线程顺序消费，匀速模型就够，而且行为可预测、便于单测。
+type nativePrecachePacer struct {
+	started time.Time
+	written int64
+}
+
+// wait 让路到"该花的时间"。返回 false 表示等待期间被取消。
+func (pacer *nativePrecachePacer) wait(ctx context.Context) bool {
+	if pacer == nil || pacer.written <= 0 {
+		return ctx.Err() == nil
+	}
+	due := time.Duration(float64(pacer.written) / float64(nativePrecacheRate) * float64(time.Second))
+	gap := due - time.Since(pacer.started)
+	if gap < nativePrecacheGap {
+		gap = nativePrecacheGap
+	}
+	// 单个分片很大时（例如 8MB 的 m4s）差额会到好几秒，
+	// 截断到 1 秒即可：这种分片本身已经是"一大段"，不需要再严格匀速。
+	if gap > time.Second {
+		gap = time.Second
+	}
+	timer := time.NewTimer(gap)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 func (engine *nativeEngine) nativePrecache(ctx context.Context, input nativeInput) (map[string]any, error) {
 	ctx = context.WithValue(ctx, backgroundCatalogKey{}, true)
@@ -99,6 +144,7 @@ func (stream *nativeStreamServer) nativePrecacheStream(ctx context.Context, toke
 	defer stop()
 
 	written, segments := int64(0), 0
+	pacer := &nativePrecachePacer{started: time.Now()}
 	visited := map[string]bool{}
 	var walk func(string, int) bool
 	walk = func(local string, depth int) bool {
@@ -120,31 +166,46 @@ func (stream *nativeStreamServer) nativePrecacheStream(ctx context.Context, toke
 		}
 		// 播放列表的相对地址要以**跳转后的**地址为基准，否则相对分片会解析错。
 		base := asset.address
-		playlist := strings.Contains(asset.contentType, "mpegurl")
-		if len(asset.data) == 0 {
+		// 只认**完整正文**。
+		//
+		// `preload` 预热进来的是前 4MB 前缀（`total > len(data)`），
+		// 若把它当成"已缓存"，开头几段就永远进不了磁盘缓存 ——
+		// 播放时前几段仍要等网络，正是"切过去第一眼还是卡"的来源。
+		complete := len(asset.data) > 0 && asset.total <= int64(len(asset.data))
+		if !complete {
 			if cached, hit := stream.media.load(asset.address); hit {
-				asset = cached
-				session.mu.Lock()
-				session.assets[id] = asset
-				session.mu.Unlock()
-			} else {
-				fetched, finalURL, ok := stream.nativeFetchFull(ctx, session, asset)
-				if !ok {
-					return false
-				}
-				asset, base = fetched, finalURL
-				session.mu.Lock()
-				session.assets[id] = asset
-				session.mu.Unlock()
-				if stream.media.store(asset) {
-					written += int64(len(asset.data))
-					segments++
-				}
+				asset, complete = cached, true
 			}
-			playlist = playlist || strings.Contains(strings.ToLower(asset.contentType), "mpegurl") || looksLikePlaylist(asset.data)
+		}
+		if !complete {
+			fetched, finalURL, ok := stream.nativeFetchFull(ctx, session, asset)
+			if !ok {
+				return false
+			}
+			asset, base = fetched, finalURL
+			pacer.written += int64(len(asset.data))
+			if stream.media.store(asset) {
+				written += int64(len(asset.data))
+				segments++
+			}
+		}
+		playlist := strings.Contains(strings.ToLower(asset.contentType), "mpegurl") || looksLikePlaylist(asset.data)
+		// **分片正文绝不回填 `session.assets`**。
+		//
+		// 这一段会话往往正是"马上要播的那一集"（`precache` 优先复用
+		// `preload` 解析好的会话），把整集 30 段 × 2MB ≈ 60MB 塞进去，
+		// 会一直常驻到换集为止；电视盒子上很容易被系统回收，
+		// 表现就是"看两集之后开始卡，退出再进才好"。
+		// 播放路径自己会从磁盘缓存读（见 `nativeServe`），不需要这份内存副本。
+		//
+		// 只有播放列表这类小正文值得留下：播放时要按会话重写分片地址。
+		if playlist {
+			session.mu.Lock()
+			session.assets[id] = asset
+			session.mu.Unlock()
 		}
 		if !playlist {
-			return true
+			return pacer.wait(ctx)
 		}
 		lines, _, _ := nativeHLSSelect(strings.Split(string(asset.data), "\n"), quality)
 		rewritten, err := stream.nativeRewrite(token, session, strings.Join(lines, "\n"), base)

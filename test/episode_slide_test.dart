@@ -62,7 +62,7 @@ void main() {
     expect(hasShiftedVideo(tester), isFalse);
 
     // 按下并向上拖 400 像素（超过一屏 25% = 220）。
-    final gesture = await tester.startGesture(const Offset(210, 600));
+    final gesture = await tester.startGesture(const Offset(210, 120));
     await gesture.moveBy(const Offset(0, -220));
     await tester.pump(const Duration(milliseconds: 16));
     await gesture.moveBy(const Offset(0, -180));
@@ -84,7 +84,7 @@ void main() {
   testWidgets('连播本剧：拖动距离不够时回弹，不切集', (tester) async {
     final repository = await mount(tester);
 
-    final gesture = await tester.startGesture(const Offset(210, 500));
+    final gesture = await tester.startGesture(const Offset(210, 120));
     await gesture.moveBy(const Offset(0, -60));
     await tester.pump(const Duration(milliseconds: 16));
     await gesture.up();
@@ -102,7 +102,7 @@ void main() {
   testWidgets('连播本剧：一次上滑只切一集（两个入口不重复触发）', (tester) async {
     final repository = await mount(tester);
 
-    await tester.fling(find.byType(PageView), const Offset(0, -500), 1600);
+    await tester.flingFrom(const Offset(210, 120), const Offset(0, -500), 1600);
     await settle(tester);
 
     expect(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/playback_cache.dart';
 import 'package:duanju_app/playback_preloader.dart';
@@ -17,6 +19,9 @@ class _Repo extends FixtureRepository {
   final precacheSessions = <String>[];
   final releases = <String>[];
   int cancelPrecacheCalls = 0;
+
+  /// 非空时 `precache` 会挂在这里，用来模拟"正在下载"。
+  Completer<void>? gate;
 
   @override
   Future<PlaybackPlan?> preload(
@@ -43,6 +48,8 @@ class _Repo extends FixtureRepository {
   }) async {
     precaches.add('${drama.id}#${episode.number}');
     precacheSessions.add(session);
+    final pending = gate;
+    if (pending != null) await pending.future;
     return 1024;
   }
 
@@ -121,6 +128,48 @@ void main() {
     preloader.clear();
     await pumpEventQueue();
     expect(repo.cancelPrecacheCalls, greaterThan(cancelsBefore));
+  });
+
+  test('0.8.13：缓冲见底时预缓存让路，恢复后能重新排队', () async {
+    final repo = _Repo();
+    final preloader = PlaybackPreloader(repo);
+    addTearDown(preloader.dispose);
+
+    // 让第一集的预缓存"卡在下载中"，才能验证"在途也能被打断"。
+    repo.gate = Completer<void>();
+    preloader.schedulePrecache(_drama, [_episode(2)]);
+    await pumpEventQueue();
+    expect(repo.precaches, ['hongguo:1#2']);
+
+    final cancelsBefore = repo.cancelPrecacheCalls;
+    preloader.pausePrecache();
+    await pumpEventQueue();
+    expect(
+      repo.cancelPrecacheCalls,
+      greaterThan(cancelsBefore),
+      reason: '缓冲不足时应立刻停掉在途的整集下载，把带宽让给播放',
+    );
+
+    repo.gate!.complete();
+    repo.gate = null;
+    await pumpEventQueue();
+
+    // 关键：`pausePrecache` 必须把排队签名一起清掉，
+    // 否则缓冲恢复后 `schedulePrecache` 会因"签名相同"直接返回，
+    // 预缓存就再也不启动了（用户看到的就是"看两集就不再缓存"）。
+    preloader.schedulePrecache(_drama, [_episode(2)]);
+    await pumpEventQueue();
+    expect(
+      repo.precaches,
+      ['hongguo:1#2', 'hongguo:1#2'],
+      reason: '恢复健康后应重新排同一批目标',
+    );
+
+    // 空闲时重复调用不应反复打原生接口（`_syncPreload` 每秒会调好几次）。
+    final idleCancels = repo.cancelPrecacheCalls;
+    preloader.pausePrecache();
+    await pumpEventQueue();
+    expect(repo.cancelPrecacheCalls, idleCancels);
   });
 
   test('0.8.12：预缓存偏好默认 2 集 / 1GB，且能往返序列化', () {

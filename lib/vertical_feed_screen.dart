@@ -23,6 +23,7 @@ import 'network_state.dart';
 import 'playback_preferences.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
+import 'player_info_panel.dart';
 import 'remote_widgets.dart';
 import 'player_interactions.dart';
 import 'system_volume.dart';
@@ -2280,6 +2281,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     final state = player.state;
     if (!state.playing || state.buffering) {
       _preloader.pause();
+      // 0.8.13：缓冲见底/正在缓冲时**预缓存也要让路**。
+      // 否则整集下载会和正在播的那一路抢同一条出口，越卡越久。
+      _preloader.pausePrecache();
       return;
     }
     final duration = state.duration.inMilliseconds;
@@ -2311,6 +2315,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     final buffered = state.buffer.inMilliseconds;
     if (buffered > 0 && buffered < 8000) {
       _preloader.pause();
+      // 0.8.13：缓冲不足 8 秒时同样让路（预缓存不抢带宽）。
+      _preloader.pausePrecache();
       return;
     }
     // 「连播本剧」优先：还有下一集就预载下一集。
@@ -5419,7 +5425,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
             _loading ||
             _error != null ||
             !(state?.playing ?? false));
-    return Stack(
+    // 0.8.13：小屏（竖屏、非电视）改为"视频 + 信息面板"两段式布局。
+    //
+    // 借鉴 B 站：**全屏只留播放器**，非全屏时视频按自身比例固定在上方，
+    // 下方是可滚动的简介 / 选集 / 操作区（见 `player_info_panel.dart`）。
+    // 电视端本来就是全屏播放，`staged` 恒为 false，布局与旧版完全一致。
+    final staged = !_television && !_landscape;
+    final stage = Stack(
       fit: StackFit.expand,
       children: [
         if (widget.videoBuilder != null)
@@ -5715,7 +5727,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      _titleBar(),
+                                      // 0.8.13：小屏把剧名搬到下方信息面板，
+                                      // 画面里只留进度条，避免控件压住视频。
+                                      if (!staged) _titleBar(),
                                       ValueListenableBuilder<double?>(
                                         valueListenable: _seekPreview,
                                         builder: (context, preview, _) => Row(
@@ -5851,7 +5865,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                           ],
                                         ),
                                       ),
-                                      Row(
+                                      // 0.8.13：小屏的操作按钮全部搬到下方信息面板
+                                      // （`player_info_panel.dart`），画面里不再压一排按钮。
+                                      if (!staged)
+                                        Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceEvenly,
                                         children: [
@@ -5948,9 +5965,126 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         ),
       ],
     );
+    if (!staged) return stage;
+    return _stagedLayout(stage);
   }
 
-  /// 控件层焦点变化（0.8.0 电视支持）。
+  /// 小屏两段式布局：上方视频（按真实比例、最多占 68% 屏高），下方信息面板。
+  ///
+  /// 为什么按比例而不是固定 16:9：短剧里横屏、竖屏都有，
+  /// 写死 16:9 会把竖屏剧压成一条；按 `_aspectRatio` 算、再用 68% 封顶，
+  /// 两种画幅都不会太难看。首帧前 `_aspectRatio` 为 0，按 16:9 估。
+  Widget _stagedLayout(Widget stage) => LayoutBuilder(
+    builder: (context, constraints) {
+      final ratio = _aspectRatio > 0 ? _aspectRatio : 16 / 9;
+      final videoHeight = math.min(
+        constraints.maxWidth / ratio,
+        constraints.maxHeight * .68,
+      );
+      return Column(
+        children: [
+          SizedBox(
+            width: constraints.maxWidth,
+            height: videoHeight,
+            child: stage,
+          ),
+          Expanded(child: _infoPanel()),
+        ],
+      );
+    },
+  );
+
+  /// 小屏信息面板（0.8.13）。
+  ///
+  /// 面板只做展示，所有动作都指回播放页原有的方法，
+  /// 保证小屏与全屏/电视走的是同一套逻辑。
+  Widget _infoPanel() {
+    final detail = _detail;
+    final episodes = detail?.episodes ?? const <Episode>[];
+    final drama = detail?.drama ?? widget.drama;
+    return PlayerInfoPanel(
+      // 面板在画面下方，宽度足够，直接用完整剧名；
+      // 画面里那个标签才需要按 12 字裁剪（`_displayTitle`）。
+      title: widget.drama.title,
+      meta: _infoMeta(drama, episodes),
+      summary: drama.description,
+      episodes: episodes,
+      currentIndex: _episodeIndex,
+      actions: _infoActions(),
+      onSelectEpisode: (index) => unawaited(_playEpisode(index)),
+      // 与标题栏一致：单剧模式（详情页/下载页进来的）不提供"看详情"。
+      onOpenDetail: widget.singleDrama
+          ? null
+          : () {
+              unawaited(_pauseForDetail());
+              widget.onOpenDetail();
+            },
+      onOpenAllEpisodes: episodes.isEmpty
+          ? null
+          : () => unawaited(_openEpisodes()),
+    );
+  }
+
+  List<String> _infoMeta(Drama drama, List<Episode> episodes) {
+    final meta = <String>[];
+    if (episodes.isNotEmpty) meta.add('共 ${episodes.length} 集');
+    if (drama.releaseStatus.isNotEmpty && drama.releaseLabel != '状态未知') {
+      meta.add(drama.releaseLabel);
+    }
+    if (drama.category.isNotEmpty) meta.add(drama.category);
+    if (drama.heat.isNotEmpty) meta.add('热度 ${drama.heat}');
+    return meta;
+  }
+
+  /// 小屏面板上的操作按钮：与底部按钮行一一对应（那行在小屏下不再显示）。
+  List<PlayerInfoAction> _infoActions() => [
+    PlayerInfoAction(
+      key: const ValueKey('feed-follow'),
+      icon: _followed ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+      label: _followed ? '已追剧' : '追剧',
+      active: _followed,
+      onPressed: _toggleFollow,
+    ),
+    if (!widget.singleDrama)
+      PlayerInfoAction(
+        key: const ValueKey('feed-auto-next'),
+        icon: widget.autoNextEpisode
+            ? Icons.repeat_one_rounded
+            : Icons.skip_next_rounded,
+        label: widget.autoNextEpisode ? '连播本剧' : '连播下一部',
+        active: widget.autoNextEpisode,
+        onPressed: widget.onToggleAutoNext,
+      ),
+    PlayerInfoAction(
+      key: const ValueKey('feed-episodes'),
+      icon: Icons.grid_view_rounded,
+      label: '选集',
+      onPressed: _openEpisodes,
+    ),
+    PlayerInfoAction(
+      key: const ValueKey('feed-speed'),
+      icon: Icons.speed_rounded,
+      label: '${_speed}x',
+      onPressed: _openSpeedMenu,
+    ),
+    PlayerInfoAction(
+      key: const ValueKey('feed-quality'),
+      icon: Icons.hd_rounded,
+      label: _qualityLabel,
+      onPressed: _openQualityMenu,
+    ),
+    // 弹幕开关（0.8.11）：只有红果剧集显示。
+    if (_plan?.supportsDanmaku ?? false)
+      PlayerInfoAction(
+        key: const ValueKey('feed-danmaku'),
+        icon: _danmakuEnabled
+            ? Icons.subtitles_rounded
+            : Icons.subtitles_off_rounded,
+        label: _danmakuEnabled ? '弹幕' : '弹幕关',
+        active: _danmakuEnabled,
+        onPressed: _toggleDanmaku,
+      ),
+  ];
   ///
   /// 焦点进入控件层时停掉自动隐藏计时；离开时恢复计时。
   /// 只在电视模式下有意义，但记录本身无副作用，非电视模式也一并记录。

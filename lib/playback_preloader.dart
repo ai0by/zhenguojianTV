@@ -220,6 +220,22 @@ class PlaybackPreloader extends ChangeNotifier {
     unawaited(repository.cancelPrecache().catchError((Object _) {}));
   }
 
+  /// 让预缓存给播放让路（0.8.13）。
+  ///
+  /// 预缓存和正在播的那一路共用同一条出口，缓冲见底时继续全速下载只会
+  /// 让卡顿更久 —— 用户看到的就是"看一会儿卡一下"。
+  /// 这里直接取消在途的预缓存并清空队列；等缓冲恢复健康，
+  /// `_syncPreload` 会带着同样的目标重新排队（签名已被清掉，
+  /// 所以不会被 `schedulePrecache` 的去重逻辑挡住）。
+  ///
+  /// 已经落盘的分片不会丢，重新排队时会被跳过，代价只有一次重新解析。
+  void pausePrecache() {
+    // 队列空且没有在途下载时无事可做；`_syncPreload` 每秒会调好几次，
+    // 不加这个判断就会反复打原生接口。
+    if (_closed || (_queue.isEmpty && !_precaching)) return;
+    _resetPrecache();
+  }
+
   PlaybackPlan? take(
     Drama drama,
     Episode episode, {

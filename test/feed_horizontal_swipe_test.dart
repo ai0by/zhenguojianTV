@@ -111,7 +111,7 @@ void main() {
 
     final first = _currentPage(tester);
     await tester.dragFrom(
-      const Offset(210, 440),
+      const Offset(210, 120),
       const Offset(150, 40),
       touchSlopX: 0,
       touchSlopY: 0,
@@ -159,7 +159,7 @@ void main() {
     await _pump(tester, 20);
 
     final first = _currentPage(tester);
-    final gesture = await tester.startGesture(const Offset(210, 440));
+    final gesture = await tester.startGesture(const Offset(210, 120));
     await gesture.moveBy(const Offset(0, 30));
     await tester.pump(const Duration(milliseconds: 16));
     await gesture.moveBy(const Offset(120, -8));
@@ -210,7 +210,7 @@ void main() {
       find.byType(PageView),
       const Offset(0, -400),
       1200,
-      initialOffset: const Offset(210, 500),
+      initialOffset: const Offset(210, 120),
     );
     await _pump(tester, 120);
     final after = _currentPage(tester);

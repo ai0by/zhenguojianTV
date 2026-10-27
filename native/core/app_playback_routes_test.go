@@ -145,3 +145,57 @@ func TestNativePlaybackCancellationAndCacheBound(t *testing.T) {
 		engine.nativeReleasePlayback(token)
 	}
 }
+
+// 播放会话上限**不能淘汰正在播的那一路**（0.8.13）。
+//
+// 首版按 `created` 挑最老的淘汰：预缓存会额外开会话，很容易把数量顶到上限，
+// 一旦淘汰的是用户正在看的那一路，`nativeRelease` 会 cancel 掉它的 stream
+// 会话，播放器随后请求分片拿到 410「播放已结束」—— 表现就是"看一会儿卡住，
+// 退出再进才好"。这里复现该场景：先让一路真的被播放器拉过分片，
+// 再把上限顶满，它必须还活着。
+func TestNativePlaybackBoundKeepsSessionsBeingWatched(t *testing.T) {
+	engine := &nativeEngine{}
+	playing, err := engine.nativeOpenPlayback(context.Background(), nativePlaybackChoices(providerMedia{
+		URL:      "https://example.test/series/index.m3u8",
+		Playlist: "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nseg1.ts\n#EXT-X-ENDLIST\n",
+	}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.stream.server.Close()
+	// 真的拉一次：会话的 `serves` 变成 1，从此算"正在播"。
+	response, err := http.Get(playing.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+
+	for index := 0; index < 12; index++ {
+		if _, err := engine.nativeOpenPlayback(context.Background(), nativePlaybackChoices(providerMedia{
+			URL: "https://example.test/other" + string(rune('a'+index)) + ".mp4",
+		}, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine.mu.Lock()
+	_, alive := engine.playbacks[playing.Session]
+	total := len(engine.playbacks)
+	engine.mu.Unlock()
+	if !alive {
+		t.Fatal("playing session was evicted by the playback bound")
+	}
+	if total > 8 {
+		t.Fatalf("abandoned playbacks are not bounded: %d", total)
+	}
+	// 真的还能取到内容（会话没被 cancel）。
+	response, err = http.Get(playing.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "#EXTM3U") {
+		t.Fatalf("playing session broke: %d %s", response.StatusCode, body)
+	}
+}
