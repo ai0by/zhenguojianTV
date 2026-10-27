@@ -6087,7 +6087,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         onPressed: _toggleDanmaku,
       ),
   ];
-  ///
+
   /// 焦点进入控件层时停掉自动隐藏计时；离开时恢复计时。
   /// 只在电视模式下有意义，但记录本身无副作用，非电视模式也一并记录。
   void _onControlsFocusChanged(bool focused) {

@@ -309,6 +309,9 @@ class _PlayerInfoPanelState extends State<PlayerInfoPanel> {
     builder: (context, constraints) {
       // 手机上固定 5 列：短剧集数多，5 列一屏能看 15 格，不用一直滑。
       final columns = constraints.maxWidth >= 520 ? 6 : 5;
+      // 先算一次：`_visibleEpisodes` 每次都会重新生成列表，
+      // 放进 `itemBuilder` 里就是 O(n²)。
+      final visible = _visibleEpisodes;
       return GridView.builder(
         shrinkWrap: true,
         // 外层已经是 ListView，这里不能再自己滚。
@@ -320,11 +323,10 @@ class _PlayerInfoPanelState extends State<PlayerInfoPanel> {
           crossAxisSpacing: 8,
           childAspectRatio: 1.6,
         ),
-        itemCount: _visibleEpisodes.length,
+        itemCount: visible.length,
         itemBuilder: (context, position) {
-          final index = _visibleEpisodes[position];
-          final selected = index == widget.currentIndex;
-          return _episodeCell(index, selected);
+          final index = visible[position];
+          return _episodeCell(index, index == widget.currentIndex);
         },
       );
     },
