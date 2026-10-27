@@ -4160,6 +4160,17 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // 0.8.14：顶部把手，红果那种"可以从底部拉上来"的观感。
+                  // 纯视觉元素，不参与手势（弹层本身仍由点击遮罩/关闭键收起）。
+                  Container(
+                    width: 36,
+                    height: 4,
+                    margin: const EdgeInsets.only(top: 8, bottom: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
                     child: Row(
@@ -5673,8 +5684,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                           // 与左上角集数标签左右对称，也不占用底部功能位。
                           // 位于控件层内 → 跟随控件一起显隐。
                           if (_canPush) _pushButton(),
-                          // 暂停时显示中央播放按钮。
-                          if (!(state?.playing ?? false) &&
+                          // 0.8.14：小屏把全屏按钮放到画面右下角。
+                          if (staged) _stageFullscreenButton(),
+                          // 中央播放/暂停按钮（0.8.14）。
+                          //
+                          // 暂停时一直显示；播放中只在控件层可见时显示 ——
+                          // 也就是"点一下画面中间就出现"，与红果短剧一致。
+                          // 播放中常驻会一直挡住画面，所以不做常驻。
+                          if ((!(state?.playing ?? false) || visible) &&
                               !_loading &&
                               _error == null &&
                               !_panelOpen)
@@ -5846,7 +5863,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             // 电视本来就是全屏播放，这个按钮只会
                                             // 让部分盒子把画面再套一层全屏路由，
                                             // 出现黑边或状态栏闪烁。
-                                            if (!_television)
+                                            //
+                                            // 0.8.14：小屏（staged）把这个按钮搬到
+                                            // 画面右下角，见 `_stageFullscreenButton`，
+                                            // 这里隐藏避免出现两个同 key 的按钮。
+                                            if (!_television && !staged)
                                               IconButton(
                                                 key: const ValueKey(
                                                   'feed-landscape',
@@ -5969,6 +5990,30 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     return _stagedLayout(stage);
   }
 
+  /// 小屏画面右下角的全屏按钮（0.8.14）。
+  ///
+  /// 原来这个按钮挤在画面底部那一行进度条里 —— 小屏画面只有 200 多像素高，
+  /// 它和播放/暂停、时间、进度条叠在一起，用户反馈"不知道哪里能全屏"。
+  /// 现在做成半透明圆底、单独压在右下角，点一下进全屏路由（`_toggleLandscape`）。
+  Widget _stageFullscreenButton() => Positioned(
+    right: 8,
+    // 避开画面底部那一行（进度条 + 时间，约 44 高），否则会压住 Slider 右端。
+    bottom: 46,
+    child: Material(
+      color: Colors.black.withValues(alpha: .42),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: IconButton(
+        key: const ValueKey('feed-landscape'),
+        tooltip: '全屏播放',
+        onPressed: _toggleLandscape,
+        iconSize: 22,
+        visualDensity: VisualDensity.compact,
+        icon: const Icon(Icons.fullscreen_rounded, color: Colors.white),
+      ),
+    ),
+  );
+
   /// 小屏两段式布局：上方视频（按真实比例、最多占 68% 屏高），下方信息面板。
   ///
   /// 为什么按比例而不是固定 16:9：短剧里横屏、竖屏都有，
@@ -6057,12 +6102,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         active: widget.autoNextEpisode,
         onPressed: widget.onToggleAutoNext,
       ),
-    PlayerInfoAction(
-      key: const ValueKey('feed-episodes'),
-      icon: Icons.grid_view_rounded,
-      label: '选集',
-      onPressed: _openEpisodes,
-    ),
+    // 0.8.14：选集不再占图标位 —— 面板底部有一条固定的「选集 · 第 N 集」
+    // 入口（key 同样是 `feed-episodes`），再放一个会重复 key。
     PlayerInfoAction(
       key: const ValueKey('feed-speed'),
       icon: Icons.speed_rounded,
