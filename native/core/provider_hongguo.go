@@ -207,6 +207,12 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
+	// 设备没注册成功时，取流必然空正文，公开片源与网页链路也只会给 10 秒预告
+	// （会被时长校验拒掉）。继续往下试只是让用户多等两个网络往返，还会把
+	// 真正的根因埋在"公开片源不可用"后面 —— 直接把根因抛给用户。
+	if errors.Is(nativeErr, errHongguoDeviceUnregistered) {
+		return providerMedia{}, fmt.Errorf("%v，请检查网络后重试", nativeErr)
+	}
 	media, publicErr := d.resolveHongguoPublicMedia(ctx, videoID)
 	if publicErr == nil {
 		return media, nil

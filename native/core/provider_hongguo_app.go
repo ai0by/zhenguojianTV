@@ -57,15 +57,20 @@ type hongguoAppClient struct {
 	mu        sync.Mutex
 	catalogMu sync.Mutex
 	// deviceMu 串行化游客设备注册，避免并发取流时重复注册（0.8.14）。
-	deviceMu       sync.Mutex
-	baseURL        string
-	state          hongguoCatalogState
-	details        map[string]hongguoDetailEntry
-	pending        map[string]*hongguoDetailCall
-	searches       map[string]hongguoSearchEntry
-	searchPending  map[string]*hongguoSearchCall
-	suggestions    map[string]hongguoSuggestionEntry
-	suggestPending map[string]*hongguoSuggestionCall
+	deviceMu sync.Mutex
+	// deviceRetryAfter / deviceErr 是注册失败后的冷却窗口（0.8.14）。
+	// 网络不通时注册会连续超时，不能让每次播放都重试满 3 次 —— 冷却期内
+	// 直接返回上次的错误，用户立刻看到原因而不是转圈。
+	deviceRetryAfter time.Time
+	deviceErr        error
+	baseURL          string
+	state            hongguoCatalogState
+	details          map[string]hongguoDetailEntry
+	pending          map[string]*hongguoDetailCall
+	searches         map[string]hongguoSearchEntry
+	searchPending    map[string]*hongguoSearchCall
+	suggestions      map[string]hongguoSuggestionEntry
+	suggestPending   map[string]*hongguoSuggestionCall
 	// 弹幕（0.8.11）：按 "剧集:视频:起:止" 缓存 5 分钟，失败缓存 15 秒，
 	// 避免同一段反复拖动时把请求打爆。
 	danmaku        map[string]hongguoDanmakuCacheEntry

@@ -46,6 +46,11 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	}
 	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/multi_video_model/v1/", hongguoPlayerQuery(), payload)
 	if err != nil {
+		// 注册失败时取流必然失败（空正文），把根因放在最前面，
+		// 别让用户看到"接口返回空响应"这种没有指向性的说法。
+		if deviceErr != nil {
+			return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
+		}
 		return providerMedia{}, err
 	}
 	entry, _ := nestedMap(result, "data")[videoID].(map[string]any)
@@ -60,7 +65,7 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	if len(model) == 0 {
 		// 空正文最常见的原因是设备没注册成功（服务端不认这个 device_id）。
 		if deviceErr != nil {
-			return providerMedia{}, fmt.Errorf("红果设备注册失败（%v），该集播放信息为空", deviceErr)
+			return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
 		}
 		return providerMedia{}, errors.New("红果 App 未返回该集播放信息")
 	}

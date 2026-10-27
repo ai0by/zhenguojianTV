@@ -1,9 +1,12 @@
 package core
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -135,5 +138,112 @@ func TestRestoreHongguoCatalogDropsLegacyVersion(t *testing.T) {
 	}
 	if registered {
 		t.Fatal("旧状态不应被标记成已注册")
+	}
+}
+
+// 注册接口固定返回 gzip 正文，必须能自动解压。
+//
+// 0.8.14 首个构建就是因为请求里自己设了 `Accept-Encoding: gzip`：net/http 的
+// Transport 只在请求头没有 Accept-Encoding 时才自动解压，于是 io.ReadAll 拿到
+// 压缩字节、json.Unmarshal 失败、注册重试 3 次全废，取流退回本地随机设备号 →
+// 空正文 → 用户侧表现为「红果公开片源不可用」。
+//
+// 这个用例用真实 Transport 打 httptest server，所以能真正守住这条线：
+// 一旦有人再把 Accept-Encoding 加回去，注册就会解析失败。
+func TestHongguoRegisterDeviceDecodesGzipResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Content-Encoding", "gzip")
+		gzipWriter := gzip.NewWriter(writer)
+		_, _ = gzipWriter.Write([]byte(`{"device_id":2468876129669946,"install_id":2468876129674042,"device_id_str":"2468876129669946","install_id_str":"2468876129674042","device_token":"token"}`))
+		_ = gzipWriter.Close()
+	}))
+	defer server.Close()
+	original := hongguoDeviceRegisterURL
+	hongguoDeviceRegisterURL = server.URL
+	t.Cleanup(func() { hongguoDeviceRegisterURL = original })
+
+	// 刻意用默认 Transport：自动解压是 Transport 的行为，fixture transport 测不到。
+	downloader := &Downloader{
+		cfg:           Config{dataDir: t.TempDir(), Retries: 1},
+		client:        &http.Client{},
+		limiter:       newRequestLimiter(3, 0),
+		providerHosts: map[string]string{},
+	}
+	registration, err := downloader.hongguoRegisterDevice(context.Background())
+	if err != nil {
+		t.Fatalf("gzip 响应应能被自动解压，实际报错：%v", err)
+	}
+	if registration.DeviceID != "2468876129669946" || registration.InstallID != "2468876129674042" {
+		t.Fatalf("设备号解析错误：%+v", registration)
+	}
+}
+
+// 注册失败后要进冷却，不能每次取流都重试满 3 次。
+func TestEnsureHongguoDeviceCooldownSkipsRetry(t *testing.T) {
+	var registrations int
+	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "device_register") {
+			registrations++
+			return nil, errors.New("网络不通")
+		}
+		return nil, errors.New("不该发这个请求")
+	})
+	client := downloader.hongguoClient()
+	client.mu.Lock()
+	client.state.Registered = false
+	client.mu.Unlock()
+
+	if err := downloader.ensureHongguoDevice(context.Background()); err == nil {
+		t.Fatal("网络不通时注册应失败")
+	}
+	if registrations != hongguoDeviceRegisterAttempts {
+		t.Fatalf("首次应尝试 %d 次，实际 %d 次", hongguoDeviceRegisterAttempts, registrations)
+	}
+	// 冷却期内再调用，不应再发请求。
+	if err := downloader.ensureHongguoDevice(context.Background()); err == nil {
+		t.Fatal("冷却期内应直接返回上次的错误")
+	}
+	if registrations != hongguoDeviceRegisterAttempts {
+		t.Fatalf("冷却期内不应重试，实际又发了 %d 次", registrations-hongguoDeviceRegisterAttempts)
+	}
+}
+
+// 设备没注册成功时，取流必然空正文；公开片源与网页只会给 10 秒预告，
+// 所以主链路要直接短路，不浪费两个网络往返、也不把根因埋在别的错误后面。
+func TestResolveHongguoMediaShortCircuitsWhenDeviceUnregistered(t *testing.T) {
+	var paths []string
+	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		if strings.Contains(request.URL.Path, "device_register") {
+			return nil, errors.New("网络不通")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    request,
+		}, nil
+	})
+	client := downloader.hongguoClient()
+	client.mu.Lock()
+	client.state.Registered = false
+	client.mu.Unlock()
+
+	task := Task{
+		DramaID: "hongguo:7605500183484320792",
+		Chapter: Chapter{VideoURL: "hongguo-cenc://7605502162419846206"},
+	}
+	_, err := downloader.resolveHongguoMedia(context.Background(), task)
+	if err == nil {
+		t.Fatal("设备未注册时取流应失败")
+	}
+	if !strings.Contains(err.Error(), "红果游客设备注册失败") {
+		t.Fatalf("错误应直指根因，实际：%v", err)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "/video/public/") {
+			t.Fatalf("注册失败后不该再试公开片源，实际请求了 %s", path)
+		}
 	}
 }
