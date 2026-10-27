@@ -23,7 +23,6 @@ import 'network_state.dart';
 import 'playback_preferences.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
-import 'player_info_panel.dart';
 import 'remote_widgets.dart';
 import 'player_interactions.dart';
 import 'system_volume.dart';
@@ -5449,12 +5448,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
             _loading ||
             _error != null ||
             !(state?.playing ?? false));
-    // 0.8.13：小屏（竖屏、非电视）改为"视频 + 信息面板"两段式布局。
+    // 0.8.14：**视频始终铺满整屏**，控件全部以浮层压在画面上。
     //
-    // 借鉴 B 站：**全屏只留播放器**，非全屏时视频按自身比例固定在上方，
-    // 下方是可滚动的简介 / 选集 / 操作区（见 `player_info_panel.dart`）。
-    // 电视端本来就是全屏播放，`staged` 恒为 false，布局与旧版完全一致。
-    final staged = !_television && !_landscape;
+    // 0.8.13 试过"视频在上、信息面板在下"的两段式（B 站那种），但短剧
+    // 16:9 画面只占屏高四分之一，剩下全被面板占掉，用户明确要求回到铺满、
+    // 不要面板里的按钮和简介。现在按红果短剧的做法：画面铺满 + 顶部剧名
+    // + 底部进度与功能行，点画面切换显隐。
     final stage = Stack(
       fit: StackFit.expand,
       children: [
@@ -5697,8 +5696,6 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                           // 与左上角集数标签左右对称，也不占用底部功能位。
                           // 位于控件层内 → 跟随控件一起显隐。
                           if (_canPush) _pushButton(),
-                          // 0.8.14：小屏把全屏按钮放到画面右下角。
-                          if (staged) _stageFullscreenButton(),
                           // 中央播放按钮：**只在暂停时显示**。
                           //
                           // 0.8.14 试过"播放中也显示（点画面就出现）"，结果
@@ -5759,9 +5756,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      // 0.8.13：小屏把剧名搬到下方信息面板，
-                                      // 画面里只留进度条，避免控件压住视频。
-                                      if (!staged) _titleBar(),
+                                      // 顶部剧名（红果那种：压在画面上的小标题，
+                                      // 点击进详情）。铺满布局下它回到画面里。
+                                      _titleBar(),
                                       ValueListenableBuilder<double?>(
                                         valueListenable: _seekPreview,
                                         builder: (context, preview, _) => Row(
@@ -5878,11 +5875,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             // 电视本来就是全屏播放，这个按钮只会
                                             // 让部分盒子把画面再套一层全屏路由，
                                             // 出现黑边或状态栏闪烁。
-                                            //
-                                            // 0.8.14：小屏（staged）把这个按钮搬到
-                                            // 画面右下角，见 `_stageFullscreenButton`，
-                                            // 这里隐藏避免出现两个同 key 的按钮。
-                                            if (!_television && !staged)
+                                            if (!_television)
                                               IconButton(
                                                 key: const ValueKey(
                                                   'feed-landscape',
@@ -5901,10 +5894,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                           ],
                                         ),
                                       ),
-                                      // 0.8.13：小屏的操作按钮全部搬到下方信息面板
-                                      // （`player_info_panel.dart`），画面里不再压一排按钮。
-                                      if (!staged)
-                                        Row(
+                                      // 底部功能行（铺满布局下常驻在画面上，
+                                      // 随控件层一起显隐）。
+                                      Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceEvenly,
                                         children: [
@@ -6001,148 +5993,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         ),
       ],
     );
-    if (!staged) return stage;
-    return _stagedLayout(stage);
+    // 铺满整屏。`feed-stage` 这个 key 保留给手势测试取真实矩形
+    // （见 `feed_horizontal_swipe_test` 的 `_videoPoint`）。
+    return SizedBox(key: const ValueKey('feed-stage'), child: stage);
   }
-
-  /// 小屏画面右下角的全屏按钮（0.8.14）。
-  ///
-  /// 原来这个按钮挤在画面底部那一行进度条里 —— 小屏画面只有 200 多像素高，
-  /// 它和播放/暂停、时间、进度条叠在一起，用户反馈"不知道哪里能全屏"。
-  /// 现在做成半透明圆底、单独压在右下角，点一下进全屏路由（`_toggleLandscape`）。
-  Widget _stageFullscreenButton() => Positioned(
-    right: 8,
-    // 避开画面底部那一行（进度条 + 时间，约 44 高），否则会压住 Slider 右端。
-    bottom: 46,
-    child: Material(
-      color: Colors.black.withValues(alpha: .42),
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: IconButton(
-        key: const ValueKey('feed-landscape'),
-        tooltip: '全屏播放',
-        onPressed: _toggleLandscape,
-        iconSize: 22,
-        visualDensity: VisualDensity.compact,
-        icon: const Icon(Icons.fullscreen_rounded, color: Colors.white),
-      ),
-    ),
-  );
-
-  /// 小屏两段式布局：上方视频（按真实比例、最多占 68% 屏高），下方信息面板。
-  ///
-  /// 为什么按比例而不是固定 16:9：短剧里横屏、竖屏都有，
-  /// 写死 16:9 会把竖屏剧压成一条；按 `_aspectRatio` 算、再用 68% 封顶，
-  /// 两种画幅都不会太难看。首帧前 `_aspectRatio` 为 0，按 16:9 估。
-  Widget _stagedLayout(Widget stage) => LayoutBuilder(
-    builder: (context, constraints) {
-      final ratio = _aspectRatio > 0 ? _aspectRatio : 16 / 9;
-      final videoHeight = math.min(
-        constraints.maxWidth / ratio,
-        constraints.maxHeight * .68,
-      );
-      return Column(
-        children: [
-          SizedBox(
-            // 测试用：手势起点要落在画面内（见 `feed_horizontal_swipe_test`）。
-            key: const ValueKey('feed-stage'),
-            width: constraints.maxWidth,
-            height: videoHeight,
-            child: stage,
-          ),
-          Expanded(child: _infoPanel()),
-        ],
-      );
-    },
-  );
-
-  /// 小屏信息面板（0.8.13）。
-  ///
-  /// 面板只做展示，所有动作都指回播放页原有的方法，
-  /// 保证小屏与全屏/电视走的是同一套逻辑。
-  Widget _infoPanel() {
-    final detail = _detail;
-    final episodes = detail?.episodes ?? const <Episode>[];
-    final drama = detail?.drama ?? widget.drama;
-    return PlayerInfoPanel(
-      // 面板在画面下方，宽度足够，直接用完整剧名；
-      // 画面里那个标签才需要按 12 字裁剪（`_displayTitle`）。
-      title: widget.drama.title,
-      meta: _infoMeta(drama, episodes),
-      summary: drama.description,
-      episodes: episodes,
-      currentIndex: _episodeIndex,
-      actions: _infoActions(),
-      onSelectEpisode: (index) => unawaited(_playEpisode(index)),
-      // 与标题栏一致：单剧模式（详情页/下载页进来的）不提供"看详情"。
-      onOpenDetail: widget.singleDrama
-          ? null
-          : () {
-              unawaited(_pauseForDetail());
-              widget.onOpenDetail();
-            },
-      onOpenAllEpisodes: episodes.isEmpty
-          ? null
-          : () => unawaited(_openEpisodes()),
-    );
-  }
-
-  List<String> _infoMeta(Drama drama, List<Episode> episodes) {
-    final meta = <String>[];
-    if (episodes.isNotEmpty) meta.add('共 ${episodes.length} 集');
-    if (drama.releaseStatus.isNotEmpty && drama.releaseLabel != '状态未知') {
-      meta.add(drama.releaseLabel);
-    }
-    if (drama.category.isNotEmpty) meta.add(drama.category);
-    if (drama.heat.isNotEmpty) meta.add('热度 ${drama.heat}');
-    return meta;
-  }
-
-  /// 小屏面板上的操作按钮：与底部按钮行一一对应（那行在小屏下不再显示）。
-  List<PlayerInfoAction> _infoActions() => [
-    PlayerInfoAction(
-      key: const ValueKey('feed-follow'),
-      icon: _followed ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-      label: _followed ? '已追剧' : '追剧',
-      active: _followed,
-      onPressed: _toggleFollow,
-    ),
-    if (!widget.singleDrama)
-      PlayerInfoAction(
-        key: const ValueKey('feed-auto-next'),
-        icon: widget.autoNextEpisode
-            ? Icons.repeat_one_rounded
-            : Icons.skip_next_rounded,
-        label: widget.autoNextEpisode ? '连播本剧' : '连播下一部',
-        active: widget.autoNextEpisode,
-        onPressed: widget.onToggleAutoNext,
-      ),
-    // 0.8.14：选集不再占图标位 —— 面板底部有一条固定的「选集 · 第 N 集」
-    // 入口（key 同样是 `feed-episodes`），再放一个会重复 key。
-    PlayerInfoAction(
-      key: const ValueKey('feed-speed'),
-      icon: Icons.speed_rounded,
-      label: '${_speed}x',
-      onPressed: _openSpeedMenu,
-    ),
-    PlayerInfoAction(
-      key: const ValueKey('feed-quality'),
-      icon: Icons.hd_rounded,
-      label: _qualityLabel,
-      onPressed: _openQualityMenu,
-    ),
-    // 弹幕开关（0.8.11）：只有红果剧集显示。
-    if (_plan?.supportsDanmaku ?? false)
-      PlayerInfoAction(
-        key: const ValueKey('feed-danmaku'),
-        icon: _danmakuEnabled
-            ? Icons.subtitles_rounded
-            : Icons.subtitles_off_rounded,
-        label: _danmakuEnabled ? '弹幕' : '弹幕关',
-        active: _danmakuEnabled,
-        onPressed: _toggleDanmaku,
-      ),
-  ];
 
   /// 焦点进入控件层时停掉自动隐藏计时；离开时恢复计时。
   /// 只在电视模式下有意义，但记录本身无副作用，非电视模式也一并记录。
