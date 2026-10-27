@@ -280,6 +280,18 @@ class LocalStore extends ChangeNotifier {
     }
   }
 
+  /// 红果登录态 Cookie（0.8.14）。
+  ///
+  /// 红果对匿名访问只给 10 秒预告，正片需要登录。这里只负责"存住用户粘贴
+  /// 的那串 Cookie"，按用户档案隔离；原生侧每次启动对齐一次即可。
+  String get hongguoCookie {
+    if (locked) return '';
+    return (_string(_key('hongguoCookie')) ?? '').trim();
+  }
+
+  Future<void> setHongguoCookie(String value) =>
+      _setting(_key('hongguoCookie'), value.trim());
+
   CatalogView get catalogView {
     if (locked) return const CatalogView();
     try {

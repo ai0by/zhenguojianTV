@@ -65,6 +65,17 @@ class _AppBootstrapState extends State<AppBootstrap>
   Object? error;
   AppDevice device = const AppDevice();
 
+  /// 红果登录态按用户档案隔离（0.8.14）：切换档案后要同步给原生侧。
+  /// 记下已同步的值，避免每次 notify 都跨一次 FFI。
+  String _syncedHongguoCookie = '';
+
+  void _syncHongguoCookie() {
+    final cookie = store?.hongguoCookie ?? '';
+    if (cookie == _syncedHongguoCookie) return;
+    _syncedHongguoCookie = cookie;
+    unawaited(repository.setHongguoCookie(cookie).catchError((Object _) {}));
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -73,6 +84,7 @@ class _AppBootstrapState extends State<AppBootstrap>
     LanController.current = null;
     MediaLibrary.current?.dispose();
     MediaLibrary.current = null;
+    store?.removeListener(_syncHongguoCookie);
     store?.dispose();
     super.dispose();
   }
@@ -130,6 +142,15 @@ class _AppBootstrapState extends State<AppBootstrap>
             repository
                 .setMediaCacheLimit(store!.playbackCachePreferences.limitMB << 20)
                 .catchError((Object _) => const PlaybackCacheUsage()),
+          );
+          // 0.8.14：红果登录态同样不持久化在原生侧，启动时对齐一次。
+          // 之后由 _syncHongguoCookie 跟随档案切换自动同步。
+          _syncedHongguoCookie = store!.hongguoCookie;
+          store!.addListener(_syncHongguoCookie);
+          unawaited(
+            repository
+                .setHongguoCookie(store!.hongguoCookie)
+                .catchError((Object _) {}),
           );
           LanController.current?.dispose();
           final link = LanController(

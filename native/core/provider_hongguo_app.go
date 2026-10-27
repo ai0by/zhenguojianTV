@@ -188,6 +188,10 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		request.Header.Set("Accept", "application/json")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
+		// 0.8.14：配置了红果登录态就带上（取流接口对匿名请求返回空正文）。
+		if cookie := downloader.hongguoCookieHeader(); cookie != "" {
+			request.Header.Set("Cookie", cookie)
+		}
 		// 0.8.11：弹幕走红果的**评论接口**，它用的是另一套签名
 		// （X-Gorgon / X-Argus / X-Ladon），而且必须带这两个业务头，
 		// 少一个就返回空列表。上下文里带 hongguoCommentKey 时切过去。

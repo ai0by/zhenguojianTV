@@ -68,6 +68,10 @@ type Downloader struct {
 	xiangjiaoDeviceID      string
 	xiangjiaoAccessToken   string
 	xiangjiaoAccessExpires time.Time
+	// 红果登录态（0.8.14）：匿名只能拿到 10 秒预告，正片需要用户自己的
+	// 网页 Cookie，见 provider_hongguo_cookie.go。
+	hongguoCookieMu   sync.RWMutex
+	hongguoCookieText string
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 1, PageSize: 30, Retries: 2} }

@@ -222,11 +222,16 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	// 解密后固定返回 {"parse":0,"url":""}，多剧多轮均无地址，已移除，
 	// 避免用户等待一个必然失败的请求。
 	//
-	// 0.8.14：红果对游客收紧了取流（App 正片接口回空、网页改 protectedPlayback、
-	// 公开片源退化成 10 秒预告），三条链路同时失效时给出可操作的提示，
-	// 而不是让用户对着一块"只能播 10 秒"的画面猜。
+	// 0.8.14：红果对匿名访问关闭了正片（App 正片接口回空、网页改
+	// protectedPlayback、公开片源退化成 10 秒预告）。三条链路同时失效时
+	// 给出可操作的提示 —— 配置登录态是目前唯一稳定的出路。
+	if !d.hongguoCookieConfigured() {
+		return providerMedia{}, fmt.Errorf(
+			"红果需要登录才能看正片。请到「设置 → 红果登录态」粘贴网页 Cookie（App：%v；公开片源：%v；网页：%v）",
+			publicError(nativeErr), publicError(publicErr), pageErr)
+	}
 	return providerMedia{}, fmt.Errorf(
-		"红果已开启播放保护，当前取不到正片（App：%v；公开片源：%v；网页：%v）。请换用其它站源观看该剧",
+		"红果取不到正片，登录态可能已过期，请重新获取 Cookie（App：%v；公开片源：%v；网页：%v）",
 		publicError(nativeErr), publicError(publicErr), pageErr)
 }
 
@@ -299,9 +304,15 @@ func (d *Downloader) resolveHongguoPublicMedia(ctx context.Context, videoID stri
 	return providerMedia{}, lastErr
 }
 
+// resolveHongguoWebMedia 走网页播放页（服务端渲染）。
+//
+// 0.8.14：这是**配置了登录态之后最可靠的一条链路**。红果的播放页由服务端
+// 渲染，匿名访问时 `protectedPlayback: true`、`videoList` 为空，前端 JS
+// 只能拼出 10 秒预告；带上有效 sessionid 后 SSR 才会把真实片源渲染进
+// `videoList`。所以这里统一走 fetchHongguoText（配置了 Cookie 就带上）。
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
 	pageURL := hongguoBaseURL + "/player/" + url.PathEscape(seriesID) + "/" + url.PathEscape(videoID)
-	body, err := d.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
+	body, err := d.fetchHongguoText(ctx, pageURL, hongguoBaseURL+"/")
 	if err != nil {
 		return providerMedia{}, err
 	}
@@ -310,11 +321,18 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 		return providerMedia{}, fmt.Errorf("红果未返回所请求的剧集，可能仅允许网页试看；请在站点确认该集的访问权限")
 	}
 	info, _ := page["video_player_info"].(map[string]any)
-	addresses := hongguoMediaAddresses(info)
+	addresses := hongguoWebAddresses(page)
 	if len(addresses) == 0 {
-		return providerMedia{}, fmt.Errorf("红果该集未提供公开播放地址，可能需要登录或 App 授权；不会将试看集冒充该集下载")
+		if !d.hongguoCookieConfigured() {
+			return providerMedia{}, errors.New("红果该集需要登录才能播放，请到「设置 → 红果登录态」粘贴网页 Cookie 后重试")
+		}
+		return providerMedia{}, errors.New("红果该集未提供播放地址，登录态可能已过期，请重新获取 Cookie")
 	}
-	duration, _ := strconv.ParseFloat(mapString(info, "duration"), 64)
+	duration, _ := strconv.ParseFloat(hongguoWebDuration(page, info), 64)
+	// 与公开片源同一套判断：不足 20 秒说明拿到的还是预告，不能当正片播。
+	if hongguoLooksLikePreview(time.Duration(duration * float64(time.Second))) {
+		return providerMedia{}, fmt.Errorf("红果网页只返回了 %.0f 秒预告，登录态可能无效", duration)
+	}
 	media := providerMedia{URL: addresses[0], Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}
 	for _, address := range addresses {
 		variant := media
@@ -322,6 +340,68 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 		media.Variants = append(media.Variants, variant)
 	}
 	return media, nil
+}
+
+// hongguoWebAddresses 从播放页里收集片源地址。
+//
+// 匿名时只有 `video_player_info`（通常为空）；登录后真实片源会出现在
+// `videoList`（清晰度 → 片源对象）。两处都扫，任一命中即可。
+func hongguoWebAddresses(page map[string]any) []string {
+	var addresses []string
+	seen := map[string]bool{}
+	collect := func(info map[string]any) {
+		if len(info) == 0 {
+			return
+		}
+		for _, address := range hongguoMediaAddresses(info) {
+			if seen[address] {
+				continue
+			}
+			seen[address] = true
+			addresses = append(addresses, address)
+		}
+	}
+	info, _ := page["video_player_info"].(map[string]any)
+	collect(info)
+	switch list := page["videoList"].(type) {
+	case map[string]any:
+		for _, value := range list {
+			entry, _ := value.(map[string]any)
+			collect(entry)
+		}
+	case []any:
+		for _, value := range list {
+			entry, _ := value.(map[string]any)
+			collect(entry)
+		}
+	}
+	return addresses
+}
+
+// hongguoWebDuration 取播放页里声明的片长（秒，字符串形式）。
+func hongguoWebDuration(page map[string]any, info map[string]any) string {
+	if value := mapString(info, "duration", "video_duration"); value != "" {
+		return value
+	}
+	switch list := page["videoList"].(type) {
+	case map[string]any:
+		for _, value := range list {
+			if entry, ok := value.(map[string]any); ok {
+				if duration := mapString(entry, "duration", "video_duration"); duration != "" {
+					return duration
+				}
+			}
+		}
+	case []any:
+		for _, value := range list {
+			if entry, ok := value.(map[string]any); ok {
+				if duration := mapString(entry, "duration", "video_duration"); duration != "" {
+					return duration
+				}
+			}
+		}
+	}
+	return mapString(page, "duration", "video_duration")
 }
 
 func hongguoDramaFromAny(v any, category string) Drama {

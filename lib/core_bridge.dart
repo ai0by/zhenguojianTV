@@ -152,6 +152,12 @@ abstract class AppRepository {
   /// 调整预缓存容量上限（字节）。
   Future<PlaybackCacheUsage> setMediaCacheLimit(int bytes) async =>
       const PlaybackCacheUsage();
+
+  /// 红果登录态 Cookie（0.8.14）。
+  ///
+  /// 红果对匿名访问只给 10 秒预告，正片需要在网页登录后把 Cookie 交给
+  /// 原生侧带到取流请求上。传空字符串表示清除。
+  Future<void> setHongguoCookie(String cookie) async {}
   Future<void> cancelCatalog() async {}
   Future<void> cancelSuggestions() async {}
   Future<void> cancelRecommendations() async {}
@@ -440,6 +446,11 @@ class NativeRepository extends AppRepository {
       PlaybackCacheUsage.fromJson(
         await _call({'action': 'setMediaCacheLimit', 'limit': bytes}),
       );
+
+  @override
+  Future<void> setHongguoCookie(String cookie) async {
+    await _call({'action': 'setHongguoCookie', 'cookie': cookie});
+  }
 
   @override
   Future<PlaybackPlan?> preload(
