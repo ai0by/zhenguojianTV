@@ -16,8 +16,8 @@ import (
 )
 
 // 红果 App 取流分两步：
-//  1. POST /novel/player/multi_video_model/v1/ 拿到本集的 video_model，
-//     其中 fallback_api 指向真正的片源清单地址；
+//  1. POST /novel/player/multi_video_model/v1/ 拿到本集的 video_model
+//     （多数情况下它自己就带 video_list，只有缺失时才需要第 2 步）；
 //  2. GET fallback_api 拿到 video_info.data，内含 video_list（各清晰度）与 key_seed。
 //
 // video_list 里的 main_url / backup_url 是 spade 密文，需用 key_seed 解密；
@@ -102,9 +102,11 @@ func hongguoRejectPreview(media providerMedia) error {
 
 // hongguoPlayerQuery 补齐真实客户端取流时带的 query 参数（0.8.14）。
 //
-// 2026-10-27 实测：缺这些参数时 /novel/player/multi_video_model/v1/ 恒定
-// 返回 HTTP 200 + 空 body（连续 35 次 0 命中），补齐后能偶发拿到
-// video_model。目录 / 详情接口不需要，所以只在取流时附加，避免影响它们。
+// 这些参数只有播放器侧的接口会用到，目录 / 详情接口不需要，所以只在
+// 取流时附加。注意：补齐之后取流接口对游客**仍然大多返回 200 + 空正文**
+// （2026-10-27 实测 16 次全空），空正文是上游"静默拒绝"的通用表现 ——
+// 不存在的路由会返回 404，说明接口还在，只是不给游客正片。
+// 保留这组参数是为了尽量贴近真实客户端，不是解决问题的关键。
 func hongguoPlayerQuery() url.Values {
 	return url.Values{
 		"channel":                 {"oppo_8662_64"},
