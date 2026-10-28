@@ -12,6 +12,7 @@ import 'core_bridge.dart';
 import 'danmaku_controller.dart';
 import 'danmaku_overlay.dart';
 import 'app_layout.dart';
+import 'app_theme.dart';
 import 'detail_screen.dart';
 import 'follow_state.dart';
 import 'lan_controller.dart';
@@ -1032,19 +1033,29 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     );
     if (widget.embedded) return content;
     final tv = AppLayout.isTelevision(context);
-    final scaffold = tv
-        ? Scaffold(backgroundColor: Colors.black, body: content)
-        : Scaffold(
-            backgroundColor: Colors.black,
-            body: SafeArea(
-              child: Column(
-                children: [
-                  _header(),
-                  Expanded(child: content),
-                ],
-              ),
+    // 0.8.15 第二批（用户要求，红果那种效果）：
+    // **独立播放页不再有顶部黑边**。
+    //
+    // 原先这里是 `SafeArea(Column[_header(), Expanded(content)])`：
+    // `_header()` 是纯黑 `Container`，加上 `SafeArea` 让出的状态栏高度，
+    // 于是顶部有一条黑带——状态栏图标还沿用上一页（浅色主题 → 深色图标）
+    // 的样式，落在纯黑底上完全看不见，用户看到的就是"电量时间被黑边挡住"。
+    //
+    // 现在：画面直接铺到屏幕最上沿（含状态栏区域），返回按钮改由
+    // `_FeedPage` 以浮层形式画在画面左上角，跟随控件一起显隐。
+    // 系统栏由 `_FeedPage` 的 `_syncSystemUi` 按"播放中 / 控件可见"切换。
+    final scaffold = Scaffold(
+      backgroundColor: Colors.black,
+      body: tv
+          ? content
+          // 播放页始终是深色底 → 状态栏图标必须用浅色，
+          // 用 `AnnotatedRegion` 声明式给出：离开本页时由 Flutter 自动恢复
+          // 上一层的样式（首页 AppBar 的浅色底深色图标），不需要手动还原。
+          : AnnotatedRegion<SystemUiOverlayStyle>(
+              value: AppTheme.systemBars(Brightness.dark),
+              child: content,
             ),
-          );
+    );
     if (!tv) return scaffold;
     return PopScope(
       canPop: false,
@@ -1084,46 +1095,11 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     }
   }
 
-  Widget _header() => Container(
-    color: Colors.black,
-    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-    child: Row(
-      children: [
-        IconButton(
-          onPressed: () => Navigator.of(context).maybePop(),
-          icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-          tooltip: '返回',
-        ),
-        // 单剧模式（0.6.2）：不再显示站源文字。
-        //
-        // 原先无条件显示 `_sourceLabel()`，而它读的是**首页当前勾选的站源集合**
-        // （见 `_sources`），与"正在播哪部剧"无关：
-        // 首页勾了多个源时，从详情页/下载页/本地媒体进入的单剧播放器
-        // 会错误地显示「全部站源」。单剧模式本就不涉及选源，
-        // 且本地媒体那条剧没有真实站源，故整行去掉，只保留返回按钮。
-        if (widget.singleDrama == null) Expanded(child: _sourceLabel()),
-      ],
-    ),
-  );
-
-  Widget _sourceLabel() => Align(
-    alignment: Alignment.centerLeft,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      child: Text(
-        _sources.isEmpty
-            ? '暂无可用站源'
-            : _sources.length > 1
-            ? '全部站源'
-            : _sources.first.name,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 16,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    ),
-  );
+  // 0.8.15 第二批：`_header()` / `_sourceLabel()` 已删除。
+  //
+  // 顶部那条纯黑标题栏正是"黑边挡住电量时间"的来源；现在画面铺到最上沿，
+  // 返回按钮改由 `_FeedPage` 画在画面左上角（见 `_topLeftOverlay`）。
+  // 站源文字本来在单剧模式下就不显示，一并去掉不影响任何入口。
 
   Widget _body() {
     if (_sources.isEmpty) {
@@ -1238,6 +1214,12 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
               ? _items[index + 1]
               : null,
           autoNextDramaEnabled: widget.singleDrama == null && !_autoNextEpisode,
+          // 0.8.15 第二批：独立播放页（不是首页竖滑流）把返回按钮画进画面，
+          // 并接管状态栏显隐。电视有自己的遥控返回，不需要。
+          onBack: widget.embedded || AppLayout.isTelevision(context)
+              ? null
+              : () => Navigator.of(context).maybePop(),
+          immersive: !widget.embedded && !AppLayout.isTelevision(context),
           // 局域网推送接收（0.6.4）：只交给**单剧模式的第一页**
           // （推送必然是一台设备推一部剧过来，不存在"下一部"），
           // 且只给当前页，避免多页同时回报握手。
@@ -1560,6 +1542,8 @@ class _FeedPage extends StatefulWidget {
     this.nextDrama,
     this.autoNextDramaEnabled = false,
     this.handoff,
+    this.onBack,
+    this.immersive = false,
   });
 
   final Drama drama;
@@ -1650,6 +1634,21 @@ class _FeedPage extends StatefulWidget {
   /// 需要按 [LanIncomingPlayback] 的握手协议回报状态。
   /// 只有单剧模式的当前页会拿到它（见 `_body()` 的传参）。
   final LanIncomingPlayback? handoff;
+
+  /// 画面左上角的返回按钮（0.8.15 第二批）。
+  ///
+  /// 非空表示本页是**独立播放路由**（从详情页 / 下载页 / 本地媒体 / 投屏
+  /// 进入），顶部不再有黑色标题栏，返回按钮以浮层形式画在画面左上角，
+  /// 跟随控件一起显隐（红果那种"点一下才出现返回"的观感）。
+  /// 首页竖滑流为 null（它由底部导航承载）。
+  final VoidCallback? onBack;
+
+  /// 是否接管系统栏显隐（0.8.15 第二批）。
+  ///
+  /// 只在独立播放页为 true：播放中且控件收起 → 隐藏状态栏（画面真正铺满，
+  /// 顶部没有黑边）；点击暂停 / 唤起控件 / 下拉通知栏 → 状态栏回来。
+  /// 首页竖滑流外面还有 AppBar，切系统栏会让整页跳一下，故不接管。
+  final bool immersive;
 
   @override
   State<_FeedPage> createState() => _FeedPageState();
@@ -2647,6 +2646,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         // `playing == true` 时安排自动隐藏，**不触发重建**，因此从其它途径
         // 改变播放状态（自动连播、播放结束、健康检查恢复等）时图标会滞后。
         if (!_closed) _tick.value++;
+        // 0.8.15 第二批：起播 / 暂停 / 自动切集都会走到这里，
+        // 状态栏显隐跟着刷新（不必等整页重建，暂停后电量时间要立刻回来）。
+        _queueSystemUiSync();
         // 0.6.9：真正起播 → 结束"等待第一帧"，撤掉加载提示。
         if (playing && _awaitingFirstFrame) {
           _awaitingFirstFrame = false;
@@ -2892,6 +2894,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
       }
     }
+    // 0.8.15 第二批：本页若把状态栏藏起来了，离开时必须还回去，
+    // 否则整个应用（包括首页 AppBar）会一直处在沉浸态。
+    // 横屏分支上面已经恢复过一次，这里重复调用同一模式没有副作用。
+    if (_appliedUiMode == SystemUiMode.immersiveSticky) {
+      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    }
+    _appliedUiMode = null;
     _releasePlayer();
     // 预载器（0.2.31）由**父级**持有并释放（0.6.9 改为全流共享），
     // 本页只借用，不负责 dispose。
@@ -4034,24 +4043,71 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       bottom: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 0, 0),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.black54,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            child: Text(
-              '第${_episodeIndex + 1}集',
-              key: textKey ?? const ValueKey('feed-episode-badge'),
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
+        child: _episodeBadgeBox(textKey: textKey),
+      ),
+    ),
+  );
+
+  /// 集数标签本体（不含定位与安全区），供左上角一行布局复用。
+  Widget _episodeBadgeBox({Key? textKey}) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Colors.black54,
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      child: Text(
+        '第${_episodeIndex + 1}集',
+        key: textKey ?? const ValueKey('feed-episode-badge'),
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
         ),
+      ),
+    ),
+  );
+
+  /// 左上角浮层：返回按钮（仅独立播放页）+ 集数标签（0.8.15 第二批）。
+  ///
+  /// 返回按钮原本在顶部那条纯黑标题栏里；那条黑带正是"电量时间被黑边
+  /// 挡住"的来源，已删除。现在它压在同一行的画面左上角，跟随控件显隐——
+  /// 点一下画面出现返回键，与红果一致。
+  ///
+  /// 用 `SafeArea` 让出状态栏高度：独立播放页的画面铺到最上沿，
+  /// 不垫安全区的话按钮会压到刘海 / 挖孔下面。
+  Widget _topLeftOverlay() => Align(
+    alignment: Alignment.topLeft,
+    child: SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(6, 8, 0, 0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.onBack != null) ...[
+              _backButton(),
+              if (_hasEpisodeBadge) const SizedBox(width: 8),
+            ],
+            if (_hasEpisodeBadge) _episodeBadgeBox(),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  /// 画面左上角的返回按钮（0.8.15 第二批）。
+  Widget _backButton() => Material(
+    color: Colors.black38,
+    shape: const CircleBorder(),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      key: const ValueKey('feed-back'),
+      onTap: widget.onBack,
+      child: const SizedBox(
+        width: 38,
+        height: 38,
+        child: Icon(Icons.arrow_back_rounded, color: Colors.white, size: 21),
       ),
     ),
   );
@@ -5721,11 +5777,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                               ),
                             ),
                           ),
-                          // 左上角集数标签（0.6.2）。
+                          // 左上角：返回按钮（仅独立播放页）+ 集数标签。
                           //
-                          // 只在有多个剧集时显示：单集、本地单文件不显示，
-                          // 避免出现"第1集"这种没有信息量的标签。
-                          if (_hasEpisodeBadge) _episodeBadge(),
+                          // 集数标签只在有多个剧集时显示：单集、本地单文件
+                          // 不显示，避免出现"第1集"这种没有信息量的标签。
+                          //
+                          // 0.8.15 第二批：返回按钮从顶部黑条搬到这里，
+                          // 与集数标签同一行，跟随控件一起显隐。
+                          if (_hasEpisodeBadge || widget.onBack != null)
+                            _topLeftOverlay(),
                           // 右上角推送按钮（0.6.4，从老播放器迁移）。
                           //
                           // 位置选择理由：底部按钮行已固定为 5 个等宽槽位
@@ -5774,11 +5834,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.fromLTRB(
+                                  // 0.8.15 第二批：独立播放页的画面铺到屏幕最上沿
+                                  // 之后，外面那层 `SafeArea` 没了，底部这一行会
+                                  // 压到手势导航条上，所以自己补一次底部安全区。
+                                  // 首页竖滑流外面还有 `SafeArea(bottom: true)`，
+                                  // 里面读到的 `padding.bottom` 已经是 0，不会叠加。
+                                  padding: EdgeInsets.fromLTRB(
                                     12,
                                     10,
                                     12,
-                                    8,
+                                    8 + MediaQuery.paddingOf(context).bottom,
                                   ),
                                   decoration: const BoxDecoration(
                                     gradient: LinearGradient(
@@ -6033,7 +6098,50 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     );
     // 铺满整屏。`feed-stage` 这个 key 保留给手势测试取真实矩形
     // （见 `feed_horizontal_swipe_test` 的 `_videoPoint`）。
+    //
+    // 0.8.15 第二批：状态栏显隐跟着"播放中 + 控件收起"走。
+    // 放在 build 末尾排队（不能在 build 里直接调平台通道），
+    // `_syncSystemUi` 自己比对上一次应用的模式，重复调用无副作用。
+    _queueSystemUiSync();
     return SizedBox(key: const ValueKey('feed-stage'), child: stage);
+  }
+
+  /// 上一次真正应用过的系统栏模式（null = 还没应用过）。
+  SystemUiMode? _appliedUiMode;
+
+  /// 把状态栏显隐同步到"播放中 / 控件可见"（0.8.15 第二批）。
+  ///
+  /// 用户要的效果（参照红果）：
+  /// - 正常播放、控件已收起 → 状态栏隐藏，画面真正铺到屏幕最上沿，
+  ///   顶部不再有一条黑边压在电量时间上；
+  /// - 点击画面（暂停 / 唤起控件）、打开倍速 / 选集等弹层、加载或报错时
+  ///   → 状态栏回来，电量时间可见；
+  /// - 从屏幕顶部下拉时，系统自己会临时显示状态栏（`immersiveSticky`
+  ///   的既有行为），不需要我们处理。
+  ///
+  /// 只对独立播放页生效（`widget.immersive`）：首页竖滑流外面还有 AppBar，
+  /// 状态栏高度一变整页会跟着跳，得不偿失。
+  void _queueSystemUiSync() {
+    if (!widget.immersive) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncSystemUi());
+  }
+
+  void _syncSystemUi() {
+    if (!mounted || _closed || !widget.immersive) return;
+    // 全屏横屏自己管系统栏（`_toggleLandscape` / `_restorePortraitSystemUi`），
+    // 这里不要插手，否则退出横屏后会残留一个错误的状态。
+    if (_landscape) return;
+    final playing = _player?.state.playing ?? false;
+    // 有任何一层需要用户看的时候都得把状态栏还回来：
+    // 控件可见 / 弹层打开 / 正在加载 / 有错误 / 已暂停。
+    final chrome =
+        _controlsVisible || _panelOpen || _loading || _error != null || !playing;
+    final mode = chrome
+        ? SystemUiMode.edgeToEdge
+        : SystemUiMode.immersiveSticky;
+    if (mode == _appliedUiMode) return;
+    _appliedUiMode = mode;
+    unawaited(SystemChrome.setEnabledSystemUIMode(mode));
   }
 
   /// 焦点进入控件层时停掉自动隐藏计时；离开时恢复计时。

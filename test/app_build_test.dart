@@ -22,12 +22,46 @@ void main() {
       final store = LocalStore(await SharedPreferences.getInstance());
       expect(appName, allSourcesEnabled ? '真果鉴TV' : '红果鉴');
       expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
-      expect(store.sources.length, SourceSite.values.length);
-      expect(store.source, allSourcesEnabled ? 'huangdou' : 'hongguo');
+      // 0.8.15 第二批：黄豆属于「黑洞」站源，默认关闭 → 不进可展示列表，
+      // 于是默认站源回落到列表第一项（红果）。
+      expect(
+        store.sources.length,
+        SourceSite.values.where((site) => !SourceSite.isBlackhole(site.id)).length,
+      );
+      expect(store.source, 'hongguo');
+      // 存档里的 'huangdou' 不会被改写：打开黑洞后能自动回到黄豆。
       expect(store.preferences.getString('source'), 'huangdou');
       store.dispose();
     },
   );
+
+  test('blackhole sources stay hidden until the setting is turned on', () async {
+    SharedPreferences.setMockInitialValues({'source': 'huangdou'});
+    final store = LocalStore(await SharedPreferences.getInstance());
+    addTearDown(store.dispose);
+    expect(store.blackholeEnabled, isFalse);
+    if (!allSourcesEnabled) {
+      // 红果鉴这条分发线只有红果，黑洞开关对它没有可见影响。
+      expect(store.sources.single.id, 'hongguo');
+      return;
+    }
+    expect(store.sources.map((site) => site.id), isNot(contains('huangdou')));
+    expect(store.sources.map((site) => site.id), isNot(contains('yeguo')));
+    expect(store.sources.map((site) => site.id), isNot(contains('huangguoai')));
+    // 权限判定不受影响：黑洞只过滤"展示"，历史 / 下载里的剧仍能播。
+    expect(store.allowsSource('huangdou'), isTrue);
+
+    await store.setBlackholeEnabled(true);
+    expect(store.blackholeEnabled, isTrue);
+    expect(store.sources.map((site) => site.id), contains('huangdou'));
+    expect(store.sources.map((site) => site.id), contains('yeguo'));
+    expect(store.sources.length, SourceSite.values.length);
+    // 关掉之前存的是黄豆，重新打开后自动回到黄豆。
+    expect(store.source, 'huangdou');
+
+    await store.setBlackholeEnabled(false);
+    expect(store.sources.map((site) => site.id), isNot(contains('huangdou')));
+  });
 
   test(
     'edition filtering preserves favorites and history through backup restore',
@@ -87,6 +121,9 @@ void main() {
         ]),
         'activeProfile': 'viewer',
         'profile.viewer.source': 'huangdou',
+        // 0.8.15 第二批：黄豆是黑洞站源，本用例要验证"存档里的站源
+        // 能按用户权限恢复"，所以先把它打开，否则列表里根本没有这一项。
+        'profile.viewer.blackhole': true,
       });
       final store = LocalStore(await SharedPreferences.getInstance());
       expect(store.profile.id, 'viewer');

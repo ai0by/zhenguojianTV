@@ -13,7 +13,9 @@ import 'player_fixtures.dart';
 
 void main() {
   Future<LocalStore> store() async {
-    SharedPreferences.setMockInitialValues({});
+    // 0.8.15 第二批：黄豆属于「黑洞」站源，默认不展示；
+    // 本用例要切到黄豆验证 VIP 过滤，先把它打开。
+    SharedPreferences.setMockInitialValues({'blackhole': true});
     return LocalStore(await SharedPreferences.getInstance());
   }
 

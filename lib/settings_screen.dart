@@ -208,6 +208,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         () => widget.store.setTvCompatMode(value),
                       ),
               ),
+              // 黑洞站源开关（0.8.15 第二批）。
+              //
+              // 用户要求：默认关闭，黄豆 / 黄剧 / 黄果 / 51 / 野果这几站
+              // 打开后才出现在站源列表里。放在主题 / 界面模式下面（普通用户
+              // 也能开），因为这是"要不要看这些源"的选择，不是管理操作；
+              // 实际能不能用仍由各用户的站源权限决定。
+              SwitchListTile(
+                key: const ValueKey('setting-blackhole'),
+                value: widget.store.blackholeEnabled,
+                secondary: const Icon(Icons.blur_on_rounded),
+                title: const Text('黑洞站源'),
+                subtitle: const Text(
+                  '打开后显示黄豆、黄剧、黄果、51、野果这五个站源；'
+                  '默认关闭，只保留红果、E站、青空、花果等常用站源。',
+                ),
+                onChanged: _busy
+                    ? null
+                    : (value) => saveUserChange(
+                        context,
+                        () => widget.store.setBlackholeEnabled(value),
+                      ),
+              ),
               ListTile(
                 leading: const Icon(Icons.people_outline),
                 title: const Text('用户管理'),

@@ -17,6 +17,8 @@ class LocalSnapshot {
     'source',
     'multiSources',
     'hideVip',
+    // 0.8.15 第二批：「黑洞」站源开关（每个用户各自一份）。
+    'blackhole',
     'playback',
     'precache',
     'downloadPreferences',
@@ -43,7 +45,7 @@ class LocalSnapshot {
       globalKeys.contains(key) ||
       libraryKeys.contains(key) ||
       RegExp(
-        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|mediaHistory|source|multiSources|hideVip|playback|precache|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts)$',
+        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|mediaHistory|source|multiSources|hideVip|blackhole|playback|precache|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts)$',
       ).hasMatch(key);
 
   Map<String, Object> get values => Map.of(_values);
@@ -76,6 +78,9 @@ class LocalSnapshot {
     for (final entry in values.entries) {
       final boolean = {
         'hideVip',
+        // 0.8.15 第二批：「黑洞」是布尔开关，漏在这里会直接抛
+        // 「本地配置字段无效」，写入即失败。
+        'blackhole',
         'autoExport',
         'exportPosters',
         'autoUpdateCatalog',

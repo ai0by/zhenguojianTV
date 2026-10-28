@@ -18,7 +18,9 @@ import 'player_fixtures.dart';
 
 void main() {
   Future<LocalStore> localStore() async {
-    SharedPreferences.setMockInitialValues({});
+    // 0.8.15 第二批：黄豆等属于「黑洞」站源，默认不展示；
+    // 这组界面用例要覆盖"多站源切换"，所以先把它打开。
+    SharedPreferences.setMockInitialValues({'blackhole': true});
     final store = LocalStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
     return store;

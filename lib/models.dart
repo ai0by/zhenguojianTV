@@ -113,6 +113,25 @@ class SourceSite {
   static bool isAvailable(String id) => values.any((site) => site.id == id);
   static SourceSite byId(String id) =>
       knownValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
+
+  /// 「黑洞」站源（0.8.15 第二批）。
+  ///
+  /// 用户要求：这几站在设置里打开「黑洞」之后才展示，默认关闭。
+  /// 关闭时它们只是**不出现在站源列表里**（也就不会被拉目录 / 搜索），
+  /// 已经下载或历史记录里指向它们的剧集仍然能播 ——
+  /// 因此判定放在 `LocalStore.sources`，**不要**塞进 `isAvailable`。
+  static const blackholeIds = {
+    'huangdou',
+    'huangju',
+    '51duanju',
+    'yeguo',
+    // 黄果是一组三入口（剧场 / AI / 旧版），一起算黑洞。
+    'huangguo-video',
+    'huangguoai',
+    'cloudfront',
+  };
+
+  static bool isBlackhole(String id) => blackholeIds.contains(id);
 }
 
 class SourceGroup {

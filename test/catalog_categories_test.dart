@@ -123,7 +123,9 @@ void main() {
     tester.platformDispatcher.textScaleFactorTestValue = scale;
     addTearDown(tester.view.reset);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    SharedPreferences.setMockInitialValues({});
+    // 0.8.15 第二批：黄果（黄果 AI / 剧场 / 旧版）属于「黑洞」站源，
+    // 默认不展示；本组用例要验证黄果三入口合并，先把它打开。
+    SharedPreferences.setMockInitialValues({'blackhole': true});
     final store = LocalStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
     await store.setSource(source);

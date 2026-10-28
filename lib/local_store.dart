@@ -114,8 +114,20 @@ class LocalStore extends ChangeNotifier {
   bool get canDownload => !locked && (profile.admin || profile.download);
   bool allowsSource(String source) =>
       !locked && SourceSite.isAvailable(source) && profile.allows(source);
-  List<SourceSite> get sources =>
-      SourceSite.values.where((site) => allowsSource(site.id)).toList();
+
+  /// 「黑洞」开关（0.8.15 第二批）：默认关闭。
+  ///
+  /// 关闭时黄豆 / 黄剧 / 黄果 / 51 / 野果这几站**不出现在站源列表**里，
+  /// 首页站源弹窗、站源管理、目录抓取都跟着少这一批。
+  /// 只影响"展示"，不影响权限判定（[allowsSource] 保持原样）：
+  /// 已经下载好的、历史记录里的黑洞剧集照常能播。
+  bool get blackholeEnabled => !locked && (_bool(_key('blackhole')) ?? false);
+
+  /// 当前**可展示**的站源：权限放行 + 黑洞开关过滤。
+  List<SourceSite> get sources => SourceSite.values
+      .where((site) => allowsSource(site.id))
+      .where((site) => blackholeEnabled || !SourceSite.isBlackhole(site.id))
+      .toList();
 
   void _loadLibrary() {
     _lanDocumentCache = null;
@@ -440,6 +452,9 @@ class LocalStore extends ChangeNotifier {
   /// 弹幕开关（0.8.11）。
   Future<void> setDanmakuEnabled(bool value) =>
       _setting(_key('danmakuEnabled'), value);
+  /// 「黑洞」站源开关（0.8.15 第二批）。
+  Future<void> setBlackholeEnabled(bool value) =>
+      _setting(_key('blackhole'), value);
   Future<void> setHideVip(bool value) => _setting(_key('hideVip'), value);
   Future<void> setSource(String value) {
     if (!allowsSource(value)) return Future.error(StateError('当前用户没有此站源权限'));
