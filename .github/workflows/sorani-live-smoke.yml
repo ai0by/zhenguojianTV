@@ -1,0 +1,26 @@
+name: 青空 Live Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sorani-live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go 1.24.1
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.1'
+      # 青空次元（api.sorani.cc）在本机沙箱不可达，只能借 GitHub runner 验证：
+      # 目录三个分类是否有数据、详情能否列出分集、play 接口能否换出真实地址、
+      # m3u8 能否解析出时长。站点挂掉或改字段时这里会直接红。
+      - name: Live catalog, detail, and playback probe
+        working-directory: native
+        env:
+          SORANI_LIVE_TEST: '1'
+        run: go test ./core -run '^TestSoraniLive' -count=1 -v

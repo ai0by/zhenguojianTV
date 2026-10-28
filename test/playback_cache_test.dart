@@ -63,6 +63,99 @@ class _Repo extends FixtureRepository {
 }
 
 void main() {
+  // —— 0.8.15：双向预载 ——
+  //
+  // 用户反馈"切上一集明显比切下一集卡"。以前预载只有"下一集"一个槽，
+  // 上一集从来没被准备过，切过去要现场走完整条解析链路。
+  // 下面几条守住"上一集也必须提前解析好"。
+
+  List<Episode> episodes() => [_episode(1), _episode(2), _episode(3)];
+
+  test('0.8.15：预载同时准备上一集和下一集', () async {
+    final repo = _Repo();
+    final preloader = PlaybackPreloader(repo);
+    addTearDown(preloader.dispose);
+
+    preloader.prepareAround(_drama, episodes(), 1);
+    await pumpEventQueue();
+
+    expect(
+      repo.preloads.toSet(),
+      {'hongguo:1#1', 'hongguo:1#3'},
+      reason: '当前第 2 集，两侧的 1 / 3 都要提前解析',
+    );
+  });
+
+  test('0.8.15：切上一集能直接取走预载结果，不用重新解析', () async {
+    final repo = _Repo();
+    final preloader = PlaybackPreloader(repo);
+    addTearDown(preloader.dispose);
+
+    preloader.prepareAround(_drama, episodes(), 1);
+    await pumpEventQueue();
+    repo.preloads.clear();
+
+    final plan = preloader.take(_drama, episodes()[0]);
+    expect(plan, isNotNull, reason: '上一集应已备好');
+    expect(plan!.url, contains('/preload/1'));
+    expect(
+      preloader.take(_drama, episodes()[2]),
+      isNotNull,
+      reason: '取走上一次集不能把下一集的槽一起清掉',
+    );
+    expect(repo.preloads, isEmpty, reason: '取走预载不应再发起解析');
+  });
+
+  test('0.8.15：准备邻居不会清掉"下一部"的预载', () async {
+    const other = Drama(id: 'hongguo:9', source: 'hongguo', title: '乙剧');
+    final repo = _Repo();
+    final preloader = PlaybackPreloader(repo);
+    addTearDown(preloader.dispose);
+
+    preloader.prepare(other, _episode(1));
+    preloader.prepareAround(_drama, episodes(), 1);
+    await pumpEventQueue();
+
+    expect(
+      preloader.take(other, _episode(1)),
+      isNotNull,
+      reason: '别的剧的槽不该被本剧的邻居清理顺手丢掉',
+    );
+  });
+
+  test('0.8.15：换集后旧的邻居不再占着播放会话', () async {
+    final repo = _Repo();
+    final preloader = PlaybackPreloader(repo);
+    addTearDown(preloader.dispose);
+
+    preloader.prepareAround(_drama, episodes(), 1); // 槽：第 1、3 集
+    await pumpEventQueue();
+    preloader.prepareAround(_drama, episodes(), 2); // 槽：只剩第 2 集
+    await pumpEventQueue();
+
+    expect(
+      preloader.take(_drama, episodes()[0]),
+      isNull,
+      reason: '换集后第 1 集已不是邻居，应被清掉',
+    );
+    expect(repo.releases, contains('S1'), reason: '被清掉的槽要释放播放会话');
+    expect(preloader.take(_drama, episodes()[1]), isNotNull);
+  });
+
+  test('0.8.15：hasPlan 只做判断，不消耗预载结果', () async {
+    final repo = _Repo();
+    final preloader = PlaybackPreloader(repo);
+    addTearDown(preloader.dispose);
+
+    preloader.prepareAround(_drama, episodes(), 1);
+    await pumpEventQueue();
+
+    expect(preloader.hasPlan(_drama, episodes()[2]), isTrue);
+    expect(preloader.hasPlan(_drama, episodes()[2]), isTrue, reason: '判断是只读的');
+    expect(preloader.take(_drama, episodes()[2]), isNotNull);
+    expect(preloader.hasPlan(_drama, episodes()[2]), isFalse);
+  });
+
   test('0.8.12：预缓存按队列串行执行，并复用已预载的会话', () async {
     final repo = _Repo();
     final preloader = PlaybackPreloader(repo);

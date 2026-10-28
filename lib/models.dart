@@ -14,6 +14,8 @@ class SourceSite {
       id == 'yeguo' ||
       id == 'xiangjiao' ||
       id == 'ezdmw' ||
+      // 青空次元（0.8.15）：搜索走同一个 JSON 目录接口，支持翻页。
+      id == 'sorani' ||
       // 苹果CMS 采集站（0.8.11）：网果的搜索页被 WAF 拦死（返回"安全验证"），
       // 只走本地缓存搜索，所以不在这个列表里。
       id == 'huaguo' ||
@@ -21,7 +23,13 @@ class SourceSite {
       id == 'wuguo';
   bool get pagedSearch => switch (id) {
     // 花果的搜索页不认 page 参数（第 2 页返回空结果），只给第一页。
-    'huangju' || '51duanju' || 'yeguo' || 'ezdmw' || 'faguo' || 'wuguo' => true,
+    'huangju' ||
+    '51duanju' ||
+    'yeguo' ||
+    'ezdmw' ||
+    'sorani' ||
+    'faguo' ||
+    'wuguo' => true,
     _ => false,
   };
   bool get searchSuggestions => id == 'hongguo';
@@ -44,6 +52,8 @@ class SourceSite {
   static const yeguo = SourceSite('yeguo', '野果', '热播 · 全集正片校验');
   static const xiangjiao = SourceSite('xiangjiao', '香蕉', '热播 · 分集权限识别');
   static const ezdmw = SourceSite('ezdmw', 'E站', '动漫 · 新番 · 完结');
+  // 青空次元（0.8.15）：番剧 / 剧场动画 / 特摄，纯 JSON 接口。
+  static const sorani = SourceSite('sorani', '青空', '番剧 · 剧场 · 特摄');
   // 苹果CMS 采集站（0.8.11）。四个站都是整部剧一个视频，只有发果按集拆开。
   static const huaguo = SourceSite('huaguo', '花果', '短剧 · 花生短剧');
   static const wangguo = SourceSite('wangguo', '网果', '短剧 · 短剧网');
@@ -65,6 +75,7 @@ class SourceSite {
     yeguo,
     xiangjiao,
     ezdmw,
+    sorani,
     huaguo,
     wangguo,
     faguo,
@@ -89,6 +100,7 @@ class SourceSite {
           duanju51,
           yeguo,
           ezdmw,
+          sorani,
           huaguo,
           wangguo,
           faguo,

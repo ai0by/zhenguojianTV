@@ -27,6 +27,8 @@ const (
 	sourceHuangju       = "huangju"
 	sourceCloudFront    = "cloudfront"
 	sourceEZDMW         = "ezdmw"
+	// 青空次元（番剧 / 剧场动画 / 特摄），0.8.15 接入。
+	sourceSorani = "sorani"
 
 	providerMaxBodyBytes = 20 * 1024 * 1024
 	providerTimeout      = 12 * time.Second
@@ -109,7 +111,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceDuanju51, sourceYeguo, sourceXiangjiao, sourceCloudFront, sourceEZDMW,
-		sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
+		sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo, sourceSorani:
 		return true
 	default:
 		return false
@@ -137,6 +139,10 @@ func canonicalProviderSource(source string) string {
 		return sourceXiangjiao
 	case "ezdmw", "e站", "e站动漫", "ezdmw.org", "m.ezdmw.org", "www.ezdmw.org":
 		return sourceEZDMW
+	// 0.8.15：青空次元（番剧）。名字 / 域名都收进来，局域网同步与旧存档里的
+	// `sorani:123` 才能正确回落到这个站源。
+	case "sorani", "青空", "青空次元", "青空动漫", "www.sorani.net", "sorani.net", "api.sorani.cc":
+		return sourceSorani
 	// 0.8.11：苹果CMS 采集站。名字 / 域名都收进来，局域网同步与旧存档里的
 	// `huaguo:123` 才能正确回落到对应站源。
 	case "huaguo", "花果", "花生", "www.zywest263.com", "zywest263.com":

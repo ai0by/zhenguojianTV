@@ -2318,17 +2318,25 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _preloader.pausePrecache();
       return;
     }
-    // 「连播本剧」优先：还有下一集就预载下一集。
-    if (widget.autoNextEpisode || !widget.autoNextDramaEnabled) {
-      if (_episodeIndex + 1 < detail.episodes.length) {
-        _preloader.prepare(
-          detail.drama,
-          detail.episodes[_episodeIndex + 1],
-          quality: _quality,
-        );
-        _schedulePrecache(detail);
-        return;
-      }
+    // 0.8.15：**上一集也要预载**。
+    //
+    // 用户反馈"切上一集明显比切下一集卡"。以前预载只有"下一集"一个槽，
+    // 回看上一集时整条解析链路（详情 → 取流 → 拉 m3u8 → 校验时长）全部
+    // 暴露在切集那一刻；现在两侧都提前准备好。
+    //
+    // 必须放在「连播」判断**之前**：上一集与连播设置无关，而下面两个分支
+    // 都会提前 return，写在后面的话"连播下一部"模式下上一集永远轮不到。
+    _preloader.prepareAround(
+      detail.drama,
+      detail.episodes,
+      _episodeIndex,
+      quality: _quality,
+    );
+    // 「连播本剧」优先：还有下一集就预缓存后面几集。
+    if ((widget.autoNextEpisode || !widget.autoNextDramaEnabled) &&
+        _episodeIndex + 1 < detail.episodes.length) {
+      _schedulePrecache(detail);
+      return;
     }
     // 「连播下一部」：预载下一部剧的第 1 集。
     final next = widget.nextDrama;
@@ -2336,7 +2344,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       unawaited(_preloadNextDrama(next));
       return;
     }
-    _preloader.clear();
+    // 没有下一部了：清掉别的剧的预载，**但保留本剧的上一集**
+    // （原来这里是 `clear()`，会把刚备好的上一集一起丢掉）。
+    _preloader.retainDrama(detail.drama);
   }
 
   /// 预缓存后续 N 集（0.8.12）。
@@ -3508,7 +3518,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _autoAdvancing = auto;
     _silentSwitch = auto;
     // 换集前先把当前集的进度存下来，否则切走就丢。
-    await _saveProgress();
+    //
+    // 0.8.15：**不再等它落盘**。`_saveProgress` 在第一个 await 之前就把
+    // 位置/时长快照下来了（同步段一路取 `player.state`），所以 fire-and-forget
+    // 存进去的仍是**旧一集**的进度；await 它只是让每次切集凭空多等一次磁盘写，
+    // 用户感知就是"点下一集要顿一下"。
+    unawaited(_saveProgress());
     // 0.3.5：等待落盘期间页面可能已被滑走（播放器已释放）。
     // 此时若继续按老流程走，会在已释放的播放器上加载，最终黑屏；
     // 这里改为把状态复位，交给 `_resumeAfterRelease()`（滑回来时）重新加载。
@@ -3544,17 +3559,40 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     if (player == null) return;
     if (_ready && !force) return;
     final generation = ++_generation;
+    // 0.8.15：预载命中时**不要**把"正在加载"盖上去。
+    //
+    // 切集本来就该是无感的。命中预载还要先闪一下遮罩、再把已经画出来的
+    // 画面判成"没有帧"，用户看到的就是"卡了一下"。这里先用只读的
+    // `hasPlan` 判断一次（真正的 `take` 要等下面索引算完才能做），
+    // 命中就保持当前画面，直接 open 新地址。
+    final cachedDetail = _detail;
+    final silent =
+        cachedDetail != null &&
+        !widget.localOnly &&
+        cachedDetail.episodes.isNotEmpty &&
+        _preloader.hasPlan(
+          cachedDetail.drama,
+          cachedDetail.episodes[_episodeIndex.clamp(
+            0,
+            cachedDetail.episodes.length - 1,
+          )],
+          quality: _quality,
+        );
     setState(() {
-      _loading = true;
+      _loading = !silent;
       _error = null;
-      // 0.7.13：新一集重新判断"是否已出画面"。
-      _hasVideoFrame = false;
-      _frameTicks = 0;
+      // 0.7.13：新一集重新判断"是否已出画面"。命中预载时保持原状。
+      if (!silent) {
+        _hasVideoFrame = false;
+        _frameTicks = 0;
+      }
     });
-    // 0.7.7 修复（真机反馈"流量+全屏自动切下一集纯黑、等很久不播"）：
-    // 全屏层是独立路由，只跟随 `_fullscreenRevision` 重建。此前进入加载时
-    // 没有立即刷新它 → 全屏看不到「正在加载视频…」，弱网下 open 一卡就是**纯黑无文字**。
-    _refreshFullscreen(immediate: true);
+    if (!silent) {
+      // 0.7.7 修复（真机反馈"流量+全屏自动切下一集纯黑、等很久不播"）：
+      // 全屏层是独立路由，只跟随 `_fullscreenRevision` 重建。此前进入加载时
+      // 没有立即刷新它 → 全屏看不到「正在加载视频…」，弱网下 open 一卡就是**纯黑无文字**。
+      _refreshFullscreen(immediate: true);
+    }
     try {
       final detail = _detail ?? await widget.repository.detail(widget.drama);
       // 0.3.5：除代次外还要确认播放器实例没被替换/释放

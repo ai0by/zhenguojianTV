@@ -61,6 +61,8 @@ func validNativeCategory(source, category string) bool {
 		return category == huangjuNewestCategory || validHuangjuID(category) && !strings.HasPrefix(category, "@")
 	case sourceDuanju51:
 		return validDuanju51Category(category)
+	case sourceSorani:
+		return validSoraniCategory(category)
 	}
 	return false
 }
@@ -80,6 +82,9 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		return all, nil
 	case sourceDuanju51:
 		return append(all, duanju51Categories...), nil
+	// 青空次元（0.8.15）：上游只有三个固定一级分类，不需要远端探测。
+	case sourceSorani:
+		return append(all, soraniCategories...), nil
 	case sourceYeguo, sourceXiangjiao, sourceEZDMW, sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		return all, nil
 	}

@@ -52,6 +52,8 @@ type Downloader struct {
 	hongguo                *hongguoAppClient
 	huangjuOnce            sync.Once
 	huangju                *huangjuAPIClient
+	soraniOnce             sync.Once
+	sorani                 *soraniAPIClient
 	diagnostics            *diagnosticLog
 	apiMu                  sync.Mutex
 	apiBase                string
@@ -697,6 +699,18 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 		result.HasMore = more
 		return result, nil
 	}
+	// 青空次元（0.8.15）：搜索走同一个目录接口，只是换路由与参数。
+	if query != "" && source == sourceSorani {
+		items, more, err := d.fetchSoraniCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
 	if query != "" {
 		if profile, found := maccmsProfileFor(source); found && profile.SearchURL != nil {
 			items, more, err := d.fetchMaccmsCatalogPage(ctx, source, page, query)
@@ -786,6 +800,8 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 		items, result.HasMore, err = d.fetchXiangjiaoCatalogPage(ctx, page, "")
 	case sourceEZDMW:
 		items, result.HasMore, err = d.fetchEZDMWCatalogPage(ctx, page, category, "")
+	case sourceSorani:
+		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
 	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		items, result.HasMore, err = d.fetchMaccmsCatalogPage(ctx, source, page, "")
 	case sourceHuangguoVideo:
@@ -849,6 +865,8 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchXiangjiaoDetail(ctx, sourceID)
 	case sourceEZDMW:
 		raw, chapters, err = engine.downloader.fetchEZDMWDetail(ctx, sourceID)
+	case sourceSorani:
+		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
 	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		raw, chapters, err = engine.downloader.fetchMaccmsDetail(ctx, source, sourceID)
 	default:

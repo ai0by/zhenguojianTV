@@ -43,6 +43,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		fallback = xiangjiaoBaseURL
 	case sourceEZDMW:
 		fallback = ezdmwBaseURL
+	case sourceSorani:
+		fallback = soraniSiteBaseURL
 	case sourceHuaguo:
 		fallback = huaguoBaseURL
 	case sourceWangguo:
@@ -90,6 +92,8 @@ func providerSourceForURL(raw string) string {
 		return sourceXiangjiao
 	case ezdmwMirrorHost(host):
 		return sourceEZDMW
+	case host == "sorani.net" || host == "www.sorani.net" || host == "api.sorani.cc":
+		return sourceSorani
 	case maccmsMirrorHost(host):
 		// 苹果CMS 采集站（花果 / 网果 / 发果 / 伍果），域名都登记在
 		// maccmsProfiles 里，加站只需要改那一张表。
@@ -212,6 +216,14 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == sourceEZDMW && strings.HasPrefix(chapter.VideoURL, "ezdmw-play://") {
 		var err error
 		media, err = d.resolveEZDMWPlayback(ctx, task)
+		if err != nil {
+			return providerMedia{}, err
+		}
+	}
+	// 青空次元（0.8.15）：详情只给 episodeId，真实 m3u8 要再请求一次 play 接口。
+	if chapter.Source == sourceSorani && strings.HasPrefix(chapter.VideoURL, "sorani-play://") {
+		var err error
+		media, err = d.resolveSoraniMedia(ctx, task)
 		if err != nil {
 			return providerMedia{}, err
 		}

@@ -227,6 +227,61 @@ void main() {
     expect(repo.resolves, isEmpty, reason: '切下一集不应重新解析');
   });
 
+  testWidgets('0.8.15：切上一集同样复用预载（不再现解析）', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 880);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final repo = _Repo();
+    final platforms = <ScriptedPlayer>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: VerticalFeedScreen(
+            key: const ValueKey('feed'),
+            repository: repo,
+            store: store,
+            embedded: true,
+            active: true,
+            singleDrama: _a,
+            playerFactory: () {
+              final p = ScriptedPlayer();
+              platforms.add(p);
+              return Player(platformPlayer: p);
+            },
+            videoBuilder: (controls) => controls,
+          ),
+        ),
+      ),
+    );
+    await _pump(tester, 80);
+
+    // 先切到第 2 集（这一步没有预载可用，会现解析，属于正常）。
+    await tester.flingFrom(_videoPoint(tester), const Offset(0, -400), 1200);
+    await _pump(tester, 120);
+
+    // 让第 2 集播起来，触发"两侧预载"。
+    for (final p in platforms) {
+      p.state = p.state.copyWith(position: const Duration(seconds: 90));
+      p.positionController.add(const Duration(seconds: 90));
+    }
+    await _pump(tester, 80);
+
+    expect(
+      repo.preloads,
+      contains('甲剧1'),
+      reason: '0.8.15 起上一集也要预载，否则回看时整条解析链路都暴露在切集那一刻',
+    );
+
+    repo.resolves.clear();
+    await tester.flingFrom(_videoPoint(tester), const Offset(0, 400), 1200);
+    await _pump(tester, 120);
+
+    expect(repo.resolves, isEmpty, reason: '切上一集不应重新解析播放地址');
+  });
+
   testWidgets('0.6.9：预载时机提前到 25%（原为过半）', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(420, 880);

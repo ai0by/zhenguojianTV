@@ -449,7 +449,16 @@ class NativeRepository extends AppRepository {
     int quality = 0,
     bool online = false,
   }) async => PlaybackPlan.fromJson(
-    await _read('preload', {
+    // 0.8.15：读取作用域按**集号**拆开。
+    //
+    // 原生侧 `beginRead` 是按 session 分组的：同一个 session 再来一个更高的
+    // sequence 会**取消上一个请求**。以前只预载"下一集"，共用 `preload`
+    // 这个 session 没影响；现在上一集和下一集会同时预载，共用就会互相取消，
+    // 表现是"预载看起来在跑，但两边都拿不到结果"。
+    //
+    // 拆成 `preload-<集号>` 之后两路互不干扰；`cancelPreload()` 走的是
+    // 前缀匹配（`_cancelReads('preload')`），照样一次全停。
+    await _read('preload-${episode.number}', {
       'action': 'preload',
       'drama': drama.toJson(),
       'chapter': episode.raw,
