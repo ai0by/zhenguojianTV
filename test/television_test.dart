@@ -59,7 +59,9 @@ void main() {
   );
 
   Future<LocalStore> makeStore() async {
-    SharedPreferences.setMockInitialValues({});
+    // 0.8.15 第二批：黄豆等属于「黑洞」站源，默认不展示；
+    // 这组用例按 `SourceSite.values` 的分组顺序驱动站源弹窗，先打开黑洞。
+    SharedPreferences.setMockInitialValues({'blackhole': true});
     final store = LocalStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
     return store;

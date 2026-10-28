@@ -78,12 +78,15 @@ void main() {
       final updater = LibraryUpdater(repository, store);
       addTearDown(updater.dispose);
       await updater.update(SourceSite.knownValues);
+      // 0.8.15 第二批：这里要的是"按**编译进去**的站源过滤"，
+      // 而 `store.sources` 还额外受「黑洞」开关影响（默认关掉黄豆等五站）。
+      // 更新器不认展示开关，所以基准必须用 `SourceSite.values`。
       expect(
         repository.starts,
-        store.sources.map((source) => '${source.id}:update').toList(),
+        SourceSite.values.map((source) => '${source.id}:update').toList(),
       );
       expect(updater.error('hongguo'), contains('合成站源启动失败'));
-      for (final source in store.sources.where(
+      for (final source in SourceSite.values.where(
         (source) => source.id != 'hongguo',
       )) {
         expect(updater.busy(source.id), isTrue);

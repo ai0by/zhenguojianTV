@@ -11,6 +11,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'fixtures.dart';
 import 'player_fixtures.dart';
 
+/// 只选中红果时，首页走的是「官方推荐流」（`recommendations`），
+/// 而 `FixtureRepository` 没实现它 —— 不覆盖就会一直停在加载态、
+/// `feed-stage` 根本不会出现。
+class _Repo extends FixtureRepository {
+  @override
+  Future<CatalogPage> recommendations(
+    String genre, {
+    bool more = false,
+    bool force = false,
+  }) async => CatalogPage(const [FixtureRepository.free]);
+}
+
 /// 0.8.15 第二批：播放页顶部黑边 / 状态栏显隐，以及「黑洞站源」开关。
 void main() {
   Future<void> pumpFrames(WidgetTester tester, int frames) async {
@@ -32,7 +44,7 @@ void main() {
       MaterialApp(
         theme: ThemeData.dark(),
         home: VerticalFeedScreen(
-          repository: FixtureRepository(),
+          repository: _Repo(),
           store: store,
           sources: const [SourceSite.hongguo],
           playerFactory: () => Player(platformPlayer: ScriptedPlayer()),
