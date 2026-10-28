@@ -344,15 +344,22 @@ func (d *Downloader) resolveSoraniMedia(ctx context.Context, task Task) (provide
 	// 目前只有 anime_jp_m3u8 一条线实测有效；若上游将来提供多线，
 	// 可以把 lineCode 追加进 providerChapterID 的 chapterKey 里承载。
 	lineCode := soraniLineCodeDefault
-	value, err := d.soraniRequest(ctx, "/video/episode/"+url.PathEscape(episodeID)+"/play",
-		url.Values{"lineCode": {lineCode}}, 64<<10)
-	if err != nil {
-		return providerMedia{}, err
-	}
-	row, _ := soraniPayload(value).(map[string]any)
-	address := mapString(row, "playUrl", "url")
+	client := d.soraniClient()
+	// 同一集连着请求两次 play 接口，第二次会返回空地址（实测），
+	// 所以先看本地有没有刚换出来的。
+	address := client.cachedPlay(episodeID)
 	if address == "" {
-		return providerMedia{}, fmt.Errorf("青空次元该分集暂无可用播放地址（线路 %s）", lineCode)
+		value, err := d.soraniRequest(ctx, "/video/episode/"+url.PathEscape(episodeID)+"/play",
+			url.Values{"lineCode": {lineCode}}, 64<<10)
+		if err != nil {
+			return providerMedia{}, err
+		}
+		row, _ := soraniPayload(value).(map[string]any)
+		address = mapString(row, "playUrl", "url")
+		if address == "" {
+			return providerMedia{}, fmt.Errorf("青空次元该分集暂无可用播放地址（线路 %s）", lineCode)
+		}
+		client.rememberPlay(episodeID, address)
 	}
 	media := providerMedia{URL: address, Referer: soraniSiteBaseURL + "/"}
 	if _, err := url.Parse(address); err != nil || !isProviderHTTPMediaURL(address) {

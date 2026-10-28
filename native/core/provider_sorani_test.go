@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -184,6 +185,35 @@ func TestSoraniResolveMediaReturnsPlayAddress(t *testing.T) {
 	}
 	if !strings.HasPrefix(media.Referer, "https://") {
 		t.Errorf("Referer 应指向站点根，实际 %q", media.Referer)
+	}
+}
+
+func TestSoraniResolveMediaReusesPlayAddress(t *testing.T) {
+	// 实测：同一个 episodeId 连着请求两次 play 接口，第二次返回空 playUrl。
+	// 我们的链路里同一集被解析两次是常态（预载回退 / 解析后预缓存 / 连点切集），
+	// 所以换出来的地址必须复用。
+	var calls int32
+	downloader := soraniFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return sourceFixtureResponse(request, http.StatusOK,
+			`{"code":200,"data":{"playUrl":"https://cdn.example.test/9001/index.m3u8"}}`), nil
+	})
+	task := Task{
+		DramaID: "sorani:101",
+		Chapter: Chapter{ID: "sorani:101:9001", Source: sourceSorani,
+			VideoURL: "sorani-play://9001"},
+	}
+	for i := 0; i < 2; i++ {
+		media, err := downloader.resolveSoraniMedia(context.Background(), task)
+		if err != nil {
+			t.Fatalf("第 %d 次换取失败: %v", i+1, err)
+		}
+		if media.URL != "https://cdn.example.test/9001/index.m3u8" {
+			t.Errorf("第 %d 次地址错误: %s", i+1, media.URL)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("同一集应复用已换出的地址，实际请求了 %d 次", got)
 	}
 }
 

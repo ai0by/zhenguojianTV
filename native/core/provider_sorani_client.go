@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,10 +34,67 @@ const (
 // soraniAPIBaseURL 用变量而不是常量：单测要把它指到 httptest 服务器上。
 var soraniAPIBaseURL = "https://api.sorani.cc/sorani-cms/api"
 
+// soraniPlayCacheTTL 是"分集 → 播放地址"的本地复用窗口。
+//
+// 实测（2026-10-28，GitHub runner）：同一个 episodeId 连着请求两次 play 接口，
+// **第二次返回空 playUrl**。而我们的链路里同一集被解析两次是常态 ——
+// 预载失败回退、解析后又要预缓存、用户连点两次切集……都会撞上。
+// 所以换出来的地址必须记一小段时间，不能每次都去问上游。
+const soraniPlayCacheTTL = 90 * time.Second
+
+type soraniPlayEntry struct {
+	address string
+	expires time.Time
+}
+
 type soraniAPIClient struct {
 	downloader *Downloader
 	base       string
 	site       string
+	playMu     sync.Mutex
+	play       map[string]soraniPlayEntry
+}
+
+// cachedPlay 取"最近换出来"的播放地址；过期或没有就返回空。
+func (client *soraniAPIClient) cachedPlay(episodeID string) string {
+	client.playMu.Lock()
+	defer client.playMu.Unlock()
+	entry, ok := client.play[episodeID]
+	if !ok {
+		return ""
+	}
+	if !time.Now().Before(entry.expires) {
+		delete(client.play, episodeID)
+		return ""
+	}
+	return entry.address
+}
+
+func (client *soraniAPIClient) rememberPlay(episodeID, address string) {
+	if episodeID == "" || address == "" {
+		return
+	}
+	client.playMu.Lock()
+	defer client.playMu.Unlock()
+	if client.play == nil {
+		client.play = map[string]soraniPlayEntry{}
+	}
+	// 顺手清掉过期的；还超过上限就整表重置（单集地址本来就很短命）。
+	if len(client.play) >= 64 {
+		now := time.Now()
+		for key, entry := range client.play {
+			if !now.Before(entry.expires) {
+				delete(client.play, key)
+			}
+		}
+		if len(client.play) >= 64 {
+			client.play = map[string]soraniPlayEntry{}
+		}
+	}
+	client.play[episodeID] = soraniPlayEntry{
+		address: address,
+		expires: time.Now().Add(soraniPlayCacheTTL),
+	}
 }
 
 func (d *Downloader) soraniClient() *soraniAPIClient {
