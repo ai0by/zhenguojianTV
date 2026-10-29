@@ -132,6 +132,13 @@ class SourceSite {
   };
 
   static bool isBlackhole(String id) => blackholeIds.contains(id);
+
+  /// 开启「黑洞」站源需要的口令（0.8.16）。
+  ///
+  /// **这不是安全边界**：口令是客户端常量，翻源码就能看到。它只是把入口
+  /// 从「随手一点就开」变成「得知道口令」，免得普通用户误开这一批站源。
+  /// 关闭不需要口令。
+  static const blackholePassword = 'github-zhenguojianTV';
 }
 
 class SourceGroup {

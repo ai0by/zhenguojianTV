@@ -455,6 +455,16 @@ class LocalStore extends ChangeNotifier {
   /// 「黑洞」站源开关（0.8.15 第二批）。
   Future<void> setBlackholeEnabled(bool value) =>
       _setting(_key('blackhole'), value);
+
+  /// 用口令解锁黑洞站源（0.8.16）：口令对了才落盘，返回是否解开。
+  ///
+  /// 只是挡住误触，不是权限判定 —— 和 [allowsSource] 无关，
+  /// 所以历史 / 已下载里的黑洞剧集一直都能播。
+  Future<bool> unlockBlackhole(String password) async {
+    if (password.trim() != SourceSite.blackholePassword) return false;
+    await setBlackholeEnabled(true);
+    return true;
+  }
   Future<void> setHideVip(bool value) => _setting(_key('hideVip'), value);
   Future<void> setSource(String value) {
     if (!allowsSource(value)) return Future.error(StateError('当前用户没有此站源权限'));

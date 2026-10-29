@@ -63,6 +63,25 @@ void main() {
     expect(store.sources.map((site) => site.id), isNot(contains('huangdou')));
   });
 
+  test('blackhole unlock needs the passphrase, near misses stay locked', () async {
+    SharedPreferences.setMockInitialValues(const {});
+    final store = LocalStore(await SharedPreferences.getInstance());
+    addTearDown(store.dispose);
+
+    expect(store.blackholeEnabled, isFalse);
+    // 空口令 / 少一位 / 大小写不同：一律不开，也不会把半开的存档写进去。
+    expect(await store.unlockBlackhole(''), isFalse);
+    expect(await store.unlockBlackhole('github-zhenguojian'), isFalse);
+    expect(await store.unlockBlackhole('Github-ZhenguojianTV'), isFalse);
+    expect(store.blackholeEnabled, isFalse);
+    // 口令对（前后空格容错）才开。
+    expect(await store.unlockBlackhole(' github-zhenguojianTV '), isTrue);
+    expect(store.blackholeEnabled, isTrue);
+    // 关掉不需要口令。
+    await store.setBlackholeEnabled(false);
+    expect(store.blackholeEnabled, isFalse);
+  });
+
   test(
     'edition filtering preserves favorites and history through backup restore',
     () async {

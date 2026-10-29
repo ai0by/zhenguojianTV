@@ -62,7 +62,7 @@ void main() {
     expect(find.byTooltip('返回'), findsNothing);
   });
 
-  testWidgets('设置页：黑洞开关默认关闭，打开后黑洞站源才出现', (tester) async {
+  testWidgets('设置页：黑洞站源默认关闭，要口令才能开，关掉不用口令', (tester) async {
     tester.view.physicalSize = const Size(420, 880);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -82,22 +82,40 @@ void main() {
     final tile = find.byKey(const ValueKey('setting-blackhole'));
     expect(tile, findsOneWidget);
 
+    // 默认是「上锁」的入口：点开是口令弹窗，而不是直接把开关拨开。
     await tester.ensureVisible(tile);
     await tester.pumpAndSettle();
     await tester.tap(tile);
     await tester.pumpAndSettle();
-    // 落盘走的是异步队列（SharedPreferences），多泵几帧等它真正写完。
+    final field = find.byKey(const ValueKey('blackhole-password'));
+    expect(field, findsOneWidget);
+
+    // 口令错：留在弹窗里提示，不关窗、不落盘。
+    await tester.enterText(field, 'wrong-password');
+    await tester.tap(find.byKey(const ValueKey('blackhole-submit')));
+    await tester.pumpAndSettle();
+    expect(find.text('口令不正确，请重试'), findsOneWidget);
+    expect(field, findsOneWidget);
+    expect(store.blackholeEnabled, isFalse);
+
+    // 口令对：弹窗关掉，开关落盘（写盘是异步队列，多泵几帧）。
+    await tester.enterText(field, SourceSite.blackholePassword);
+    await tester.tap(find.byKey(const ValueKey('blackhole-submit')));
     for (var i = 0; i < 20 && !store.blackholeEnabled; i++) {
       await tester.pump(const Duration(milliseconds: 20));
     }
-
+    await tester.pumpAndSettle();
     expect(store.blackholeEnabled, isTrue);
+    expect(find.byKey(const ValueKey('blackhole-password')), findsNothing);
     if (allSourcesEnabled) {
       // 打开后黑洞站源回到可展示列表（红果鉴只有红果，不参与这条断言）。
       expect(store.sources.map((site) => site.id), contains('huangdou'));
       expect(store.sources.length, SourceSite.values.length);
     }
 
+    // 关掉不需要口令：开关直接拨回去。
+    await tester.ensureVisible(tile);
+    await tester.pumpAndSettle();
     await tester.tap(tile);
     await tester.pumpAndSettle();
     for (var i = 0; i < 20 && store.blackholeEnabled; i++) {

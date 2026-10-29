@@ -76,6 +76,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 口令解锁黑洞站源（0.8.16）：口令不对就留在弹窗里提示，不会误开。
+  Future<void> _unlockBlackhole() async {
+    final unlocked = await showDialog<bool>(
+      context: context,
+      builder: (_) =>
+          _BlackholePasswordDialog(onSubmit: widget.store.unlockBlackhole),
+    );
+    if (unlocked != true || !mounted) return;
+    setState(() => _message = '已开启黑洞站源：黄豆、黄剧、黄果、51、野果已加入站源列表。');
+  }
+
   Future<void> _backup(bool restore) async {
     setState(() {
       _busy = true;
@@ -208,28 +219,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         () => widget.store.setTvCompatMode(value),
                       ),
               ),
-              // 黑洞站源开关（0.8.15 第二批）。
+              // 黑洞站源（0.8.15 第二批加开关，0.8.16 改成口令解锁）。
               //
-              // 用户要求：默认关闭，黄豆 / 黄剧 / 黄果 / 51 / 野果这几站
-              // 打开后才出现在站源列表里。放在主题 / 界面模式下面（普通用户
-              // 也能开），因为这是"要不要看这些源"的选择，不是管理操作；
-              // 实际能不能用仍由各用户的站源权限决定。
-              SwitchListTile(
-                key: const ValueKey('setting-blackhole'),
-                value: widget.store.blackholeEnabled,
-                secondary: const Icon(Icons.blur_on_rounded),
-                title: const Text('黑洞站源'),
-                subtitle: const Text(
-                  '打开后显示黄豆、黄剧、黄果、51、野果这五个站源；'
-                  '默认关闭，只保留红果、E站、青空、花果等常用站源。',
+              // 默认关闭：黄豆 / 黄剧 / 黄果 / 51 / 野果这几站要**输对口令**
+              // 才出现在站源列表里，免得普通用户随手点开。开启后可以直接
+              // 关掉，不用再输口令（口令只挡"开"这个方向）。
+              if (widget.store.blackholeEnabled)
+                SwitchListTile(
+                  key: const ValueKey('setting-blackhole'),
+                  value: true,
+                  secondary: const Icon(Icons.blur_on_rounded),
+                  title: const Text('黑洞站源'),
+                  subtitle: const Text(
+                    '已开启：黄豆、黄剧、黄果、51、野果已在站源列表里。'
+                    '关闭后它们只是不再展示，已下载的剧集照常能播。',
+                  ),
+                  onChanged: _busy
+                      ? null
+                      : (value) => saveUserChange(
+                          context,
+                          () => widget.store.setBlackholeEnabled(value),
+                        ),
+                )
+              else
+                ListTile(
+                  key: const ValueKey('setting-blackhole'),
+                  leading: const Icon(Icons.lock_outline_rounded),
+                  title: const Text('黑洞站源'),
+                  subtitle: const Text('默认不展示黄豆、黄剧、黄果、51、野果，需输入口令开启'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: _busy ? null : _unlockBlackhole,
                 ),
-                onChanged: _busy
-                    ? null
-                    : (value) => saveUserChange(
-                        context,
-                        () => widget.store.setBlackholeEnabled(value),
-                      ),
-              ),
               ListTile(
                 leading: const Icon(Icons.people_outline),
                 title: const Text('用户管理'),
@@ -401,6 +421,97 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     ),
+  );
+}
+
+/// 黑洞站源的口令弹窗（0.8.16）。
+///
+/// 口令错了就留在弹窗里提示，不关窗、不落盘 —— 关窗只在 [onSubmit]
+/// 返回 true 时发生。口令本身是客户端常量（`SourceSite.blackholePassword`），
+/// 只用来挡误触，不是安全边界。
+class _BlackholePasswordDialog extends StatefulWidget {
+  const _BlackholePasswordDialog({required this.onSubmit});
+
+  /// 校验并落盘：口令对返回 true。
+  final Future<bool> Function(String password) onSubmit;
+
+  @override
+  State<_BlackholePasswordDialog> createState() =>
+      _BlackholePasswordDialogState();
+}
+
+class _BlackholePasswordDialogState extends State<_BlackholePasswordDialog> {
+  final _controller = TextEditingController();
+  String? _error;
+  bool _checking = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_checking) return;
+    setState(() {
+      _checking = true;
+      _error = null;
+    });
+    var unlocked = false;
+    String? failure;
+    try {
+      unlocked = await widget.onSubmit(_controller.text);
+    } catch (_) {
+      // 口令对但落盘失败（存储满 / 权限）时别谎报"口令错"。
+      failure = '未能保存，请检查存储空间和权限后重试。';
+    }
+    if (!mounted) return;
+    if (unlocked) {
+      Navigator.pop(context, true);
+      return;
+    }
+    setState(() {
+      _checking = false;
+      _error = failure ?? '口令不正确，请重试';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('开启黑洞站源'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('开启后站源列表会多出黄豆、黄剧、黄果、51、野果这五站。请输入口令：'),
+        const SizedBox(height: 12),
+        TextField(
+          key: const ValueKey('blackhole-password'),
+          controller: _controller,
+          autofocus: true,
+          obscureText: true,
+          enabled: !_checking,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _submit(),
+          decoration: InputDecoration(
+            labelText: '口令',
+            border: const OutlineInputBorder(),
+            errorText: _error,
+          ),
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: _checking ? null : () => Navigator.pop(context, false),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        key: const ValueKey('blackhole-submit'),
+        onPressed: _checking ? null : _submit,
+        child: const Text('开启'),
+      ),
+    ],
   );
 }
 
