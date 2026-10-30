@@ -5387,10 +5387,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                     //
                     // 0.8.16 第二批：切集取流时的转圈延迟 [_loadingOverlayDelay]
                     // 才出现，命中缓存 / 换得快时用户看不到任何闪动。
-                    // 「等首帧」与「已就绪却没画面」两条保持立即显示：
-                    // 前者是 open 之后短暂的必然过程，后者是真故障。
-                    if ((_loadingOverlay && _loading) ||
-                        (_awaitingFirstFrame &&
+                    // 「等首帧」与「已就绪却没画面」两条保持立即显示。
+                    if (_loadingOverlay && _loading)
+                      const IgnorePointer(
+                        child: LoadingHint(message: '正在加载视频…', dark: true),
+                      )
+                    else if ((_awaitingFirstFrame &&
                             !(_player?.state.playing ?? false)) ||
                         // 0.7.13：改为判断"是否出过画面"。此前看 `width <= 0`，
                         // 而部分流始终不报宽高 → 正常播放时提示也一直挂着。
@@ -5913,10 +5915,19 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         // 只要本页已 `_ready`、无错误、且播放器**既没在播也没有可用帧**，
         // 就显示加载提示，绝不让用户面对一块没有任何文字的黑屏。
         // 0.8.16 第二批：切集取流时的转圈延迟 [_loadingOverlayDelay] 才出现，
-        // 命中缓存 / 换得快时用户看不到任何闪动。「等首帧」与「已就绪却没画面」
-        // 两条保持立即显示。
-        if ((_loadingOverlay && _loading) ||
-            (_awaitingFirstFrame && !(state?.playing ?? false)) ||
+        // 命中缓存 / 换得快时用户看不到任何闪动。
+        //
+        // 与下面那条分开写而不是并成一个条件：延迟遮罩单独带 key，
+        // 测试要能精确断言"切集那一瞬间没有闪转圈"，
+        // 不被「等首帧」这条既有行为干扰。
+        if (_loadingOverlay && _loading)
+          const IgnorePointer(
+            key: ValueKey('feed-switch-loading'),
+            child: LoadingHint(message: '正在加载视频…', dark: true),
+          )
+        // 「等首帧」与「已就绪却没画面」保持立即显示：
+        // 前者是 `open()` 之后短暂的必然过程，后者是真故障。
+        else if ((_awaitingFirstFrame && !(state?.playing ?? false)) ||
             // 注意：必须排除 `_userPaused`，否则用户暂停后会错误地显示加载提示。
             // 0.7.13：改为判断"是否出过画面"，不再看 `width <= 0`
             // （部分流始终不报宽高，会让提示在正常播放时一直挂着）。
