@@ -16,6 +16,8 @@ class SourceSite {
       id == 'ezdmw' ||
       // 青空次元（0.8.15）：搜索走同一个 JSON 目录接口，支持翻页。
       id == 'sorani' ||
+      // 河马剧场（0.8.17）：搜索走 /seo/video/6007，index 就是页码。
+      id == 'hema' ||
       // 苹果CMS 采集站（0.8.11）：网果的搜索页被 WAF 拦死（返回"安全验证"），
       // 只走本地缓存搜索，所以不在这个列表里。
       id == 'huaguo' ||
@@ -28,6 +30,7 @@ class SourceSite {
     'yeguo' ||
     'ezdmw' ||
     'sorani' ||
+    'hema' ||
     'faguo' ||
     'wuguo' => true,
     _ => false,
@@ -54,6 +57,8 @@ class SourceSite {
   static const ezdmw = SourceSite('ezdmw', 'E站', '动漫 · 新番 · 完结');
   // 青空次元（0.8.15）：番剧 / 剧场动画 / 特摄，纯 JSON 接口。
   static const sorani = SourceSite('sorani', '青空', '番剧 · 剧场 · 特摄');
+  // 河马剧场（0.8.17）：网页只放出前 5 集，付费集走 App 门户接口取流。
+  static const hema = SourceSite('hema', '河马', '短剧 · 全集合集');
   // 苹果CMS 采集站（0.8.11）。四个站都是整部剧一个视频，只有发果按集拆开。
   static const huaguo = SourceSite('huaguo', '花果', '短剧 · 花生短剧');
   static const wangguo = SourceSite('wangguo', '网果', '短剧 · 短剧网');
@@ -76,6 +81,7 @@ class SourceSite {
     xiangjiao,
     ezdmw,
     sorani,
+    hema,
     huaguo,
     wangguo,
     faguo,
@@ -101,6 +107,7 @@ class SourceSite {
           yeguo,
           ezdmw,
           sorani,
+          hema,
           huaguo,
           wangguo,
           faguo,

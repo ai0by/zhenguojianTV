@@ -1,10 +1,12 @@
 package com.duanju.duanju_app
 
 import io.flutter.embedding.android.FlutterActivity
+import android.app.PictureInPictureParams
 import android.app.UiModeManager
 import android.media.AudioManager
 import android.os.Build
 import android.provider.Settings
+import android.util.Rational
 import android.view.WindowManager
 import android.os.Bundle
 import android.content.Context
@@ -17,6 +19,17 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    /**
+     * 画中画（0.8.17）。
+     *
+     * `pipArmed` 由 Dart 侧在「播放中且停在播放页」时置 true：
+     * 只有这时按 Home 才自动进小窗，其他页面退出应用不该弹小窗。
+     * `pipAspect` 是视频宽高比（宽 / 高），竖版短剧约 0.5625。
+     */
+    private var pipArmed = false
+    private var pipAspect = 9.0 / 16.0
+    private var pipChannel: MethodChannel? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -27,7 +40,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "duanju/device")
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "duanju/device")
+        pipChannel = channel
+        channel
             .setMethodCallHandler { call, result ->
                 if (call.method == "deviceInfo") {
                     val mode = getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
@@ -59,11 +74,101 @@ class MainActivity : FlutterActivity() {
                     result.success(setScreenBrightness(value))
                 } else if (call.method == "resetScreenBrightness") {
                     result.success(resetScreenBrightness())
+                } else if (call.method == "pictureInPictureAvailable") {
+                    result.success(pipAvailable())
+                } else if (call.method == "enterPictureInPicture") {
+                    val ratio = call.argument<Double>("aspectRatio") ?: pipAspect
+                    result.success(enterPip(ratio))
+                } else if (call.method == "setPictureInPictureArmed") {
+                    pipArmed = call.argument<Boolean>("armed") ?: false
+                    val ratio = call.argument<Double>("aspectRatio") ?: pipAspect
+                    pipAspect = ratio
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        // Android 12+ 用系统自动进小窗，比 onUserLeaveHint 稳：
+                        // 分屏、手势返回桌面等场景也能正确触发。
+                        applyPipParams(ratio, pipArmed)
+                    }
+                    result.success(true)
                 } else {
                     result.notImplemented()
                 }
             }
 
+    }
+
+    /** 设备是否支持画中画（Android 8.0+ 且系统声明了该特性）。 */
+    private fun pipAvailable(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+    }
+
+    /**
+     * 进入画中画。返回是否真的切进去了。
+     *
+     * `setAspectRatio` 要求宽高比落在 1:2.39 ~ 2.39:1 之间，越界会抛
+     * IllegalArgumentException；这里统一收敛一次，竖版短剧按 9:16 处理。
+     */
+    private fun enterPip(ratio: Double): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        if (!pipAvailable() || isFinishing) return false
+        return try {
+            pipAspect = ratio.coerceIn(0.42, 2.39)
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational((pipAspect * 1000).toInt(), 1000))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setAutoEnterEnabled(true)
+            }
+            enterPictureInPictureMode(builder.build())
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun applyPipParams(ratio: Double, armed: Boolean) {
+        if (!pipAvailable() || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        try {
+            val safe = ratio.coerceIn(0.42, 2.39)
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational((safe * 1000).toInt(), 1000))
+                .setAutoEnterEnabled(armed)
+            setPictureInPictureParams(builder.build())
+        } catch (e: Exception) {
+            // 个别 ROM 不支持自动进入，忽略即可：手动按钮仍然可用。
+        }
+    }
+
+    /**
+     * Android 8.0~11 的自动进小窗入口：用户按 Home / 切到别的应用时触发。
+     *
+     * 只有 Dart 侧「已武装」（正在播放且停在播放页）才进小窗，
+     * 否则从首页退出应用也弹个小窗出来，反而打扰。
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (!pipArmed || !pipAvailable() || isFinishing) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
+        try {
+            val safe = pipAspect.coerceIn(0.42, 2.39)
+            enterPictureInPictureMode(
+                PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational((safe * 1000).toInt(), 1000))
+                    .build()
+            )
+        } catch (e: Exception) {
+            // 忽略：不支持就保持普通后台。
+        }
+    }
+
+    /** 小窗进出状态回传给 Dart，用来收起控件、停掉自动隐藏计时。 */
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        }
+        pipChannel?.invokeMethod("pictureInPictureChanged", isInPictureInPictureMode)
     }
 
     /**

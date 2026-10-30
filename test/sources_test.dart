@@ -119,6 +119,21 @@ void main() {
     expect(sources['wuguo']?.pagedSearch, isTrue);
   });
 
+  // 0.8.17：河马剧场。
+  //
+  // 它不是黑洞源（不需要口令就能看到），搜索走站点自己的 /seo/video/6007，
+  // index 就是页码，所以 onlineSearch / pagedSearch 都是 true。
+  // 播放侧有个容易踩的点：网页只放出前 5 集，付费集要走 App 门户接口取流 ——
+  // 这里只断言客户端可见的站源属性，取流链路由 native 侧单测覆盖。
+  test('hema source is selectable and searchable', () {
+    expect(SourceSite.isAvailable('hema'), isTrue);
+    expect(SourceSite.isBlackhole('hema'), isFalse);
+    final hema = SourceSite.byId('hema');
+    expect(hema.name, '河马');
+    expect(hema.onlineSearch, isTrue);
+    expect(hema.pagedSearch, isTrue);
+  });
+
   testWidgets(
     'source update prevents duplicate submits and can stop without losing cache',
     (tester) async {

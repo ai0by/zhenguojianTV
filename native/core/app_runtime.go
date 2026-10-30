@@ -711,6 +711,18 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 		result.HasMore = more
 		return result, nil
 	}
+	// 河马剧场（0.8.17）：搜索走站点的 /seo/video/6007，和分类目录是两条链路。
+	if query != "" && source == sourceHema {
+		items, more, err := d.fetchHemaCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
 	if query != "" {
 		if profile, found := maccmsProfileFor(source); found && profile.SearchURL != nil {
 			items, more, err := d.fetchMaccmsCatalogPage(ctx, source, page, query)
@@ -802,6 +814,8 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 		items, result.HasMore, err = d.fetchEZDMWCatalogPage(ctx, page, category, "")
 	case sourceSorani:
 		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
+	case sourceHema:
+		items, result.HasMore, err = d.fetchHemaCatalogPage(ctx, page, category, "")
 	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		items, result.HasMore, err = d.fetchMaccmsCatalogPage(ctx, source, page, "")
 	case sourceHuangguoVideo:
@@ -867,6 +881,8 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchEZDMWDetail(ctx, sourceID)
 	case sourceSorani:
 		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
+	case sourceHema:
+		raw, chapters, err = engine.downloader.fetchHemaDetail(ctx, sourceID)
 	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
 		raw, chapters, err = engine.downloader.fetchMaccmsDetail(ctx, source, sourceID)
 	default:

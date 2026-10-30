@@ -63,6 +63,8 @@ func validNativeCategory(source, category string) bool {
 		return validDuanju51Category(category)
 	case sourceSorani:
 		return validSoraniCategory(category)
+	case sourceHema:
+		return validHemaCategory(category)
 	}
 	return false
 }
@@ -115,6 +117,14 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	case sourceHuangju:
 		var categories []nativeCategory
 		categories, err = d.fetchHuangjuCategories(ctx)
+		if err == nil {
+			all = append(all, categories...)
+		}
+	// 河马剧场（0.8.17）：分类表在 /browse 的页面数据里，上游有 126 项，
+	// fetchHemaCategories 会按「热门优先 + 站点原序」截到 hemaMaxCategories。
+	case sourceHema:
+		var categories []nativeCategory
+		categories, err = d.fetchHemaCategories(ctx)
 		if err == nil {
 			all = append(all, categories...)
 		}

@@ -28,6 +28,7 @@ import 'remote_widgets.dart';
 import 'player_interactions.dart';
 import 'system_volume.dart';
 import 'screen_brightness.dart';
+import 'picture_in_picture.dart';
 import 'tv_dialogs.dart';
 import 'tv_player_panel.dart';
 import 'widgets.dart';
@@ -1810,6 +1811,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   Timer? _hideTimer;
   bool _closed = false;
 
+  /// 画中画（0.8.17，手机端）。
+  ///
+  /// `_pipAvailable` 由 `PictureInPicture.initialize()` 探测；
+  /// `_pipActive` 跟随原生的进出小窗回调 —— 进小窗要立刻收起控件，
+  /// 否则小窗里会糊着一层按钮和进度条。
+  bool _pipAvailable = false;
+  bool _pipActive = false;
+  bool _pipArmed = false;
+  bool _pipInitialized = false;
+
   /// 当前剧是否已追剧（0.2.26 新增）。
   ///
   /// 与 `store.isFavorite` 同步；在 initState / didUpdateWidget / 点击后刷新。
@@ -2069,6 +2080,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _television = AppLayout.isTelevision(context);
+    // 0.8.17：画中画。**必须放在这里**而不是 initState ——
+    // `_television` 在 didChangeDependencies 才拿到值，initState 里恒为 false，
+    // 电视上会白跑一次通道探测。`_pipInitialized` 保证只跑一次。
+    if (!_pipInitialized) {
+      _pipInitialized = true;
+      _initPictureInPicture();
+    }
   }
 
   // —— 播放计划缓存（0.8.16 第二批）——
@@ -3170,6 +3188,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   void dispose() {
     _closed = true;
     _danmaku.dispose();
+    // 0.8.17：退出播放页必须先解除"按 Home 自动进小窗"，
+    // 否则从首页退出应用也会弹出一个小窗（而且里面已经没有视频了）。
+    PictureInPicture.active.removeListener(_onPictureInPictureChanged);
+    if (_pipArmed) {
+      _pipArmed = false;
+      unawaited(PictureInPicture.arm(false));
+    }
     // 0.8.16 第二批：缓存里的播放会话必须还回去，否则原生侧会话池会漏。
     _loadingOverlayTimer?.cancel();
     _loadingOverlayTimer = null;
@@ -4280,15 +4305,54 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   ///
   /// 复用 `LanPushButton`（与老播放器同一个组件），
   /// 因此连接状态图标、推送中的转圈、tooltip 文案完全一致。
-  Widget _pushButton() => Align(
+  Widget _pushButton() => LanPushButton(
+    key: const ValueKey('feed-lan-push'),
+    onPressed: _pushToDevice,
+  );
+
+  /// 右上角浮层：画中画按钮 + 推送按钮（0.8.17）。
+  ///
+  /// 两个按钮原本各占一个 `Align`，加在一起会互相盖住，所以合成一行。
+  /// 画中画只给手机端：电视没有「小窗」概念，`_pipAvailable` 在 TV 上
+  /// 恒为 false（既没探测也没声明 supportsPictureInPicture 的语义）。
+  Widget _topRightOverlay() => Align(
     alignment: Alignment.topRight,
     child: SafeArea(
       bottom: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(0, 6, 6, 0),
-        child: LanPushButton(
-          key: const ValueKey('feed-lan-push'),
-          onPressed: _pushToDevice,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_pipAvailable) ...[
+              _pipButton(),
+              if (_canPush) const SizedBox(width: 8),
+            ],
+            if (_canPush) _pushButton(),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  /// 画中画按钮（0.8.17）。
+  ///
+  /// 与推送按钮同尺寸同底色（`LanPushButton` 是 38×38 圆角方块），
+  /// 放在同一行才不会一大一小。
+  Widget _pipButton() => Material(
+    color: Colors.black38,
+    borderRadius: BorderRadius.circular(10),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      key: const ValueKey('feed-pip'),
+      onTap: _enterPictureInPicture,
+      child: const SizedBox(
+        width: 38,
+        height: 38,
+        child: Icon(
+          Icons.picture_in_picture_alt_rounded,
+          color: Colors.white,
+          size: 20,
         ),
       ),
     ),
@@ -6186,14 +6250,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                           // 与集数标签同一行，跟随控件一起显隐。
                           if (_hasEpisodeBadge || widget.onBack != null)
                             _topLeftOverlay(),
-                          // 右上角推送按钮（0.6.4，从老播放器迁移）。
+                          // 右上角：画中画按钮（0.8.17）+ 推送按钮（0.6.4，从老播放器迁移）。
                           //
                           // 位置选择理由：底部按钮行已固定为 5 个等宽槽位
                           // （320 窄屏槽位仅 59.2px，而"连播下一部"标签已 55px），
                           // 再加第 6 个会把标签挤到截断；因此放在视频右上角，
                           // 与左上角集数标签左右对称，也不占用底部功能位。
                           // 位于控件层内 → 跟随控件一起显隐。
-                          if (_canPush) _pushButton(),
+                          if (_canPush || _pipAvailable) _topRightOverlay(),
                           // 中央播放按钮：**只在暂停时显示**。
                           //
                           // 0.8.14 试过"播放中也显示（点画面就出现）"，结果
@@ -6503,6 +6567,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 放在 build 末尾排队（不能在 build 里直接调平台通道），
     // `_syncSystemUi` 自己比对上一次应用的模式，重复调用无副作用。
     _queueSystemUiSync();
+    _queuePictureInPictureSync();
     return SizedBox(key: const ValueKey('feed-stage'), child: stage);
   }
 
@@ -6528,6 +6593,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
 
   void _syncSystemUi() {
     if (!mounted || _closed || !widget.immersive) return;
+    // 小窗里由系统接管，别再切沉浸模式（会把小窗里的状态栏也藏掉）。
+    if (_pipActive) return;
     // 全屏横屏自己管系统栏（`_toggleLandscape` / `_restorePortraitSystemUi`），
     // 这里不要插手，否则退出横屏后会残留一个错误的状态。
     if (_landscape) return;
@@ -6544,10 +6611,78 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     unawaited(SystemChrome.setEnabledSystemUIMode(mode));
   }
 
+  // —— 画中画（0.8.17，手机端）——
+
+  /// 探测设备能力并挂上小窗进出回调。电视端直接跳过。
+  void _initPictureInPicture() {
+    if (_television) return;
+    unawaited(() async {
+      final available = await PictureInPicture.initialize();
+      if (!mounted || _closed) return;
+      PictureInPicture.active.addListener(_onPictureInPictureChanged);
+      // 进小窗时页面可能被重建（例如从小窗点回来换了一集），
+      // 先把当前真实状态同步进来，别默认成"不在小窗"。
+      _pipActive = PictureInPicture.active.value;
+      if (available != _pipAvailable) {
+        setState(() => _pipAvailable = available);
+      }
+      _queuePictureInPictureSync();
+    }());
+  }
+
+  /// 小窗进出：进去就把控件收掉（小窗里糊一层按钮很难看），
+  /// 出来恢复「点一下才出现」的默认态。
+  void _onPictureInPictureChanged() {
+    if (!mounted || _closed) return;
+    final active = PictureInPicture.active.value;
+    if (active == _pipActive) return;
+    _hideTimer?.cancel();
+    setState(() {
+      _pipActive = active;
+      if (active) {
+        _controlsVisible = false;
+        _panelOpen = false;
+      }
+    });
+    if (!active) _scheduleHide();
+    _queueSystemUiSync();
+  }
+
+  /// 按视频宽高比进入小窗。失败时什么都不做（有的 ROM 会直接拒绝）。
+  Future<void> _enterPictureInPicture() async {
+    if (_closed || !_pipAvailable) return;
+    _hideTimer?.cancel();
+    await PictureInPicture.enter(aspectRatio: _pipAspectRatio);
+  }
+
+  /// 视频宽高比（宽 / 高）。首帧前未知，按竖版 9:16 兜底。
+  double get _pipAspectRatio => _aspectRatio > 0 ? _aspectRatio : 9 / 16;
+
+  /// 排队同步「按 Home 自动进小窗」的开关。
+  ///
+  /// 与 `_queueSystemUiSync` 同样的理由：不能在 build 里直接调平台通道。
+  void _queuePictureInPictureSync() {
+    if (!_pipAvailable || _television) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncPictureInPictureArmed());
+  }
+
+  /// 只有「正在播放 + 当前页就是播放页 + 没在小窗里 + 没报错」时才武装。
+  ///
+  /// 暂停了还武装的话，用户按 Home 会莫名其妙弹出一个小窗；
+  /// 已经在小窗里再武装一次会让系统反复重进。
+  void _syncPictureInPictureArmed() {
+    if (!mounted || _closed || !_pipAvailable) return;
+    final playing = _player?.state.playing ?? false;
+    final armed =
+        playing && widget.active && !_pipActive && _error == null && !_loading;
+    if (armed == _pipArmed) return;
+    _pipArmed = armed;
+    unawaited(PictureInPicture.arm(armed, aspectRatio: _pipAspectRatio));
+  }
+
   /// 焦点进入控件层时停掉自动隐藏计时；离开时恢复计时。
   /// 只在电视模式下有意义，但记录本身无副作用，非电视模式也一并记录。
-  void _onControlsFocusChanged(bool focused) {
-    if (focused) {
+  void _onControlsFocusChanged(bool focused) {    if (focused) {
       _hideTimer?.cancel();
     } else if (mounted && _controlsVisible && !_closed) {
       _scheduleHide();
