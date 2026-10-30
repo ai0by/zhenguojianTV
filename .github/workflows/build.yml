@@ -74,24 +74,27 @@ jobs:
       # 没配 key.properties 时 AGP 用 `~/.android/debug.keystore`，而它在每台
       # runner 上都是新生成的随机密钥 —— 每次构建签名都不同，用户装新包时
       # 安装器判签名冲突（部分 ROM 报的正是"解析软件包失败"），升级必须先卸载。
-      # 这里自己生成一把固定密钥并缓存：第一次构建生成，之后每次复用。
+      #
+      # 0.8.18：**改成从仓库 Secret 还原**。原来用 `actions/cache` 存这把密钥，
+      # 但缓存会在 7 天未访问 / 仓库总量超 10GB 时被清掉，然后下面的
+      # `keytool -genkeypair` 就现造一把新的 —— 实测 0.8.5 / 0.8.7 / 0.8.9 /
+      # 0.8.10~0.8.17 已经是**四把不同的证书**，跨这几版覆盖安装必然失败。
+      #
+      # 所以这里只做两件事：从 `secrets.CI_KEYSTORE_BASE64` 解出 p12；缺失就
+      # **直接构建失败**。绝不能再 fallback 到现生成 —— 静默换钥匙比构建失败
+      # 可怕得多，用户只会看到"下载完装不上"。
       - name: Restore CI debug keystore
-        uses: actions/cache@v4
-        with:
-          path: android/app/ci-debug.keystore
-          key: android-ci-debug-keystore-v1
-
-      - name: Create CI debug keystore
         shell: bash
+        env:
+          CI_KEYSTORE_BASE64: ${{ secrets.CI_KEYSTORE_BASE64 }}
         run: |
-          set -euxo pipefail
-          if [ ! -f android/app/ci-debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore android/app/ci-debug.keystore \
-              -storetype PKCS12 -storepass android -keypass android \
-              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10950 \
-              -dname "CN=Android Debug,O=Android,C=US"
+          set -euo pipefail
+          if [ -z "${CI_KEYSTORE_BASE64:-}" ]; then
+            echo "缺少仓库 Secret CI_KEYSTORE_BASE64（base64 编码的 ci-debug.keystore）。" >&2
+            echo "签名一旦变化，已装用户将无法覆盖安装，因此这里直接失败而不是现生成一把新密钥。" >&2
+            exit 1
           fi
+          printf '%s' "$CI_KEYSTORE_BASE64" | base64 -d > android/app/ci-debug.keystore
           keytool -list -keystore android/app/ci-debug.keystore -storepass android | grep -i "androiddebugkey"
 
       - name: Build APK
@@ -126,6 +129,31 @@ jobs:
             grep -E "Verified using v1 scheme" verify.txt || true
             "$build_tools/zipalign" -c 4 "$apk"
             "$build_tools/aapt2" dump badging "$apk" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^native-code"
+          done
+
+      # 0.8.18：签名证书指纹硬断言。
+      #
+      # `Verify APK` 只能证明"签名没坏"，证明不了"签名还是那把钥匙"。历史上
+      # 已经因为缓存被清换过四次密钥，每次换完用户都得卸载重装。这里把期望
+      # 指纹写死（= 0.8.10 起线上所有安装包的那把），对不上就让构建失败，
+      # 免得又悄悄发出一批装不上的包。
+      #
+      # 真要换密钥时，必须同时改这里，并且清楚这意味着老用户只能卸载重装。
+      - name: Assert signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_tools="$(ls -d "${ANDROID_HOME}"/build-tools/* | sort -V | tail -n1)"
+          expected="4c467845d641eca462515baccce10c55b4b624c50e8c55d15f9f225107065231"
+          for apk in dist/android/*.apk; do
+            actual=$("$build_tools/apksigner" verify --print-certs "$apk" \
+              | sed -n 's/.*certificate SHA-256 digest: //p' | head -n1 | tr -d ' :' | tr 'A-Z' 'a-z')
+            echo "$apk -> $actual"
+            if [ "$actual" != "$expected" ]; then
+              echo "签名证书指纹不符（期望 $expected，实际 $actual）。" >&2
+              echo "已装用户将无法覆盖安装，构建终止。" >&2
+              exit 1
+            fi
           done
 
       - name: Upload APK
