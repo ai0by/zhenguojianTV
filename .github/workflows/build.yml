@@ -207,15 +207,16 @@ jobs:
           # `v0.8.16` 这种光秃秃的版本号，看不出是哪个应用。版本号取自
           # pubspec.yaml，跟 APK 里的一致；tag 带不带 `v` 都不影响。
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
-          # 附件名要带 build 号（0.8.16+95），跟应用内「关于」显示的版本一致，
-          # 同一个 tag 多次构建时也分得清。
-          full_version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '[:space:]')
-          echo "APP_FULL_VERSION=$full_version" >> "$GITHUB_ENV"
 
-      # 附件名也带上产品名（0.8.16）：Flutter 默认产出 `app-release.apk` /
-      # `app-arm64-v8a-release.apk`，下载页上一堆 `app-` 开头的文件，既看不出
-      # 是哪个应用，也看不出是哪个版本。统一成
-      # `zhenguojianTV-<版本+build>-<abi>.apk`，用户点开就知道该下哪个。
+      # 附件前缀统一成 `zhenguojianTV`（0.8.16）。
+      #
+      # 产物本来由 `scripts/package_release.py` 按 `variant.slug` 命名，即
+      # `zhenguojian-<版本+build>-<abi>.apk`。这里只把前缀换成品牌全名，
+      # 版本号和 ABI 原样保留 —— **别重新拼整段文件名**：slug 拼出来的
+      # 已经是完整名字，再拼一层就成了
+      # `zhenguojianTV-0.8.16+95-zhenguojian-0.8.16+95-all.apk.apk`。
+      #
+      # `hongguojian-` 是只含红果的独立分发线，品牌不动，不在这里改。
       - name: Rename APK for release
         shell: bash
         run: |
@@ -223,15 +224,10 @@ jobs:
           shopt -s globstar nullglob
           for apk in artifacts/**/*.apk; do
             base=$(basename "$apk")
-            case "$base" in
-              app-arm64-v8a-release.apk) abi=arm64-v8a ;;
-              app-armeabi-v7a-release.apk) abi=armeabi-v7a ;;
-              app-release.apk) abi=all ;;
-              *) abi="${base%-release.apk}" ;;
-            esac
-            target="$(dirname "$apk")/zhenguojianTV-${APP_FULL_VERSION}-${abi}.apk"
-            mv "$apk" "$target"
-            echo "renamed: $base -> $(basename "$target")"
+            renamed=$(printf '%s' "$base" | sed 's/^zhenguojian-/zhenguojianTV-/')
+            [ "$renamed" = "$base" ] && continue
+            mv "$apk" "$(dirname "$apk")/$renamed"
+            echo "renamed: $base -> $renamed"
           done
 
       - name: Publish GitHub Release
