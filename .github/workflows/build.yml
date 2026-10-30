@@ -203,12 +203,17 @@ jobs:
           } > release_body.md
           echo "--- release_body.md ---"
           cat release_body.md
+          # Release 标题要带产品名（0.8.16）：原来直接用 tag 名，列表里只剩
+          # `v0.8.16` 这种光秃秃的版本号，看不出是哪个应用。版本号取自
+          # pubspec.yaml，跟 APK 里的一致；tag 带不带 `v` 都不影响。
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
-          name: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          # 标题固定 `zhenguojianTV v<版本>`：品牌在前，版本在后。
+          name: zhenguojianTV v${{ env.APP_VERSION }}
           target_commitish: ${{ github.sha }}
           draft: false
           prerelease: false

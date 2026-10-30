@@ -23,6 +23,32 @@ import (
 // video_list 里的 main_url / backup_url 是 spade 密文，需用 key_seed 解密；
 // 每个清晰度的 spade_a 是 CENC 内容密钥。签名由 hongguoAppRequest 统一处理
 // （x-gorgon/x-argus/x-ladon/x-helios/x-medusa），这里只负责业务参数。
+// errHongguoAppEmptyModel 表示取流接口没给出 video_model。
+//
+// 两种形态都归到这里：`200 + 空正文`（errHongguoAppEmptyResponse，最常见，
+// 服务端不认这个 device_id）和"有 JSON 但没有 video_model"。
+// 单列成哨兵值，是为了让上层能区分"设备问题（可重注册自愈）"和"这集真的
+// 没有地址（重注册也没用）"。
+var errHongguoAppEmptyModel = errors.New("红果 App 未返回该集播放信息")
+
+// errHongguoAppEmptyResponse 表示接口回了 200 但正文是空的。
+//
+// 这是"服务端不认当前设备"的典型表现，也是取流失败里占比最高的一种。
+var errHongguoAppEmptyResponse = errors.New("红果 App 接口返回空响应")
+
+// hongguoAppProbeLimit 是单次取流最多探测几个清晰度档位。
+//
+// 探测是为了识破"元数据说 79 秒、实际只给 10 秒"的试看片源 —— 这种档位
+// 的 video_duration 跟正片一模一样，只有真读文件头才看得出来。正常情况下
+// 第一档就能过，留 3 档只是给"最高清那档被替换成试看"留退路。
+const hongguoAppProbeLimit = 3
+
+// hongguoAppProbeTimeout 是单次时长探测的超时。
+//
+// 只读 64KB 头部，CDN 上通常几十毫秒。给 4 秒是为了容忍移动网络抖动，
+// 同时又不至于让"探测"本身变成用户等待的大头。
+const hongguoAppProbeTimeout = 4 * time.Second
+
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
@@ -31,6 +57,45 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	// 静默拒绝（200 + 空正文），所以先保证设备已注册（见 provider_hongguo_device.go）。
 	// 注册失败不阻断：退回旧设备继续试，让上层错误信息带上真实原因。
 	deviceErr := downloader.ensureHongguoDevice(ctx)
+	media, err := downloader.hongguoAppMediaOnce(ctx, videoID)
+	if err == nil {
+		return media, nil
+	}
+	if ctx.Err() != nil {
+		return providerMedia{}, ctx.Err()
+	}
+	if errors.Is(err, errHongguoAppEmptyModel) && deviceErr == nil {
+		// 0.8.16 第四批：**注册过 ≠ 服务端还认**。
+		//
+		// 设备号是首次启动时注册、然后落盘复用的。用户换网络、隔几天不打开、
+		// 或者被风控降级之后，同一个 device_id 会重新变成"陌生设备"，取流
+		// 又回到 200 + 空正文。旧代码这时把 Registered 当成"一定有效"，
+		// 于是直接掉到公开片源 —— 而公开片源只给 10 秒预告，用户看到的就是
+		// "这台手机每集只能播 10 秒"。
+		//
+		// 这里作废设备号、重新注册一次再取。成功就正常播；失败才往下走
+		// 公开片源兜底（那条路现在会严格验时长，不会再把预告当正片）。
+		if resetErr := downloader.resetHongguoDevice(ctx); resetErr == nil {
+			if retried, retryErr := downloader.hongguoAppMediaOnce(ctx, videoID); retryErr == nil {
+				return retried, nil
+			} else if ctx.Err() != nil {
+				return providerMedia{}, ctx.Err()
+			}
+		}
+		return providerMedia{}, errHongguoAppEmptyModel
+	}
+	if deviceErr != nil {
+		// 注册失败时取流必然失败（空正文），把根因放在最前面，
+		// 别让用户看到"接口返回空响应"这种没有指向性的说法。
+		return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
+	}
+	return providerMedia{}, err
+}
+
+// hongguoAppMediaOnce 是"取一次流"的完整过程，不碰设备注册。
+//
+// 拆出来是为了让上层能在空正文时换设备重试一次（见 resolveHongguoAppMedia）。
+func (downloader *Downloader) hongguoAppMediaOnce(ctx context.Context, videoID string) (providerMedia, error) {
 	payload := map[string]any{
 		"biz_param": map[string]any{
 			"detail_page_version":       0,
@@ -46,10 +111,9 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	}
 	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/multi_video_model/v1/", hongguoPlayerQuery(), payload)
 	if err != nil {
-		// 注册失败时取流必然失败（空正文），把根因放在最前面，
-		// 别让用户看到"接口返回空响应"这种没有指向性的说法。
-		if deviceErr != nil {
-			return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
+		if errors.Is(err, errHongguoAppEmptyResponse) {
+			// 空正文 = 服务端不认这台设备，交给上层换设备重试一次。
+			return providerMedia{}, fmt.Errorf("%w（%v）", errHongguoAppEmptyModel, err)
 		}
 		return providerMedia{}, err
 	}
@@ -63,22 +127,26 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		}
 	}
 	if len(model) == 0 {
-		// 空正文最常见的原因是设备没注册成功（服务端不认这个 device_id）。
-		if deviceErr != nil {
-			return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
-		}
-		return providerMedia{}, errors.New("红果 App 未返回该集播放信息")
+		return providerMedia{}, errHongguoAppEmptyModel
 	}
 	// 0.8.14：`video_model` 自己就带了 video_list 与 video_duration，
 	// 先用它，省掉 fallback_api 那一跳网络请求（也少一处失败可能）。
+	//
+	// 0.8.16 第四批：`video_model` 里只给试看片段时，别急着报错 ——
+	// 再走一次 fallback_api，两处数据不一定同时降级。
+	var previewErr error
 	if media, err := selectHongguoAppVideoList(model); err == nil {
-		if err := hongguoRejectPreview(media); err != nil {
-			return providerMedia{}, err
+		if rejectErr := hongguoRejectPreview(media); rejectErr == nil {
+			return downloader.verifyHongguoAppMedia(ctx, media)
+		} else {
+			previewErr = rejectErr
 		}
-		return media, nil
 	}
 	fallback := hongguoFallbackAddress(model["fallback_api"])
 	if fallback == "" {
+		if previewErr != nil {
+			return providerMedia{}, previewErr
+		}
 		return providerMedia{}, errors.New("红果 App 未返回该集片源地址")
 	}
 	outer, err := downloader.hongguoAppJSON(ctx, fallback)
@@ -99,7 +167,91 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	if err := hongguoRejectPreview(media); err != nil {
 		return providerMedia{}, err
 	}
-	return media, nil
+	return downloader.verifyHongguoAppMedia(ctx, media)
+}
+
+// verifyHongguoAppMedia 校验 App 取到的地址是不是真能当正片播（0.8.16 第四批）。
+//
+// 为什么光看 `video_duration` 不够：部分设备/出口拿到的是**试看片段**，
+// 但 `video_duration` 报的仍是整集时长（79 秒），地址指向的文件本身只有
+// 10 秒 —— 元数据完全对得上，只有真读文件头才露馅。用户侧表现就是
+// "同一部剧这台手机只能看 10 秒，那台正常"。
+//
+// 策略：
+//   - 依次探测前几档（最高清优先），第一档不是预告就用它；
+//   - 某一档是预告就换下一档（可能只有 1080p 被替换成试看）；
+//   - **探测失败就放行**：地址来自官方接口、带 CENC 密钥，可信度远高于
+//     公开片源；不能因为一次 4 秒超时就把正常剧集判死。
+func (downloader *Downloader) verifyHongguoAppMedia(ctx context.Context, media providerMedia) (providerMedia, error) {
+	candidates := make([]providerMedia, 0, 1+len(media.Variants))
+	candidates = append(candidates, media)
+	for _, variant := range media.Variants {
+		if variant.URL != media.URL {
+			candidates = append(candidates, variant)
+		}
+	}
+	if len(candidates) > hongguoAppProbeLimit {
+		candidates = candidates[:hongguoAppProbeLimit]
+	}
+	var shortest time.Duration
+	for _, candidate := range candidates {
+		duration, err := downloader.hongguoProbeMediaDuration(ctx, candidate)
+		if err != nil {
+			if ctx.Err() != nil {
+				return providerMedia{}, ctx.Err()
+			}
+			// 探测不出来 → 当作可信，放行（见上面的说明）。
+			chosen := candidate
+			chosen.Variants = media.Variants
+			return chosen, nil
+		}
+		if !hongguoLooksLikePreview(duration) {
+			chosen := candidate
+			// 用实测时长覆盖元数据：进度条 / 自动下一集都更准。
+			chosen.Duration = duration
+			chosen.Variants = media.Variants
+			return chosen, nil
+		}
+		if shortest == 0 || duration < shortest {
+			shortest = duration
+		}
+	}
+	if shortest == 0 {
+		shortest = hongguoPreviewMaxDuration
+	}
+	return providerMedia{}, fmt.Errorf("红果只返回了 %.0f 秒试看片段，未取得正片", shortest.Seconds())
+}
+
+// hongguoProbeMediaDuration 读片源头部 64KB 判断真实时长。
+//
+// 红果的 mp4 把 moov 放在最前面（ftyp 32B + moov 11441B），一次 Range
+// 请求足够。CENC 加密只作用于 mdat 里的样本，moov/mvhd 是明文。
+func (downloader *Downloader) hongguoProbeMediaDuration(ctx context.Context, media providerMedia) (time.Duration, error) {
+	if !isProviderHTTPMediaURL(media.URL) {
+		return 0, errors.New("片源地址无效")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, media.URL, nil)
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("User-Agent", hongguoAppUserAgent)
+	if media.Referer != "" {
+		request.Header.Set("Referer", media.Referer)
+	}
+	request.Header.Set("Range", "bytes=0-65535")
+	response, err := downloader.doCatalogRequestWithTimeout(request, hongguoAppProbeTimeout)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusPartialContent && response.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("片源返回 HTTP %d", response.StatusCode)
+	}
+	prefix, readErr := io.ReadAll(io.LimitReader(response.Body, hongguoMediaProbeBytes))
+	if readErr != nil {
+		return 0, readErr
+	}
+	return hongguoMediaDurationFromPrefix(prefix)
 }
 
 // hongguoRejectPreview 挡掉"只给预告"的片源（0.8.14）。
@@ -237,9 +389,20 @@ func selectHongguoAppVideoList(info map[string]any) (providerMedia, error) {
 		height int
 	}
 	var all []candidate
-	duration, _ := strconv.ParseFloat(mapString(info, "video_duration", "duration"), 64)
+	baseDuration, _ := strconv.ParseFloat(mapString(info, "video_duration", "duration"), 64)
 	for _, row := range rows {
 		meta := nestedMap(row, "video_meta")
+		// 0.8.16 第四批：优先用**该档自带**的时长。
+		//
+		// 部分设备拿到的清单里只有个别清晰度被换成了试看片段（10 秒），
+		// 而顶层 video_duration 仍是整集时长。只看顶层就会把试看档当正片
+		// 选中，播到 10 秒就断。
+		duration := baseDuration
+		if value, err := strconv.ParseFloat(mapString(row, "duration", "video_duration"), 64); err == nil && value > 0 {
+			duration = value
+		} else if value, err := strconv.ParseFloat(mapString(meta, "duration", "video_duration"), 64); err == nil && value > 0 {
+			duration = value
+		}
 		codec := strings.ToLower(firstNonEmpty(mapString(meta, "codec_type"), mapString(row, "codec_type"), mapString(row, "gear_des_key")))
 		rank := hongguoCodecRank(codec)
 		spade := firstNonEmpty(mapString(row, "spade_a"), mapString(nestedMap(row, "encrypt_info"), "spade_a"))
@@ -274,6 +437,18 @@ func selectHongguoAppVideoList(info map[string]any) (providerMedia, error) {
 	}
 	if len(usable) == 0 {
 		usable = all
+	}
+	// 0.8.16 第四批：标称时长只有十几秒的档位是试看片段，先剔掉。
+	// 剔完一个不剩就保留原样，交给后面的时长校验报错（而不是"没有清晰度"）。
+	playable := make([]candidate, 0, len(usable))
+	for _, item := range usable {
+		if hongguoLooksLikePreview(item.media.Duration) {
+			continue
+		}
+		playable = append(playable, item)
+	}
+	if len(playable) > 0 {
+		usable = playable
 	}
 	sort.SliceStable(usable, func(i, j int) bool {
 		if usable[i].height != usable[j].height {

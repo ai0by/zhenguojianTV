@@ -158,6 +158,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	client := downloader.hongguoClient()
 	client.mu.Lock()
 	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
+	registered := client.state.Registered
 	client.mu.Unlock()
 	query := url.Values{
 		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {hongguoAppVersionCode}, "version_name": {hongguoAppVersionName},
@@ -189,6 +190,16 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		attempts = 8
 	}
 	var lastErr error
+	// 空正文的重试预算（0.8.16 第四批）。
+	//
+	// 空正文有两种成因：签名随机失配（多试几次能中），以及**服务端不认这个
+	// device_id**（试多少次都是空）。设备已经注册过时，第二种占绝大多数 ——
+	// 这时继续重试只是在拖时间，不如早点返回，让上层换设备重注册再试一次。
+	emptyBudget := attempts
+	if registered {
+		emptyBudget = 3
+	}
+	emptyCount := 0
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
@@ -256,7 +267,13 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		if len(content) == 0 {
 			// 这是"随机空响应"，属于可重试的临时状态，不能当作终态错误。
-			lastErr = errors.New("红果 App 接口返回空响应")
+			// 0.8.16 第四批：单列成哨兵值 —— 上层据此换设备重注册（空正文
+			// 最常见的原因就是服务端不认当前 device_id）。
+			lastErr = errHongguoAppEmptyResponse
+			emptyCount++
+			if emptyCount >= emptyBudget {
+				return nil, lastErr
+			}
 			continue
 		}
 		if len(content) > providerMaxBodyBytes {

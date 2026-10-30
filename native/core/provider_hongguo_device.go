@@ -293,3 +293,23 @@ func (downloader *Downloader) ensureHongguoDevice(ctx context.Context) error {
 	client.mu.Unlock()
 	return nil
 }
+
+// resetHongguoDevice 作废当前设备号并重新注册（0.8.16 第四批）。
+//
+// 触发条件：取流接口对"已注册"的设备又返回空正文。说明服务端不再认这个
+// device_id（换网络出口、长期不用、风控降级都会这样），继续用它只会一直
+// 空正文，然后掉到只给 10 秒预告的公开片源上。
+//
+// 注意：**不能持 deviceMu 调用** —— ensureHongguoDevice 自己会去抢那把锁，
+// 持锁调用直接死锁。这里只清内存状态，注册交给 ensureHongguoDevice 串行处理。
+func (downloader *Downloader) resetHongguoDevice(ctx context.Context) error {
+	client := downloader.hongguoClient()
+	client.mu.Lock()
+	client.state.Registered = false
+	client.state.DeviceID = ""
+	client.state.InstallID = ""
+	client.deviceRetryAfter = time.Time{}
+	client.deviceErr = nil
+	client.mu.Unlock()
+	return downloader.ensureHongguoDevice(ctx)
+}

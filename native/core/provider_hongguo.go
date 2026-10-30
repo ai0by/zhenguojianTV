@@ -213,6 +213,14 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if errors.Is(nativeErr, errHongguoDeviceUnregistered) {
 		return providerMedia{}, fmt.Errorf("%v，请检查网络后重试", nativeErr)
 	}
+	// 0.8.16 第四批：App 链路换设备重注册后仍然空正文，也直接短路。
+	//
+	// 公开片源对游客固定只给 10 秒预告（且第 4 集起 404），网页播放页同样
+	// 只有预告 —— 再试这两条路必然是"多等两三个网络往返，然后报一个更长
+	// 的错误"。实测网页侧没有隐藏的取流接口，所以这里没有损失可捡。
+	if errors.Is(nativeErr, errHongguoAppEmptyModel) {
+		return providerMedia{}, fmt.Errorf("红果暂时取不到这一集的片源（%v），请稍后重试或换一集", nativeErr)
+	}
 	media, publicErr := d.resolveHongguoPublicMedia(ctx, videoID)
 	if publicErr == nil {
 		return media, nil
@@ -288,8 +296,14 @@ func (d *Downloader) resolveHongguoPublicMedia(ctx context.Context, videoID stri
 		}
 		duration, durationErr := hongguoMediaDurationFromPrefix(prefix)
 		if durationErr != nil {
-			// 读不出时长就按"未知"处理，不因此误伤正常片源。
-			duration = 0
+			// 0.8.16 第四批：**读不出时长必须拒收**，不能放行。
+			//
+			// 这条路已知只给 10 秒预告（见上面的实测说明），读不出时长就
+			// 没有任何证据证明这次拿到的是正片。以前这里按"未知"放行，
+			// 结果网络抖动导致只读到半截头部时，预告被当正片交给播放器 ——
+			// 用户看到的就是"有的手机每集只能播 10 秒"。
+			lastErr = fmt.Errorf("红果公开片源无法确认时长（%v），疑似预告", durationErr)
+			continue
 		}
 		if hongguoLooksLikePreview(duration) {
 			lastErr = fmt.Errorf("红果公开片源只有 %.0f 秒预告，不是正片", duration.Seconds())
@@ -331,6 +345,19 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 		return providerMedia{}, fmt.Errorf("红果网页只返回了 %.0f 秒预告", duration)
 	}
 	media := providerMedia{URL: addresses[0], Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}
+	if media.Duration <= 0 {
+		// 0.8.16 第四批：网页没给时长时也不能直接放行。
+		// 游客访问这条路本来就只放预告，读不出时长等于没有任何正片证据，
+		// 与其让用户看 10 秒，不如报错让他换一集 / 重试。
+		probed, probeErr := d.hongguoProbeMediaDuration(ctx, media)
+		if probeErr != nil {
+			return providerMedia{}, fmt.Errorf("红果网页片源无法确认时长（%v），疑似预告", probeErr)
+		}
+		if hongguoLooksLikePreview(probed) {
+			return providerMedia{}, fmt.Errorf("红果网页只返回了 %.0f 秒预告", probed.Seconds())
+		}
+		media.Duration = probed
+	}
 	for _, address := range addresses {
 		variant := media
 		variant.URL, variant.Variants = address, nil
