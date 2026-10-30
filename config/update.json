@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.17",
-    "build": 96,
-    "tag": "v0.8.17",
-    "notes": "0.8.17 · 画中画 + 河马站源",
+    "version": "0.8.18",
+    "build": 97,
+    "tag": "v0.8.18",
+    "notes": "0.8.18 · 画中画增强 + 远程升级 + 签名固定",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.17+96-all.apk",
-        "size": 72582298,
-        "sha256": "029de89f0716920869658b49167032691f68d4cef52c4c186ddcef64ebfa47db"
+        "name": "zhenguojianTV-0.8.18+97-all.apk",
+        "size": 72823630,
+        "sha256": "c176d28ba91df5640546316ee79e6adb91ff6783ac5f57826e1efdef91a0b9a1"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.17+96-arm64-v8a.apk",
-        "size": 32911702,
-        "sha256": "bc8697cf4f2281477cb07f836fb017cb582739d9268f8e1a245b9b9945474dc3"
+        "name": "zhenguojianTV-0.8.18+97-arm64-v8a.apk",
+        "size": 33029398,
+        "sha256": "d2f508d2ed2981a5eeb19a7c87c7d8d84d075cb6c658cc986f53ff0dcbfa2cf1"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.17+96-armeabi-v7a.apk",
-        "size": 41446424,
-        "sha256": "f543c33939b105b13a0f284842e8732388b31954895bbf45e8ddbaca3a97d59e"
+        "name": "zhenguojianTV-0.8.18+97-armeabi-v7a.apk",
+        "size": 41574037,
+        "sha256": "0c13baf9d710c0fe87ad15315219dddca179888bf260d6ce05d4e7a037a0ddd1"
       }
     ]
   },
