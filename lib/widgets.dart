@@ -678,6 +678,46 @@ String formatPosition(double seconds) {
   return '${value ~/ 60}:${(value % 60).toString().padLeft(2, '0')}';
 }
 
+/// 播放页的加载动效（0.8.16 第三批）。
+///
+/// 与 [LoadingHint] 的分工：列表 / 首屏那种"不知道在等什么"的场景需要
+/// 文字说明；**播放页不需要** —— 用户已经点进来看这一集了，他在等视频
+/// 这件事是明摆着的。抖音 / 红果的加载态就是画面正中一个细环在转，
+/// 没有一个字。多一行「正在加载视频…」只是噪音，还会把"卡住了"这件事
+/// 显得更重。
+///
+/// [tv] 传 true 时整体放大，10 英尺外也看得清。
+class PlaybackLoading extends StatelessWidget {
+  const PlaybackLoading({super.key, this.tv = false});
+
+  /// 是否电视端（放大动效）。
+  final bool tv;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = tv ? 64.0 : 42.0;
+    // 画面上一个字都不要，但**读屏要能念出来**：无障碍标签不算文案，
+    // TalkBack / 读屏用户同样需要知道"在等视频"。
+    return Semantics(
+      label: '正在加载视频',
+      container: true,
+      child: Center(
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: CircularProgressIndicator(
+            strokeWidth: tv ? 4.5 : 3.2,
+            color: Colors.white70,
+            // 淡淡的底圈：弱光环境下也能看出"这里有个环在转"，
+            // 而不是一截孤零零的弧线在飘。
+            backgroundColor: Colors.white12,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 统一的加载提示：转圈 + 一句说明「正在做什么」。
 ///
 /// 用途：用户明确要求所有等待都要有文字说明，避免"不知道在等什么"。

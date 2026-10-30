@@ -1717,6 +1717,18 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 又不会让人觉得没反应。
   static const Duration _loadingOverlayDelay = Duration(milliseconds: 220);
 
+  /// 缓冲卡顿是否已经明显到该亮动效（0.8.16 第三批）。
+  ///
+  /// 抖音 / 红果的规则：**缓冲超过半秒才把加载动效亮出来**。短抖动不该
+  /// 闪一下，但真的卡住了必须有反馈 —— 否则画面就那么僵在最后一帧，
+  /// 用户会以为播放器死了。
+  bool _bufferingHint = false;
+  Timer? _bufferingTimer;
+
+  /// 缓冲多久算"卡住了"。500ms 是抖音的量级：低于它多半是切片间隙，
+  /// 高于它用户已经能感觉到停顿。
+  static const Duration _bufferingHintDelay = Duration(milliseconds: 500);
+
   bool _ready = false;
   bool _panelOpen = false;
   DateTime _lastPanelClosedAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2151,6 +2163,85 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       );
     }
     _planCache.clear();
+  }
+
+  /// 清掉已经过期的缓存计划（0.8.16 第三批）。
+  ///
+  /// 缓存不是"存进去就不管"：每条都带凭证过期时间（最长 5 分钟）。
+  /// 只在取用时检查的话，用户停在一集不动时那些过期条目会一直占着
+  /// 原生侧的播放会话（一共只有 12 个，预载器还占着几个），
+  /// 所以健康检查每秒顺手扫一遍。
+  void _sweepPlanCache() {
+    if (_planCache.isEmpty) return;
+    final now = DateTime.now();
+    final expired = [
+      for (final entry in _planCache.entries)
+        if (!entry.value.expires.isAfter(now)) entry.key,
+    ];
+    if (expired.isEmpty) return;
+    for (final key in expired) {
+      final dropped = _planCache.remove(key);
+      if (dropped == null) continue;
+      unawaited(
+        widget.repository
+            .release(dropped.plan.session)
+            .catchError((Object _) {}),
+      );
+    }
+  }
+
+  /// 缓冲状态变化时更新「卡顿动效」（0.8.16 第三批）。
+  ///
+  /// 500ms 内恢复的抖动不亮动效（切片间隙很常见，闪一下反而更烦）；
+  /// 超过就亮，让用户知道"还在，只是在等数据"。
+  void _refreshBufferingHint(bool buffering) {
+    if (_closed) return;
+    if (!buffering) {
+      _bufferingTimer?.cancel();
+      _bufferingTimer = null;
+      if (_bufferingHint) {
+        _bufferingHint = false;
+        if (mounted) setState(() {});
+        // 全屏层是独立路由，只跟随 revision 重建；卡顿期间位置流是停的，
+        // 不在这里主动刷一次，全屏就看不到动效（也撤不掉）。
+        _refreshFullscreen(immediate: true);
+      }
+      return;
+    }
+    if (_bufferingHint || _bufferingTimer != null) return;
+    _bufferingTimer = Timer(_bufferingHintDelay, () {
+      _bufferingTimer = null;
+      if (_closed || !mounted) return;
+      if (!(_player?.state.buffering ?? false)) return;
+      // 切集加载 / 等首帧本来就有动效，不叠第二个。
+      if (_loading || _awaitingFirstFrame) return;
+      setState(() => _bufferingHint = true);
+      _refreshFullscreen(immediate: true);
+    });
+  }
+
+  /// 播放页要不要显示加载动效（0.8.16 第三批）。
+  ///
+  /// 四条来源统一成一个出口，竖屏 / 全屏 / 电视三处渲染共用，避免各写
+  /// 一套条件后慢慢长歪：
+  /// 1. 切集取流（延迟 [_loadingOverlayDelay]）；
+  /// 2. 已交给播放器但还没起播；
+  /// 3. 已就绪却始终没画面（真故障）；
+  /// 4. 播放中缓冲卡顿超过 [_bufferingHintDelay]。
+  bool get _showPlaybackLoading {
+    if (_closed || _error != null) return false;
+    if (_loadingOverlay && _loading) return true;
+    final playing = _player?.state.playing ?? false;
+    if (_awaitingFirstFrame && !playing) return true;
+    if (!_userPaused && _ready && !_hasVideoFrame) return true;
+    // 卡顿动效要再确认一次播放器现在**确实**还在缓冲。
+    //
+    // 只信 `_bufferingHint` 会有一个漏洞：暂停 / 出错时播放器可能不再发
+    // buffering 流，那面"还在转"的圈就永远撤不掉（电视上尤其明显 ——
+    // 遥控器一按暂停，屏幕正中还在转圈）。所以这里跟播放器状态对一次。
+    return _bufferingHint &&
+        !_userPaused &&
+        (_player?.state.buffering ?? false);
   }
 
   // —— 延迟加载遮罩（0.8.16 第二批）——
@@ -2654,7 +2745,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 已交给播放器超过 [_firstFrameTicksLimit] 秒仍未起播，则自动恢复一次。
     _healthTimer?.cancel();
     _healthTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_closed || _playerReleased || !widget.active || _error != null) {
+      if (_closed || _playerReleased) return;
+      // 0.8.16 第三批：顺手把过期的播放计划清掉。
+      // 放在"是否可见 / 是否有错"判断**之前** —— 页面被滑走时更需要清，
+      // 否则那几份会话会一直挂到页面销毁。
+      _sweepPlanCache();
+      if (!widget.active || _error != null) {
         return;
       }
       // 0.7.4：移动网络下"按设计不自动播"不是故障，健康检查整体跳过，
@@ -2666,6 +2762,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       }
       final current = _player;
       if (current == null) return;
+      // 兜底（0.8.16 第三批）：`buffering` 流偶尔会漏一次 false
+      // （播放器卡死时干脆不再发任何事件），动效就永远撤不掉。
+      // 每秒跟播放器的真实状态对一次，错了立刻纠正。
+      _refreshBufferingHint(current.state.buffering);
       // 有画面且在播 → 解码是好的，清掉"解码异常"的累计次数（0.8.3）。
       if (_hasVideoFrame && current.state.playing) _decodeStalls = 0;
       // 兜底一：地址已交出但迟迟不起播（弱网 / 服务端迟迟不给数据）。
@@ -2817,6 +2917,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           _tick.value++;
           // 弹幕（0.8.11）：跟着播放位置推进时间窗。
           _syncDanmaku();
+          // 0.8.16 第三批：缓冲卡顿超过半秒就亮加载动效。
+          // 抖音 / 红果都是这个量级 —— 低于它多半是切片间隙，闪一下反而更烦。
+          _refreshBufferingHint(player.state.buffering);
           // 预载（0.2.31）：位置/缓冲变化时评估是否需要提前准备下一集/下一部。
           _syncPreload();
           // 局域网推送（0.6.4）：**位置推进后**才回报握手。
@@ -3036,6 +3139,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _loadingOverlayTimer?.cancel();
     _loadingOverlayTimer = null;
     _loadingOverlay = false;
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
+    _bufferingHint = false;
     // 0.6.11 修复（用户反馈"偶发下一个视频黑屏不播放"）：
     //
     // `_releasePlayer()` 之前**没有清 `_awaitingFirstFrame` / `_firstFrameTicks`**。
@@ -3062,6 +3168,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 0.8.16 第二批：缓存里的播放会话必须还回去，否则原生侧会话池会漏。
     _loadingOverlayTimer?.cancel();
     _loadingOverlayTimer = null;
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
     _clearPlanCache();
     // 0.7.5：进度预览与亮度通知器释放（两者都由本页 State 持有）。
     _seekPreview.dispose();
@@ -3814,6 +3922,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
               )],
               quality: _quality,
             ));
+    // 0.8.16 第三批：换集时把上一集的"卡顿"状态清掉。
+    //
+    // 否则上一集卡住亮起的动效会跟着带进新一集 —— 新一集明明在正常
+    // 取流（有自己的加载动效），却又叠着一条"卡住了"的判断，
+    // 表现为动效撤不掉。
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
+    _bufferingHint = false;
     setState(() {
       _loading = !silent;
       _error = null;
@@ -5388,21 +5504,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                     // 0.8.16 第二批：切集取流时的转圈延迟 [_loadingOverlayDelay]
                     // 才出现，命中缓存 / 换得快时用户看不到任何闪动。
                     // 「等首帧」与「已就绪却没画面」两条保持立即显示。
+                    //
+                    // 0.8.16 第三批：全屏同样收敛到 [_showPlaybackLoading]，
+                    // 换成纯动效（无文案），与竖屏 / 电视一致。
                     if (_loadingOverlay && _loading)
-                      const IgnorePointer(
-                        child: LoadingHint(message: '正在加载视频…', dark: true),
+                      IgnorePointer(
+                        key: const ValueKey('feed-switch-loading'),
+                        child: PlaybackLoading(tv: _television),
                       )
-                    else if ((_awaitingFirstFrame &&
-                            !(_player?.state.playing ?? false)) ||
-                        // 0.7.13：改为判断"是否出过画面"。此前看 `width <= 0`，
-                        // 而部分流始终不报宽高 → 正常播放时提示也一直挂着。
-                        (!_userPaused &&
-                            _ready &&
-                            _error == null &&
-                            !_hasVideoFrame))
-                      const IgnorePointer(
-                        child: LoadingHint(message: '正在加载视频…', dark: true),
-                      )
+                    else if (_showPlaybackLoading)
+                      IgnorePointer(child: PlaybackLoading(tv: _television))
                     else if (_error != null)
                       Center(
                         child: Padding(
@@ -5914,27 +6025,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         // 兜底条件补上「已就绪但播放器没有任何画面」：
         // 只要本页已 `_ready`、无错误、且播放器**既没在播也没有可用帧**，
         // 就显示加载提示，绝不让用户面对一块没有任何文字的黑屏。
-        // 0.8.16 第二批：切集取流时的转圈延迟 [_loadingOverlayDelay] 才出现，
-        // 命中缓存 / 换得快时用户看不到任何闪动。
+        // 0.8.16 第三批：加载态统一成抖音 / 红果那种**纯动效、无文案**。
         //
-        // 与下面那条分开写而不是并成一个条件：延迟遮罩单独带 key，
-        // 测试要能精确断言"切集那一瞬间没有闪转圈"，
-        // 不被「等首帧」这条既有行为干扰。
+        // 用户已经点进来看这一集了，"我在等视频"是明摆着的，多一行
+        // 「正在加载视频…」只是噪音，还会把"卡住了"这件事显得更重。
+        // 四条来源（切集取流 / 等首帧 / 已就绪却没画面 / 缓冲卡顿）
+        // 收在 [_showPlaybackLoading] 里统一判断，竖屏、全屏、电视共用。
+        //
+        // 切集那条单独带 key：测试要能精确断言"那一瞬间没有闪动效"，
+        // 不被其余三条干扰。
         if (_loadingOverlay && _loading)
-          const IgnorePointer(
-            key: ValueKey('feed-switch-loading'),
-            child: LoadingHint(message: '正在加载视频…', dark: true),
+          IgnorePointer(
+            key: const ValueKey('feed-switch-loading'),
+            child: PlaybackLoading(tv: _television),
           )
-        // 「等首帧」与「已就绪却没画面」保持立即显示：
-        // 前者是 `open()` 之后短暂的必然过程，后者是真故障。
-        else if ((_awaitingFirstFrame && !(state?.playing ?? false)) ||
-            // 注意：必须排除 `_userPaused`，否则用户暂停后会错误地显示加载提示。
-            // 0.7.13：改为判断"是否出过画面"，不再看 `width <= 0`
-            // （部分流始终不报宽高，会让提示在正常播放时一直挂着）。
-            (!_userPaused && _ready && _error == null && !_hasVideoFrame))
-          const IgnorePointer(
-            child: LoadingHint(message: '正在加载视频…', dark: true),
-          )
+        else if (_showPlaybackLoading)
+          IgnorePointer(child: PlaybackLoading(tv: _television))
         else if (_error != null)
           Center(
             child: Padding(

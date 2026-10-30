@@ -1,6 +1,7 @@
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/vertical_feed_screen.dart';
+import 'package:duanju_app/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
@@ -118,10 +119,11 @@ void main() {
     expect(platforms.last.state.playing, isFalse, reason: '模拟的是"未起播"');
 
     // 核心断言：未起播期间**必须有加载提示**，不能纯黑无任何反馈。
+    // 0.8.16 第三批：提示从文字换成纯动效，断言组件本身。
     expect(
-      find.textContaining('正在加载'),
+      find.byType(PlaybackLoading),
       findsWidgets,
-      reason: '地址已交出但尚未起播时，应保留"正在加载"提示，不能纯黑无反应',
+      reason: '地址已交出但尚未起播时，应保留加载动效，不能纯黑无反应',
     );
     // 也不应误报错误。
     expect(find.textContaining('播放已中断'), findsNothing);

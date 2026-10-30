@@ -25,6 +25,9 @@ class _Repo extends RouteRepository {
   /// 非空时 `resolve` 会挂在这里，用来观察"加载中"的中间态。
   Completer<void>? gate;
 
+  /// 非空时把凭证过期时间塞进返回的计划（验证过期清理）。
+  int? expiresAt;
+
   @override
   Future<DramaDetail> detail(Drama drama) async {
     detailCalls++;
@@ -46,7 +49,18 @@ class _Repo extends RouteRepository {
     if (pending != null) await pending.future;
     primaryCalls++;
     requestedQualities.add(quality);
-    return plan(false);
+    final base = plan(false);
+    final expiry = expiresAt;
+    if (expiry == null) return base;
+    return PlaybackPlan(
+      url: base.url,
+      session: base.session,
+      routeIndex: base.routeIndex,
+      routeCount: base.routeCount,
+      quality: base.quality,
+      qualities: base.qualities,
+      expiresAt: expiry,
+    );
   }
 }
 
@@ -57,7 +71,11 @@ void main() {
     }
   }
 
-  Future<_Repo> mount(WidgetTester tester, {int episodes = 5}) async {
+  Future<_Repo> mount(
+    WidgetTester tester, {
+    int episodes = 5,
+    int? expiresAt,
+  }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(420, 880);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -65,7 +83,9 @@ void main() {
     SharedPreferences.setMockInitialValues(const {});
     final store = LocalStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
-    final repository = _Repo()..total = episodes;
+    final repository = _Repo()
+      ..total = episodes
+      ..expiresAt = expiresAt;
     final player = ScriptedPlayer();
     await tester.pumpWidget(
       MaterialApp(
@@ -174,8 +194,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 40));
 
     // 只认「切集取流」这一条延迟遮罩（带 key）。
-    // 不能用 `find.text('正在加载视频…')`：那还会命中「等首帧」那条
-    // 既有提示，跟本用例要验证的延迟逻辑无关。
+    // 不能用 `find.byType(PlaybackLoading)`：那还会命中「等首帧」
+    // 「已就绪却没画面」「缓冲卡顿」三条既有来源，跟本用例要验证的
+    // 延迟逻辑无关。
     expect(
       find.byKey(const ValueKey('feed-switch-loading')),
       findsNothing,
@@ -194,5 +215,33 @@ void main() {
     repo.gate = null;
     await settle(tester);
     expect(find.byKey(const ValueKey('feed-switch-loading')), findsNothing);
+  });
+
+  testWidgets('0.8.16：过期的播放计划会被每秒清理，不会无限期占着会话', (tester) async {
+    // 凭证 6 秒后过期 → `_planExpiry` 取「过期前 5 秒」≈ 1 秒后失效。
+    final repo = await mount(
+      tester,
+      expiresAt: DateTime.now().millisecondsSinceEpoch + 6000,
+    );
+    await swipe(tester, up: true);
+    expect(
+      repo.active,
+      contains('route-1'),
+      reason: '刚播完的第 1 集应该先留在缓存里（回切零网络）',
+    );
+
+    // 过期判定用的是真实时钟（`DateTime.now()`），widget 测试的假时钟
+    // 推不动它 —— 只能用 `runAsync` 真等一会儿。
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 1200)),
+    );
+    // 健康检查每秒扫一次，推 1 秒让它跑一轮。
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(
+      repo.active,
+      isNot(contains('route-1')),
+      reason: '凭证已过期，计划必须被扫掉并把会话还回原生侧，不能一直占着',
+    );
   });
 }

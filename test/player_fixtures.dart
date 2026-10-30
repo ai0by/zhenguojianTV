@@ -90,6 +90,16 @@ class ScriptedPlayer extends PlatformPlayer {
     );
   }
 
+  /// 0.8.16 第三批：模拟缓冲卡顿。
+  ///
+  /// `open()` 只会把 `buffering` 写进 `state` 而不发流，这里补上发流 ——
+  /// 播放页靠 `player.stream.buffering` 判断"是不是卡住了"，不发流就
+  /// 观察不到那个状态变化。
+  void buffering(bool value) {
+    state = state.copyWith(buffering: value);
+    bufferingController.add(value);
+  }
+
   @override
   Future<void> pause() async {
     state = state.copyWith(playing: false);

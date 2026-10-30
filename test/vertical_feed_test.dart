@@ -1,5 +1,6 @@
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/vertical_feed_screen.dart';
+import 'package:duanju_app/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
@@ -74,7 +75,8 @@ void main() {
       hasLength(1),
       reason: '当前页挂载后必须真的把媒体交给播放器，否则界面会一直卡在加载中',
     );
-    expect(find.text('正在加载视频…'), findsNothing);
+    // 0.8.16 第三批：加载态改成纯动效、没有文案了，改断言组件本身。
+    expect(find.byType(PlaybackLoading), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
