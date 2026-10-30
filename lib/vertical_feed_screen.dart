@@ -2213,8 +2213,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _bufferingTimer = null;
       if (_closed || !mounted) return;
       if (!(_player?.state.buffering ?? false)) return;
-      // 切集加载 / 等首帧本来就有动效，不叠第二个。
-      if (_loading || _awaitingFirstFrame) return;
+      // 切集取流本来就有延迟遮罩，不叠第二个。
+      //
+      // 这里**只看 `_loading`**，不要再看 `_awaitingFirstFrame`：后者在
+      // `open()` 之后才置位，而 `open()` 已经把 playing 报上来了，两者
+      // 交叠时会残留成 true（同 `_refreshLoadingOverlay` 踩过的坑）。
+      // 拿它当门禁，弱网卡顿就永远亮不出动效。
+      if (_loading) return;
       setState(() => _bufferingHint = true);
       _refreshFullscreen(immediate: true);
     });

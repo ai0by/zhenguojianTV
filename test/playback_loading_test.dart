@@ -104,7 +104,7 @@ void main() {
   testWidgets('0.8.16：加载态是纯动效，页面上没有任何"正在加载"文字', (tester) async {
     final (repo, _) = await mount(tester);
     // 首集已经播起来，遮罩必须撤干净，否则下面的断言测的不是切集那条。
-    expect(find.byType(PlaybackLoading), findsNothing);
+    expect(find.byKey(const ValueKey('feed-switch-loading')), findsNothing);
 
     repo.gate = Completer<void>();
     await swipeUp(tester, hold: true);
@@ -138,7 +138,11 @@ void main() {
     repo.gate!.complete();
     repo.gate = null;
     await settle(tester);
-    expect(find.byType(PlaybackLoading), findsNothing);
+    expect(
+      find.byKey(const ValueKey('feed-switch-loading')),
+      findsNothing,
+      reason: '取流结束，切集遮罩必须撤掉',
+    );
   });
 
   testWidgets('0.8.16：缓冲超过 500ms 才亮动效，恢复后立刻撤掉', (tester) async {
