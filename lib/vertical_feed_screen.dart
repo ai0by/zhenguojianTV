@@ -1512,6 +1512,19 @@ class _FeedRemoteActions {
   final void Function(bool paused) setPaused;
 }
 
+/// 一份留在本页缓存里的播放计划（0.8.16 第二批）。
+///
+/// 只记"计划 + 它什么时候失效"，用来支撑来回切集零网络。
+/// 超出缓存上限或凭证将过期时由 [_FeedPageState._rememberPlan] 释放会话。
+class _CachedPlaybackPlan {
+  const _CachedPlaybackPlan(this.plan, this.expires);
+
+  final PlaybackPlan plan;
+
+  /// 这一份计划还能用到什么时候。
+  final DateTime expires;
+}
+
 /// 单页：一个视频 + 播放控件 + 信息栏。
 class _FeedPage extends StatefulWidget {
   const _FeedPage({
@@ -1662,11 +1675,48 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   DramaDetail? _detail;
   PlaybackPlan? _plan;
 
+  /// [_plan] 对应的是第几集（0.8.16 第二批）。
+  ///
+  /// 换集时要把**上一集**的计划存进 [_planCache]，而 `_episodeIndex` 那时
+  /// 已经被改成目标集了，必须单独记一份旧值，否则会拿错集号去缓存。
+  int _planEpisode = -1;
+
+  /// 最近几集的播放计划（0.8.16 第二批）。
+  ///
+  /// 抖音 / 红果的切集是"零等待"的，靠的是**播过的内容立刻能回到**。
+  /// 以前这里换集就把旧计划的播放会话 `release` 掉，于是 6 → 5 → 6
+  /// 往回切时第 6 集要重新走一遍完整解析链路（详情 → 取流 → 拉 m3u8），
+  /// 用户看到的就是"停在本集转圈，等它好了才切"。
+  ///
+  /// 现在换集时先把旧计划**留下来**，回切直接复用；只有超出上限或凭证
+  /// 快过期时才真正释放。键见 [_planKey]，容量见 [_planCacheLimit]。
+  final Map<String, _CachedPlaybackPlan> _planCache = {};
+
+  /// 缓存上限（含当前正在播的那一集）。
+  ///
+  /// 原生侧播放会话上限只有 12 个，预载器还占着 4 个左右，
+  /// 这里留 3 个：够覆盖"往回切两集"，又不会把会话池吃满。
+  static const int _planCacheLimit = 3;
+
   /// 弹幕（0.8.11）：只有红果的剧集有弹幕，控制器自己判断支持与否。
   late final DanmakuController _danmaku;
   bool _danmakuEnabled = true;
   String? _error;
   bool _loading = true;
+
+  /// 「正在加载」遮罩是否真的画出来（0.8.16 第二批）。
+  ///
+  /// `_loading` 是**状态**，切集瞬间就会置位；但抖音 / 红果式的切集
+  /// 根本看不到转圈 —— 命中缓存时 `open()` 往往一二百毫秒就换好画面，
+  /// 遮罩还没画出来就该撤了。所以遮罩单独延迟 [_loadingOverlayDelay]
+  /// 才真正显示，短时加载等于完全无感。
+  bool _loadingOverlay = false;
+  Timer? _loadingOverlayTimer;
+
+  /// 遮罩延迟。太长会让真的卡住时"毫无反应"，220ms 能盖住常规切集耗时，
+  /// 又不会让人觉得没反应。
+  static const Duration _loadingOverlayDelay = Duration(milliseconds: 220);
+
   bool _ready = false;
   bool _panelOpen = false;
   DateTime _lastPanelClosedAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2009,6 +2059,128 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _television = AppLayout.isTelevision(context);
   }
 
+  // —— 播放计划缓存（0.8.16 第二批）——
+  //
+  // 目标：来回切集**零网络、零停顿**。
+  //
+  // 抖音 / 红果切上一集是瞬间的，因为它们把"刚播过的内容"留在内存里。
+  // 这里以前换集就把旧会话 `release` 掉，于是 6 → 5 命中预载、5 → 6
+  // 却要重新解析（第 6 集早已被预载器的"只留邻居"清掉了）。用户看到
+  // 的就是"停在本集转圈，等它好了才切过去"。
+
+  /// 某一集在缓存里的键。画质参与键：切画质等于换一路流，不能混用。
+  String _planKey(int index) => '$index|$_quality';
+
+  /// 取出一份仍然有效的缓存计划（**取走**，同时从缓存里删掉）。
+  ///
+  /// 取走而不是共享：`PlaybackPlan` 带着一个播放会话，同一份计划被两处
+  /// 同时当作"正在播"会让会话的释放时机说不清。命中后这份计划归播放器，
+  /// 下次换集时再按新集号存回来。
+  PlaybackPlan? _takeCachedPlan(int index) {
+    final entry = _planCache.remove(_planKey(index));
+    if (entry == null) return null;
+    if (entry.expires.isAfter(DateTime.now()) && entry.plan.url.isNotEmpty) {
+      return entry.plan;
+    }
+    unawaited(
+      widget.repository.release(entry.plan.session).catchError((Object _) {}),
+    );
+    return null;
+  }
+
+  /// 缓存里有没有这一集（**只看不取**，用来决定要不要闪加载遮罩）。
+  bool _hasCachedPlan(int index) {
+    final entry = _planCache[_planKey(index)];
+    return entry != null && entry.expires.isAfter(DateTime.now());
+  }
+
+  /// 把一份刚用完的计划留在缓存里，供往回切时直接复用。
+  ///
+  /// 留不住（凭证将过期 / 本地播放 / 页面已销毁）时立刻释放会话，
+  /// 不能让会话池被死数据占着。
+  void _rememberPlan(PlaybackPlan plan, int index) {
+    void drop() => unawaited(
+      widget.repository.release(plan.session).catchError((Object _) {}),
+    );
+
+    if (_closed || widget.localOnly || index < 0 || plan.url.isEmpty) {
+      drop();
+      return;
+    }
+    final expires = _planExpiry(plan);
+    if (!expires.isAfter(DateTime.now())) {
+      drop();
+      return;
+    }
+    // 先删再插：Dart 的 Map 对已存在的键赋值不会移动位置，
+    // 不先删就成不了"最近使用排在后面"的 LRU 语义。
+    _planCache.remove(_planKey(index));
+    _planCache[_planKey(index)] = _CachedPlaybackPlan(plan, expires);
+    while (_planCache.length > _planCacheLimit) {
+      final dropped = _planCache.remove(_planCache.keys.first);
+      if (dropped != null) {
+        unawaited(
+          widget.repository
+              .release(dropped.plan.session)
+              .catchError((Object _) {}),
+        );
+      }
+    }
+  }
+
+  /// 计划的可用截止时间：取「凭证过期时间」和「5 分钟」里更早的那个。
+  ///
+  /// 5 分钟是经验值：短剧一集 40~90 秒，往回翻三集也在这个窗口内，
+  /// 再久就该重新解析了（地址可能已经换签名）。
+  DateTime _planExpiry(PlaybackPlan plan) {
+    var expires = DateTime.now().add(const Duration(minutes: 5));
+    if (plan.expiresAt > 0) {
+      final authorizationExpiry = DateTime.fromMillisecondsSinceEpoch(
+        plan.expiresAt,
+      ).subtract(const Duration(seconds: 5));
+      if (authorizationExpiry.isBefore(expires)) expires = authorizationExpiry;
+    }
+    return expires;
+  }
+
+  /// 释放整份缓存（离开页面 / 换剧时）。
+  void _clearPlanCache() {
+    for (final entry in _planCache.values) {
+      unawaited(
+        widget.repository.release(entry.plan.session).catchError((Object _) {}),
+      );
+    }
+    _planCache.clear();
+  }
+
+  // —— 延迟加载遮罩（0.8.16 第二批）——
+
+  /// 按当前状态决定遮罩要不要真的显示。
+  ///
+  /// `_loading` / `_awaitingFirstFrame` 一变就调一次：需要遮罩时先起一个
+  /// [_loadingOverlayDelay] 的定时器，期间状态恢复就取消，用户根本看不到
+  /// 转圈；真的卡住了定时器到点才画出来。
+  void _refreshLoadingOverlay() {
+    if (_closed) return;
+    final wanted = _loading || _awaitingFirstFrame;
+    if (!wanted) {
+      _loadingOverlayTimer?.cancel();
+      _loadingOverlayTimer = null;
+      if (_loadingOverlay) {
+        _loadingOverlay = false;
+        if (mounted) setState(() {});
+      }
+      return;
+    }
+    if (_loadingOverlay || _loadingOverlayTimer != null) return;
+    _loadingOverlayTimer = Timer(_loadingOverlayDelay, () {
+      _loadingOverlayTimer = null;
+      if (_closed || !mounted) return;
+      if (!_loading && !_awaitingFirstFrame) return;
+      setState(() => _loadingOverlay = true);
+    });
+  }
+
   /// 播放器操作串行队列（0.3.1）。
   ///
   /// 把操作挂到同一条 Future 链上，前一个失败也不影响后续执行
@@ -2122,6 +2294,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         _error = current.local ? '本地视频播放中断，请返回重试。' : '播放已中断，请点击重试。';
       });
       _refreshFullscreen(immediate: true);
+      _refreshLoadingOverlay();
       return;
     }
     // 记录续播点，`_prepare` 会通过 `_takeStartPosition` 取用。
@@ -2241,6 +2414,26 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       buffering: state.buffering,
       foreground: _foreground && !_closed,
       available: _hasVideoFrame || state.playing,
+    );
+  }
+
+  /// 立刻预热当前集两侧的邻居（0.8.16 第二批）。
+  ///
+  /// 与 [_syncPreload] 的区别：这里**不看播放位置**，切集一完成就跑。
+  /// 正常播放时 `_syncPreload` 要等 1.2 秒才启动预载，快速连滑
+  /// （6 → 5 → 4 → 3）时根本来不及；而切集刚完成正是最该准备的时刻。
+  ///
+  /// `prepareAround` 自身幂等（已有计划 / 在途 / 刚失败退避中的槽都会跳过），
+  /// 所以和 `_syncPreload` 重复调用没有副作用。
+  void _primeNeighbours() {
+    if (_closed || widget.localOnly || _autoPlayBlocked) return;
+    final detail = _detail;
+    if (detail == null || detail.episodes.isEmpty) return;
+    _preloader.prepareAround(
+      detail.drama,
+      detail.episodes,
+      _episodeIndex,
+      quality: _quality,
     );
   }
 
@@ -2507,6 +2700,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
             _error = '网络较慢，加载超时，请点击重试';
           });
           _refreshFullscreen(immediate: true);
+          _refreshLoadingOverlay();
         }
         return;
       }
@@ -2654,6 +2848,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           _awaitingFirstFrame = false;
           _firstFrameTicks = 0;
           if (!_closed) setState(() {});
+          _refreshLoadingOverlay();
         }
         // 0.7.13：起播时若播放器已经报了宽高，直接认定"画面已出"，
         // 避免正常播放时「正在加载视频…」一直挂着。
@@ -2821,7 +3016,17 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 重置就绪/加载态：下次 `_prepare()` 会重新走一遍。
     _ready = false;
     _plan = null;
+    _planEpisode = -1;
     _loading = true;
+    // 0.8.16 第二批：页面被滑走时把本页的播放计划缓存一起放掉。
+    //
+    // 缓存只服务"同一页内来回切集"；页面已经不可见了，留着这些会话
+    // 只会占住原生侧那 12 个名额，滑回来重新解析即可。
+    _clearPlanCache();
+    // 遮罩状态一并归零，避免下次回来带着上一轮的"已显示"标记。
+    _loadingOverlayTimer?.cancel();
+    _loadingOverlayTimer = null;
+    _loadingOverlay = false;
     // 0.6.11 修复（用户反馈"偶发下一个视频黑屏不播放"）：
     //
     // `_releasePlayer()` 之前**没有清 `_awaitingFirstFrame` / `_firstFrameTicks`**。
@@ -2845,6 +3050,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   void dispose() {
     _closed = true;
     _danmaku.dispose();
+    // 0.8.16 第二批：缓存里的播放会话必须还回去，否则原生侧会话池会漏。
+    _loadingOverlayTimer?.cancel();
+    _loadingOverlayTimer = null;
+    _clearPlanCache();
     // 0.7.5：进度预览与亮度通知器释放（两者都由本页 State 持有）。
     _seekPreview.dispose();
     // 局域网推送（0.6.4）：注销本页的"正在播放"注册，并回报接收端已退出。
@@ -3282,6 +3491,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 现在切换后立即刷新一次，图标与画面同步。
     _tick.value++;
     _refreshFullscreen(immediate: true);
+    // 暂停会清掉"等待首帧"，遮罩要跟着撤（0.8.16 第二批）。
+    _refreshLoadingOverlay();
     // 0.8.9：电视上从控件按钮恢复播放后，把焦点还给页面，
     // 否则控件会因为有焦点而一直不自动隐藏。
     if (willPlay) _releaseControlsFocusForPlayback();
@@ -3561,6 +3772,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           _loading = false;
           _error = '播放器未能启动，请返回上一集重试';
         });
+        _refreshLoadingOverlay();
       }
       return;
     }
@@ -3575,18 +3787,24 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // `hasPlan` 判断一次（真正的 `take` 要等下面索引算完才能做），
     // 命中就保持当前画面，直接 open 新地址。
     final cachedDetail = _detail;
+    // 0.8.16 第二批：**本页缓存也算命中**。
+    //
+    // 预载器只留"邻居"，播过的集早就被清掉了；而用户最常做的就是
+    // 6 → 5 → 6 来回切。缓存命中同样不该闪遮罩，所以两个来源一起判。
+    final cacheHit = !widget.localOnly && _hasCachedPlan(_episodeIndex);
     final silent =
-        cachedDetail != null &&
-        !widget.localOnly &&
-        cachedDetail.episodes.isNotEmpty &&
-        _preloader.hasPlan(
-          cachedDetail.drama,
-          cachedDetail.episodes[_episodeIndex.clamp(
-            0,
-            cachedDetail.episodes.length - 1,
-          )],
-          quality: _quality,
-        );
+        cacheHit ||
+        (cachedDetail != null &&
+            !widget.localOnly &&
+            cachedDetail.episodes.isNotEmpty &&
+            _preloader.hasPlan(
+              cachedDetail.drama,
+              cachedDetail.episodes[_episodeIndex.clamp(
+                0,
+                cachedDetail.episodes.length - 1,
+              )],
+              quality: _quality,
+            ));
     setState(() {
       _loading = !silent;
       _error = null;
@@ -3596,6 +3814,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         _frameTicks = 0;
       }
     });
+    _refreshLoadingOverlay();
     if (!silent) {
       // 0.7.7 修复（真机反馈"流量+全屏自动切下一集纯黑、等很久不播"）：
       // 全屏层是独立路由，只跟随 `_fullscreenRevision` 重建。此前进入加载时
@@ -3616,15 +3835,29 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _applyHistoryOnce(detail);
       final index = _episodeIndex.clamp(0, detail.episodes.length - 1);
       final previous = _plan;
-      // 预载命中（0.2.31）：若之前已提前解析好这一集，直接复用，省一次网络解析。
-      // 匹配失败时返回 null，走正常解析路径。
-      final prepared = widget.localOnly
+      // 上一集对应第几集：`_planEpisode` 是换集前记下的旧值
+      // （`_episodeIndex` 这时候已经指向目标集了）。
+      final previousIndex = _planEpisode;
+      // 三级复用，越靠前越省（0.8.16 第二批）：
+      //   1. 本页缓存 —— 来回切的主路径，**零网络**；
+      //   2. 预载器 —— 切到没播过的邻居集，地址早已解析好；
+      //   3. 现场解析 —— 真的没准备过。
+      //
+      // 两个来源都要探一遍：`_preloader.take` 顺带会重置预缓存队列，
+      // 命中缓存时也不能跳过它，否则下一批预缓存目标会停在旧位置。
+      final fromPreloader = widget.localOnly
           ? null
           : _preloader.take(
               detail.drama,
               detail.episodes[index],
               quality: _quality,
             );
+      final cachedPlan = widget.localOnly ? null : _takeCachedPlan(index);
+      if (cachedPlan != null && fromPreloader != null) {
+        // 缓存里的必定更近、更可信，预载那份还回去，别让两份会话并存。
+        unawaited(widget.repository.release(fromPreloader.session));
+      }
+      final prepared = cachedPlan ?? fromPreloader;
       // 单剧模式的本地文件模式（0.2.29，下载页）：
       // 用 `localPlayback` 取已下载的本地文件，而不是拉在线流。
       // 两者返回的都是 `PlaybackPlan`，后续处理完全一致
@@ -3708,6 +3941,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       if (!_attemptAlive(player)) return;
       _detail = detail;
       _plan = plan;
+      // 记住这一集现在用的是哪份计划（下次换集时按这个集号存进缓存）。
+      _planEpisode = index;
       // 弹幕（0.8.11）：换集后重挂计划，控制器会清空上一集的缓存。
       _danmaku.setPlan(plan);
       _episodeIndex = index;
@@ -3734,7 +3969,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       await _interactions?.applySpeed();
       if (!_attemptAlive(player)) return;
       if (previous != null && previous.session != plan.session) {
-        unawaited(widget.repository.release(previous.session));
+        // 0.8.16 第二批：**不要立刻释放**，留在本页缓存里。
+        //
+        // 用户最常做的是 6 → 5 → 6 来回切。以前这里一换集就 release，
+        // 回切第 6 集只能重新解析 —— 表现就是"停在本集转圈，等它好了
+        // 才切过去"。留在缓存里，回切是零网络、零等待。
+        // 超出上限 / 凭证将过期时，`_rememberPlan` 会自己释放。
+        _rememberPlan(previous, previousIndex);
       }
       setState(() {
         _loading = false;
@@ -3774,6 +4015,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _acknowledgeHandoff();
       // 就绪是重要状态切换，跳过节流立即刷新（0.3.1）。
       _refreshFullscreen(immediate: true);
+      // 0.8.16 第二批：遮罩按新状态重新评估（命中缓存时这里直接撤掉）。
+      _refreshLoadingOverlay();
+      // 0.8.16 第二批：**切完立刻预热邻居**，不再等 position ≥ 1.2 秒。
+      //
+      // 连续快滑（6 → 5 → 4 → 3）时，每秒一次的健康检查根本来不及，
+      // 下一集往往还没准备就被切到了 —— 这正是"快速回看会卡"的另一半原因。
+      _primeNeighbours();
       // 静默换集不弹控件，也就不需要排"自动隐藏"。
       _silentSwitch = false;
       if (_controlsVisible) _scheduleHide();
@@ -3795,6 +4043,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         _error = error is AppFailure ? error.message : error.toString();
       });
       _refreshFullscreen(immediate: true);
+      // 出错时 `_loading` / `_awaitingFirstFrame` 都已复位，遮罩必须立刻撤掉，
+      // 否则会盖住"点击重试"。
+      _refreshLoadingOverlay();
     }
   }
 
@@ -5078,7 +5329,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (video != null)
+                    // 0.8.16 第二批：加载新集且还没出画面时撤掉旧帧，与竖屏一致。
+                    if (video != null && !(_loading && !_hasVideoFrame))
                       _applyBrightness(
                         _withDanmaku(
                           Video(
@@ -5123,9 +5375,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                     ),
                     // 与竖屏主层保持一致（0.6.11）：补上"已就绪但无画面"的兜底，
                     // 避免全屏时出现纯黑无文字。
-                    if (_loading ||
-                        (_awaitingFirstFrame &&
-                            !(_player?.state.playing ?? false)) ||
+                    //
+                    // 0.8.16 第二批：前两条加 [_loadingOverlay] 门控 —— 切集 /
+                    // 等首帧的转圈延迟 220ms 才出现，命中缓存时用户看不到任何闪动。
+                    // 第三条（已就绪却始终没画面）保持立即显示，那是真故障，
+                    // 不能让用户对着一块无文字的黑屏。
+                    if ((_loadingOverlay &&
+                            (_loading ||
+                                (_awaitingFirstFrame &&
+                                    !(_player?.state.playing ?? false)))) ||
                         // 0.7.13：改为判断"是否出过画面"。此前看 `width <= 0`，
                         // 而部分流始终不报宽高 → 正常播放时提示也一直挂着。
                         (!_userPaused &&
@@ -5554,7 +5812,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         if (widget.videoBuilder != null)
           // 测试注入的视频层：不依赖原生视频控制器。
           widget.videoBuilder!(const SizedBox.shrink())
-        else if (video != null && !_landscape)
+        // 0.8.16 第二批：**没命中缓存的切集，立刻把旧画面撤掉**。
+        //
+        // `Video` 在新地址 open 成功之前会一直显示上一集的最后一帧，
+        // 叠上"加载中"就成了用户说的"实际还停留在本集，加载成功才播上一集"。
+        // 这里在「正在加载 + 新集还没出画面」时不画视频层，露出黑底，
+        // 视觉上就是"已经切过去了，正在取流"。
+        //
+        // 命中缓存（或预载）时 `_loading == false`，条件不成立，
+        // 旧帧一直保留到新帧接上 —— 那才是真正的无缝。
+        else if (video != null && !_landscape && !(_loading && !_hasVideoFrame))
           _applyBrightness(
             _withDanmaku(
               Video(
@@ -5637,8 +5904,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         // 兜底条件补上「已就绪但播放器没有任何画面」：
         // 只要本页已 `_ready`、无错误、且播放器**既没在播也没有可用帧**，
         // 就显示加载提示，绝不让用户面对一块没有任何文字的黑屏。
-        if (_loading ||
-            (_awaitingFirstFrame && !(state?.playing ?? false)) ||
+        // 0.8.16 第二批：切集 / 等首帧的转圈延迟 [_loadingOverlayDelay] 才出现，
+        // 命中缓存时用户看不到任何闪动；「已就绪却始终没画面」是真故障，
+        // 保持立即显示。
+        if ((_loadingOverlay &&
+                (_loading ||
+                    (_awaitingFirstFrame && !(state?.playing ?? false)))) ||
             // 注意：必须排除 `_userPaused`，否则用户暂停后会错误地显示加载提示。
             // 0.7.13：改为判断"是否出过画面"，不再看 `width <= 0`
             // （部分流始终不报宽高，会让提示在正常播放时一直挂着）。
