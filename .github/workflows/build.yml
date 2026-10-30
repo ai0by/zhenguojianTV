@@ -207,11 +207,15 @@ jobs:
           # `v0.8.16` 这种光秃秃的版本号，看不出是哪个应用。版本号取自
           # pubspec.yaml，跟 APK 里的一致；tag 带不带 `v` 都不影响。
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          # 附件名要带 build 号（0.8.16+95），跟应用内「关于」显示的版本一致，
+          # 同一个 tag 多次构建时也分得清。
+          full_version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '[:space:]')
+          echo "APP_FULL_VERSION=$full_version" >> "$GITHUB_ENV"
 
       # 附件名也带上产品名（0.8.16）：Flutter 默认产出 `app-release.apk` /
       # `app-arm64-v8a-release.apk`，下载页上一堆 `app-` 开头的文件，既看不出
       # 是哪个应用，也看不出是哪个版本。统一成
-      # `zhenguojianTV-<版本>-<abi>.apk`，用户点开就知道该下哪个。
+      # `zhenguojianTV-<版本+build>-<abi>.apk`，用户点开就知道该下哪个。
       - name: Rename APK for release
         shell: bash
         run: |
@@ -225,7 +229,7 @@ jobs:
               app-release.apk) abi=all ;;
               *) abi="${base%-release.apk}" ;;
             esac
-            target="$(dirname "$apk")/zhenguojianTV-${APP_VERSION}-${abi}.apk"
+            target="$(dirname "$apk")/zhenguojianTV-${APP_FULL_VERSION}-${abi}.apk"
             mv "$apk" "$target"
             echo "renamed: $base -> $(basename "$target")"
           done
