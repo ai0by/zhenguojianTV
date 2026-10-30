@@ -208,6 +208,28 @@ jobs:
           # pubspec.yaml，跟 APK 里的一致；tag 带不带 `v` 都不影响。
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
 
+      # 附件名也带上产品名（0.8.16）：Flutter 默认产出 `app-release.apk` /
+      # `app-arm64-v8a-release.apk`，下载页上一堆 `app-` 开头的文件，既看不出
+      # 是哪个应用，也看不出是哪个版本。统一成
+      # `zhenguojianTV-<版本>-<abi>.apk`，用户点开就知道该下哪个。
+      - name: Rename APK for release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          for apk in artifacts/**/*.apk; do
+            base=$(basename "$apk")
+            case "$base" in
+              app-arm64-v8a-release.apk) abi=arm64-v8a ;;
+              app-armeabi-v7a-release.apk) abi=armeabi-v7a ;;
+              app-release.apk) abi=all ;;
+              *) abi="${base%-release.apk}" ;;
+            esac
+            target="$(dirname "$apk")/zhenguojianTV-${APP_VERSION}-${abi}.apk"
+            mv "$apk" "$target"
+            echo "renamed: $base -> $(basename "$target")"
+          done
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
