@@ -2180,10 +2180,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _loadingOverlayTimer = Timer(_loadingOverlayDelay, () {
       _loadingOverlayTimer = null;
       if (_closed || !mounted) return;
-      // 到点时再判一次：这 220ms 里可能已经起播 / 加载完成了。
-      final nowPlaying = _player?.state.playing ?? false;
-      if (!_loading && !(_awaitingFirstFrame && !nowPlaying)) return;
-      setState(() => _loadingOverlay = true);
+      // 到点就显示：中途状态若恢复，`_refreshLoadingOverlay` 会先把
+      // 这个定时器取消掉，能走到这里就说明仍然需要遮罩。
+      if (!_loadingOverlay) setState(() => _loadingOverlay = true);
     });
   }
 

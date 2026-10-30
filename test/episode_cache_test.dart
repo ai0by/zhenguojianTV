@@ -40,9 +40,13 @@ class _Repo extends RouteRepository {
     Episode episode, {
     int quality = 0,
   }) async {
+    // 先记下来再挂住：测试要靠它确认"确实已经切到这一集了"。
+    requestedEpisodes.add(episode.number);
     final pending = gate;
     if (pending != null) await pending.future;
-    return super.resolve(drama, episode, quality: quality);
+    primaryCalls++;
+    requestedQualities.add(quality);
+    return plan(false);
   }
 }
 
@@ -155,18 +159,26 @@ void main() {
     await gesture.moveBy(const Offset(0, -120));
     await tester.pump(const Duration(milliseconds: 16));
     await gesture.up();
-    // 滑出动画 200ms，跑完之后才真正换集。
+    // 先跑一帧把 ticker 启动起来（`AnimationController.forward` 的起始时间
+    // 是在**第一帧**才记的），再推进 220ms 让 200ms 的滑出动画跑完。
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 220));
-    // 换集后 60ms：还没到 220ms 的遮罩延迟。
-    await tester.pump(const Duration(milliseconds: 60));
+    expect(
+      repo.requestedEpisodes.last,
+      2,
+      reason: '先确认切集确实发生了，否则下面的断言测的不是遮罩',
+    );
+    // 换集后 40ms：还没到 220ms 的遮罩延迟。
+    await tester.pump(const Duration(milliseconds: 40));
 
     expect(
       find.text('正在加载视频…'),
       findsNothing,
-      reason: '切过去才 60ms，遮罩还没到显示时间，用户不该看到转圈',
+      reason: '切过去才 40ms，遮罩还没到显示时间，用户不该看到转圈',
     );
 
-    await tester.pump(const Duration(milliseconds: 220));
+    // 再走 400ms，累计远超 220ms 延迟。
+    await tester.pump(const Duration(milliseconds: 400));
     expect(
       find.text('正在加载视频…'),
       findsOneWidget,
