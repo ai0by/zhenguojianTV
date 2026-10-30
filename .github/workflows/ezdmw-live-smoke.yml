@@ -1,8 +1,8 @@
 name: E站 Live Smoke Test
 
 on:
-  push:
-    branches: [feat/ezdmw-anime-source]
+  # 只留手动触发：原来还挂着一个 `push: branches: [feat/ezdmw-anime-source]`，
+  # 那条特性分支 0.8.16 之后已经删掉，触发条件成了死配置。
   workflow_dispatch:
 
 permissions:
