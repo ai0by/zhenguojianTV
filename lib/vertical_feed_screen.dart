@@ -2162,11 +2162,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 转圈；真的卡住了定时器到点才画出来。
   void _refreshLoadingOverlay() {
     if (_closed) return;
-    // 已经在播就不需要遮罩：`_awaitingFirstFrame` 只在 `open()` 之后才置位，
-    // 而 `open()` 本身可能已经把 playing 报上来了（真机上常见），
-    // 那时再挂遮罩就是"正常播放却一直转圈"。
-    final playing = _player?.state.playing ?? false;
-    final wanted = _loading || (_awaitingFirstFrame && !playing);
+    // 只跟 `_loading` 走：那是"正在换集取流"的明确信号。
+    //
+    // `_awaitingFirstFrame` 刻意不参与 —— 它的置位时机在 `open()` 之后，
+    // 而 `open()` 可能已经把 playing 报上来了，两者交叠时很容易算错，
+    // 结果就是"正常播放却一直转圈"。等首帧仍由渲染条件里原有那条兜底。
+    final wanted = _loading;
     if (!wanted) {
       _loadingOverlayTimer?.cancel();
       _loadingOverlayTimer = null;
@@ -5384,14 +5385,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                     // 与竖屏主层保持一致（0.6.11）：补上"已就绪但无画面"的兜底，
                     // 避免全屏时出现纯黑无文字。
                     //
-                    // 0.8.16 第二批：前两条加 [_loadingOverlay] 门控 —— 切集 /
-                    // 等首帧的转圈延迟 220ms 才出现，命中缓存时用户看不到任何闪动。
-                    // 第三条（已就绪却始终没画面）保持立即显示，那是真故障，
-                    // 不能让用户对着一块无文字的黑屏。
-                    if ((_loadingOverlay &&
-                            (_loading ||
-                                (_awaitingFirstFrame &&
-                                    !(_player?.state.playing ?? false)))) ||
+                    // 0.8.16 第二批：切集取流时的转圈延迟 [_loadingOverlayDelay]
+                    // 才出现，命中缓存 / 换得快时用户看不到任何闪动。
+                    // 「等首帧」与「已就绪却没画面」两条保持立即显示：
+                    // 前者是 open 之后短暂的必然过程，后者是真故障。
+                    if ((_loadingOverlay && _loading) ||
+                        (_awaitingFirstFrame &&
+                            !(_player?.state.playing ?? false)) ||
                         // 0.7.13：改为判断"是否出过画面"。此前看 `width <= 0`，
                         // 而部分流始终不报宽高 → 正常播放时提示也一直挂着。
                         (!_userPaused &&
@@ -5912,12 +5912,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         // 兜底条件补上「已就绪但播放器没有任何画面」：
         // 只要本页已 `_ready`、无错误、且播放器**既没在播也没有可用帧**，
         // 就显示加载提示，绝不让用户面对一块没有任何文字的黑屏。
-        // 0.8.16 第二批：切集 / 等首帧的转圈延迟 [_loadingOverlayDelay] 才出现，
-        // 命中缓存时用户看不到任何闪动；「已就绪却始终没画面」是真故障，
-        // 保持立即显示。
-        if ((_loadingOverlay &&
-                (_loading ||
-                    (_awaitingFirstFrame && !(state?.playing ?? false)))) ||
+        // 0.8.16 第二批：切集取流时的转圈延迟 [_loadingOverlayDelay] 才出现，
+        // 命中缓存 / 换得快时用户看不到任何闪动。「等首帧」与「已就绪却没画面」
+        // 两条保持立即显示。
+        if ((_loadingOverlay && _loading) ||
+            (_awaitingFirstFrame && !(state?.playing ?? false)) ||
             // 注意：必须排除 `_userPaused`，否则用户暂停后会错误地显示加载提示。
             // 0.7.13：改为判断"是否出过画面"，不再看 `width <= 0`
             // （部分流始终不报宽高，会让提示在正常播放时一直挂着）。
