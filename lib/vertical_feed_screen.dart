@@ -2162,7 +2162,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 转圈；真的卡住了定时器到点才画出来。
   void _refreshLoadingOverlay() {
     if (_closed) return;
-    final wanted = _loading || _awaitingFirstFrame;
+    // 已经在播就不需要遮罩：`_awaitingFirstFrame` 只在 `open()` 之后才置位，
+    // 而 `open()` 本身可能已经把 playing 报上来了（真机上常见），
+    // 那时再挂遮罩就是"正常播放却一直转圈"。
+    final playing = _player?.state.playing ?? false;
+    final wanted = _loading || (_awaitingFirstFrame && !playing);
     if (!wanted) {
       _loadingOverlayTimer?.cancel();
       _loadingOverlayTimer = null;
@@ -2176,7 +2180,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _loadingOverlayTimer = Timer(_loadingOverlayDelay, () {
       _loadingOverlayTimer = null;
       if (_closed || !mounted) return;
-      if (!_loading && !_awaitingFirstFrame) return;
+      // 到点时再判一次：这 220ms 里可能已经起播 / 加载完成了。
+      final nowPlaying = _player?.state.playing ?? false;
+      if (!_loading && !(_awaitingFirstFrame && !nowPlaying)) return;
       setState(() => _loadingOverlay = true);
     });
   }
@@ -2850,6 +2856,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           if (!_closed) setState(() {});
           _refreshLoadingOverlay();
         }
+        // 0.8.16 第二批：起播就把遮罩撤掉。`_awaitingFirstFrame` 有可能
+        // 已被别处清掉，这里只按"遮罩还挂着"补一刀。
+        if (playing && _loadingOverlay) _refreshLoadingOverlay();
         // 0.7.13：起播时若播放器已经报了宽高，直接认定"画面已出"，
         // 避免正常播放时「正在加载视频…」一直挂着。
         if (playing && !_hasVideoFrame && (_player?.state.width ?? 0) > 0) {

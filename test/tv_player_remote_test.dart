@@ -113,6 +113,18 @@ Future<(LocalStore, _TvRepo, ScriptedPlayer)> _mount(
   return (store, repo, platform);
 }
 
+/// 当前播放器打开的是第几集。
+///
+/// 0.8.16 起**不能再用 `requestedEpisodes.last` 判断切集**：往回切命中
+/// 本页播放计划缓存，根本不会再发一次解析请求。改看播放器实际打开
+/// 的地址（`_TvRepo` 把它做成 `…/tv-<集号>.mp4`）。
+int _playingEpisode(ScriptedPlayer platform) {
+  final uri = platform.opened.last.uri;
+  final match = RegExp(r'tv-(\d+)\.mp4$').firstMatch(uri);
+  expect(match, isNotNull, reason: '播放地址应带集号：$uri');
+  return int.parse(match!.group(1)!);
+}
+
 void main() {
   testWidgets(
     'TV short OK toggles once and moves focus into visible controls',
@@ -165,33 +177,39 @@ void main() {
   testWidgets(
     'TV single-drama up/down changes episodes instead of dead-ending',
     (tester) async {
-      final (_, repo, _) = await _mount(tester);
+      final (_, repo, platform) = await _mount(tester);
       expect(repo.requestedEpisodes.last, 1);
+      expect(_playingEpisode(platform), 1);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await _pumpFrames(tester, 20);
-      expect(repo.requestedEpisodes.last, 2);
+      expect(_playingEpisode(platform), 2);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
       await _pumpFrames(tester, 20);
-      expect(repo.requestedEpisodes.last, 1);
+      expect(
+        _playingEpisode(platform),
+        1,
+        reason: '回切第 1 集直接命中本页缓存，不再重新解析',
+      );
     },
   );
 
   testWidgets(
     'TV rapid opposite episode keys are not swallowed by touch debounce',
     (tester) async {
-      final (_, repo, _) = await _mount(tester);
+      final (_, repo, platform) = await _mount(tester);
       expect(repo.requestedEpisodes.last, 1);
+      expect(_playingEpisode(platform), 1);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump(const Duration(milliseconds: 120));
-      expect(repo.requestedEpisodes.last, 2);
+      expect(_playingEpisode(platform), 2);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
       await _pumpFrames(tester, 12);
       expect(
-        repo.requestedEpisodes.last,
+        _playingEpisode(platform),
         1,
         reason: '遥控器是离散按键，不能复用触屏 400ms 防重复窗口吞掉反向操作',
       );
@@ -296,6 +314,7 @@ void main() {
     (tester) async {
       final (_, repo, platform) = await _mount(tester);
       expect(repo.requestedEpisodes.last, 1);
+      expect(_playingEpisode(platform), 1);
 
       // 短按 OK：暂停，并把焦点交给底部播放按钮。
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
@@ -307,11 +326,15 @@ void main() {
       // 不能退化成焦点遍历——控件只有一行，遍历的结果就是按了没反应。
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await _pumpFrames(tester, 20);
-      expect(repo.requestedEpisodes.last, 2);
+      expect(_playingEpisode(platform), 2);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
       await _pumpFrames(tester, 20);
-      expect(repo.requestedEpisodes.last, 1);
+      expect(
+        _playingEpisode(platform),
+        1,
+        reason: '回切命中缓存，不再解析；但画面必须真的回到第 1 集',
+      );
       expect(tester.takeException(), isNull);
     },
   );
