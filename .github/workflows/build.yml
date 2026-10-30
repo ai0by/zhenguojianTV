@@ -166,10 +166,14 @@ jobs:
           test -n "$(find artifacts -name '*.apk' -type f)"
 
       # 发布说明原来是在下面硬编码的 0.8.7 文案，之后每版都忘了改，
-      # 于是每个 Release 都写着 0.8.7。现在从 CHANGELOG.md 里
-      # 抓出当前版本的所有 `### <版本> · <主题>` 小节，生成主题清单。
-      # 版本号取自 pubspec.yaml，改版本时两处自动对齐。
+      # 于是每个 Release 都写着 0.8.7。现在从 CHANGELOG.md 里抓当前版本的
+      # `### <版本> · <主题>` 小节。版本号取自 pubspec.yaml，两处自动对齐。
       # （0.8.10：更新说明从 README 抽到 CHANGELOG.md，README 只留产品介绍。）
+      #
+      # 0.8.17：原来只抓标题里的主题文字，Release 正文就一行
+      # `- 画中画 + 河马站源`，点进去看不到任何细节（0.8.17 的正文是事后
+      # 用 API 补的）。现在把整节正文（标题 + 所有条目）搬过来，标题降一级
+      # `### x · y` → `## x · y`，遇到下一个 `### ` 或分隔线 `---` 收尾。
       - name: Compose release notes
         shell: bash
         run: |
@@ -179,19 +183,27 @@ jobs:
             echo "pubspec.yaml 里没读到版本号" >&2
             exit 1
           fi
-          titles=$(LC_ALL=C awk -v v="$version" '
+          notes=$(LC_ALL=C awk -v v="$version" '
             /^### / {
               if (index($0, "### " v " · ") == 1) {
-                print "- " substr($0, length("### " v " · ") + 1)
+                grab = 1
+                print "## " substr($0, 5)
+                next
+              } else if (grab) {
+                exit
               }
             }
-          ' CHANGELOG.md)
+            grab {
+              if ($0 ~ /^---[[:space:]]*$/) exit
+              print
+            }
+          ' CHANGELOG.md | sed -e 's/[[:space:]]*$//' | cat -s)
           {
-            echo "## $version"
-            echo
-            if [ -n "$titles" ]; then
-              printf '%s\n' "$titles"
+            if [ -n "$notes" ]; then
+              printf '%s\n' "$notes"
             else
+              echo "## $version"
+              echo
               echo "本版构建产物见下方附件，详细说明见 CHANGELOG.md。"
             fi
             echo
