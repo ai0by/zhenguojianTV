@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 远程升级（0.8.18）：只暴露缓存目录给 FileProvider。
+     APK 下载到 getTemporaryDirectory()（= 应用的 cacheDir），装完就该删。
+     不用 <root-path>，那是把整个文件系统都开出去。 -->
+<paths>
+    <cache-path name="update" path="." />
+</paths>

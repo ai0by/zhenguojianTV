@@ -178,6 +178,8 @@ jobs:
           sparse-checkout: |
             CHANGELOG.md
             pubspec.yaml
+            config/update.json
+            scripts/write_update_config.py
           sparse-checkout-cone-mode: false
 
       - name: Download APK
@@ -282,3 +284,33 @@ jobs:
           fail_on_unmatched_files: true
           files: artifacts/**/*.apk
           body_path: release_body.md
+
+      # 0.8.18：把最新版本信息同步到 config/update.json。
+      #
+      # 客户端检查更新的兜底通道就是 jsDelivr 上的这个文件（api.github.com
+      # 连不上时才会用到）。里面的 sha256 必须来自 GitHub 给的 digest，
+      # **手写必然出错** —— 校验值错了会把好包当成坏包丢掉，所以由发布流程生成。
+      #
+      # 注意顺序：release 已经发出去了，这一步失败只是"兜底配置没跟上"，
+      # 用 warning 收尾，不把整个发布标成失败。
+      - name: Sync config/update.json
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 打 tag 之后 main 可能又前进了（比如补工作流），先切到最新 main 再提交，
+          # 否则 push 会被判成非快进。
+          git fetch origin main
+          git checkout -B main FETCH_HEAD
+          python3 scripts/write_update_config.py "$RELEASE_TAG"
+          if git diff --quiet -- config/update.json; then
+            echo "config/update.json 已是最新"
+            exit 0
+          fi
+          git add config/update.json
+          git commit -m "chore(release): 同步 config/update.json 到 $RELEASE_TAG [skip ci]"
+          git push origin main || echo "::warning::config/update.json 推送失败，请手动同步"

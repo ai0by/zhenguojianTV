@@ -17,6 +17,7 @@ import 'catalog_sort_sheet.dart';
 import 'display_mode.dart';
 import 'recommendations_screen.dart';
 import 'tv_home.dart';
+import 'update_entry.dart';
 import 'vertical_feed_screen.dart';
 import 'rankings_screen.dart';
 import 'detail_screen.dart';
@@ -1504,6 +1505,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
               children: [
                 const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
+                const SizedBox(height: 12),
+                // 检查更新（0.8.18）：只在用户点这里时才发请求。
+                UpdateEntry(
+                  currentVersion: AppLayout.versionOf(context),
+                ),
                 const SizedBox(height: 12),
                 // 作者信息（0.2.30 新增，用户要求）：
                 // 名字蓝色可点击，跳转各自 GitHub 页面，并标明身份。

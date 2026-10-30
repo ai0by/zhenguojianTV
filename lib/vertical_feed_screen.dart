@@ -1821,6 +1821,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   bool _pipArmed = false;
   bool _pipInitialized = false;
 
+  /// 小窗上那个按钮当前该显示"暂停"还是"播放"（0.8.18）。
+  ///
+  /// 与播放器真实播放态保持同步，只在**变化时**推给原生 —— 位置流每秒会来
+  /// 好几次，无条件过通道纯属浪费。原生默认按"播放中"渲染，所以初值取 true。
+  bool _pipPlaying = true;
+
   /// 当前剧是否已追剧（0.2.26 新增）。
   ///
   /// 与 `store.isFavorite` 同步；在 initState / didUpdateWidget / 点击后刷新。
@@ -2727,6 +2733,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           ),
         );
     _player = player;
+    // 画中画（0.8.18）：换了播放器实例，`_pipPlaying` 可能跟新实例的真实状态
+    // 对不上（比如上一集是暂停着退出的），这里强制推一次让图标归位。
+    _syncPictureInPicturePlayback(player.state.playing, force: true);
     // 测试环境注入视频层时不去创建 VideoController：
     // 它会调用原生 platform channel，在测试里必然失败并污染用例结果。
     _video = widget.videoBuilder == null ? VideoController(player) : null;
@@ -2943,6 +2952,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           // 0.8.16 第三批：缓冲卡顿超过半秒就亮加载动效。
           // 抖音 / 红果都是这个量级 —— 低于它多半是切片间隙，闪一下反而更烦。
           _refreshBufferingHint(player.state.buffering);
+          // 画中画（0.8.18）：小窗上的「播放 / 暂停」图标要跟着真实播放态走。
+          // 这里每秒会进来好几次，内部用 `_pipPlaying` 挡掉重复调用。
+          _syncPictureInPicturePlayback(player.state.playing);
           // 预载（0.2.31）：位置/缓冲变化时评估是否需要提前准备下一集/下一部。
           _syncPreload();
           // 局域网推送（0.6.4）：**位置推进后**才回报握手。
@@ -3191,6 +3203,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 0.8.17：退出播放页必须先解除"按 Home 自动进小窗"，
     // 否则从首页退出应用也会弹出一个小窗（而且里面已经没有视频了）。
     PictureInPicture.active.removeListener(_onPictureInPictureChanged);
+    // 0.8.18：小窗动作回调也要摘掉，否则本页销毁后回调还指着一个死 State。
+    PictureInPicture.onTogglePlayback = null;
     if (_pipArmed) {
       _pipArmed = false;
       unawaited(PictureInPicture.arm(false));
@@ -6620,6 +6634,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       final available = await PictureInPicture.initialize();
       if (!mounted || _closed) return;
       PictureInPicture.active.addListener(_onPictureInPictureChanged);
+      // 小窗上的「播放 / 暂停」按钮点下来时，走的就是这里（0.8.18）。
+      PictureInPicture.onTogglePlayback = _onPictureInPictureTogglePlayback;
       // 进小窗时页面可能被重建（例如从小窗点回来换了一集），
       // 先把当前真实状态同步进来，别默认成"不在小窗"。
       _pipActive = PictureInPicture.active.value;
@@ -6627,7 +6643,34 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         setState(() => _pipAvailable = available);
       }
       _queuePictureInPictureSync();
+      _syncPictureInPicturePlayback(_player?.state.playing ?? false, force: true);
     }());
+  }
+
+  /// 小窗里点了「播放 / 暂停」（0.8.18）。
+  ///
+  /// 直接复用页面上的 [_togglePlayback]：暂停时结束"等待首帧"、记录用户主动
+  /// 暂停、取消自动连播等一系列副作用都在里面，重写一份必然漏。
+  /// 切完之后播放态的变化由播放流监听推回去刷新图标，这里不抢先改 `_pipPlaying`。
+  void _onPictureInPictureTogglePlayback() {
+    if (!mounted || _closed) return;
+    _togglePlayback();
+  }
+
+  /// 把真实播放态同步给原生，刷新小窗上的图标（0.8.18）。
+  ///
+  /// [force] 用于播放器刚换实例时（换集 / 恢复）强制推一次：这时本地缓存
+  /// 的 `_pipPlaying` 可能跟新实例的真实状态不一致。
+  void _syncPictureInPicturePlayback(bool playing, {bool force = false}) {
+    if (_television || !_pipAvailable) return;
+    if (!force && playing == _pipPlaying) return;
+    _pipPlaying = playing;
+    unawaited(
+      PictureInPicture.updatePlayback(
+        playing: playing,
+        aspectRatio: _pipAspectRatio,
+      ),
+    );
   }
 
   /// 小窗进出：进去就把控件收掉（小窗里糊一层按钮很难看），

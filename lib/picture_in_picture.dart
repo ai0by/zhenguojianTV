@@ -33,6 +33,14 @@ class PictureInPicture {
   /// 退出小窗再把控件还回来（但保持"点一下才出现"的默认态）。
   static final ValueNotifier<bool> active = ValueNotifier<bool>(false);
 
+  /// 用户在小窗里点了「播放 / 暂停」。
+  ///
+  /// 原生只负责把小窗上的按钮点传回来，**不碰播放器状态** —— 播放器的
+  /// 真实状态是唯一事实来源，两边各自维护一份必然打架。播放页在这里挂上
+  /// 自己的 `_togglePlayback`，切完之后播放态变化会经 [updatePlayback]
+  /// 同步回去刷新图标。
+  static void Function()? onTogglePlayback;
+
   static bool _available = false;
   static bool _initialized = false;
 
@@ -49,6 +57,8 @@ class PictureInPicture {
     channel.setMethodCallHandler((call) async {
       if (call.method == 'pictureInPictureChanged') {
         active.value = call.arguments == true;
+      } else if (call.method == 'pictureInPictureTogglePlayback') {
+        onTogglePlayback?.call();
       }
       return null;
     });
@@ -99,6 +109,28 @@ class PictureInPicture {
           .timeout(_timeout, onTimeout: () => null);
     } on PlatformException {
       // 忽略：个别 ROM 不支持自动进入，手动按钮仍可用。
+    } on MissingPluginException {
+      // 忽略。
+    }
+  }
+
+  /// 把真实播放态同步给原生，刷新小窗上那个「播放 / 暂停」图标（0.8.18）。
+  ///
+  /// 只在状态**变化**时调用：位置流每秒来好几次，每次都过一遍通道没必要。
+  static Future<void> updatePlayback({
+    required bool playing,
+    double aspectRatio = 9 / 16,
+  }) async {
+    if (!_available) return;
+    try {
+      await channel
+          .invokeMethod<bool>('updatePictureInPicturePlayback', {
+            'playing': playing,
+            'aspectRatio': aspectRatio.clamp(0.42, 2.39),
+          })
+          .timeout(_timeout, onTimeout: () => null);
+    } on PlatformException {
+      // 忽略：小窗图标没刷新不影响播放。
     } on MissingPluginException {
       // 忽略。
     }

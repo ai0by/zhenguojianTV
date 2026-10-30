@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- 远程升级（0.8.18）：把下载好的安装包交给系统安装器。
+         这条权限只用于「用户自己在关于页点了检查更新 → 下载并安装」，
+         不做静默安装（也做不到），系统仍会弹安装确认框。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <uses-feature android:name="android.software.leanback" android:required="false"/>
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
     <uses-feature android:name="android.hardware.faketouch" android:required="false"/>
@@ -33,11 +37,29 @@
             </intent-filter>
         </activity>
         <meta-data android:name="flutterEmbedding" android:value="2"/>
+        <!-- 远程升级（0.8.18）：APK 存在缓存目录，必须经 FileProvider 暴露成
+             content:// 才能交给安装器（Android 7+ 传 file:// 会抛
+             FileUriExposedException）。authority 与 MainActivity 里拼接的一致。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
     </application>
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11+ 包可见性：不声明的话 startActivity 前连"有没有安装器"
+             都判断不出来，个别 ROM 会直接抛 ActivityNotFoundException。 -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="application/vnd.android.package-archive"/>
         </intent>
     </queries>
 </manifest>

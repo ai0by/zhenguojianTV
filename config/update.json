@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "ttlSeconds": 21600,
+  "latest": {
+    "version": "0.8.17",
+    "build": 96,
+    "tag": "v0.8.17",
+    "notes": "0.8.17 · 画中画 + 河马站源",
+    "assets": [
+      {
+        "abi": "all",
+        "name": "zhenguojianTV-0.8.17+96-all.apk",
+        "size": 72582298,
+        "sha256": "029de89f0716920869658b49167032691f68d4cef52c4c186ddcef64ebfa47db"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "zhenguojianTV-0.8.17+96-arm64-v8a.apk",
+        "size": 32911702,
+        "sha256": "bc8697cf4f2281477cb07f836fb017cb582739d9268f8e1a245b9b9945474dc3"
+      },
+      {
+        "abi": "armeabi-v7a",
+        "name": "zhenguojianTV-0.8.17+96-armeabi-v7a.apk",
+        "size": 41446424,
+        "sha256": "f543c33939b105b13a0f284842e8732388b31954895bbf45e8ddbaca3a97d59e"
+      }
+    ]
+  },
+  "mirrors": [
+    "https://gh-proxy.org/{url}",
+    "https://v6.gh-proxy.org/{url}",
+    "https://ghproxy.net/{url}",
+    "https://v4.gh-proxy.org/{url}",
+    "https://gh-proxy.com/{url}"
+  ]
+}
