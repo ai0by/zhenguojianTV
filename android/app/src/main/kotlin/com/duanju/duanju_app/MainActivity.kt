@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.drawable.Icon
 import android.media.AudioManager
+import android.os.BatteryManager
 import android.os.Build
 import android.provider.Settings
 import android.util.Rational
@@ -104,6 +105,8 @@ class MainActivity : FlutterActivity() {
                         "pac" to (proxy != null && proxy.pacFileUrl != Uri.EMPTY)))
                 } else if (call.method == "networkType") {
                     result.success(networkType())
+                } else if (call.method == "batteryStatus") {
+                    result.success(batteryStatus())
                 } else if (call.method == "systemVolume") {
                     result.success(systemVolume())
                 } else if (call.method == "setSystemVolume") {
@@ -395,6 +398,35 @@ class MainActivity : FlutterActivity() {
             }
         } catch (e: Exception) {
             "unknown"
+        }
+    }
+
+    /**
+     * 电池电量与充电状态（0.8.19）。
+     *
+     * 播放页顶部的时间 / 电量是**自绘**的（`lib/player_status_hud.dart`）：
+     * 之前靠切 `edgeToEdge` / `immersiveSticky` 把系统状态栏叫出来，窗口 inset
+     * 一变画面就跟着跳一下。改成自绘后播放期间系统栏恒定隐藏，画面不再抖。
+     *
+     * `BatteryManager` 是系统服务，读电量**不需要任何权限**。
+     */
+    private fun batteryStatus(): Map<String, Any> {
+        return try {
+            val manager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            val level = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            val charging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                manager.isCharging
+            } else {
+                registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                    ?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                    ?.let {
+                        it == BatteryManager.BATTERY_STATUS_CHARGING ||
+                            it == BatteryManager.BATTERY_STATUS_FULL
+                    } ?: false
+            }
+            mapOf("level" to level.coerceIn(0, 100), "charging" to charging)
+        } catch (e: Exception) {
+            mapOf("level" to -1, "charging" to false)
         }
     }
 

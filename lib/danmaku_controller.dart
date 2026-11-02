@@ -14,6 +14,9 @@ class DanmakuController extends ChangeNotifier {
   final DateTime Function() _now;
   final _pages = <int, DanmakuPage>{};
   final _failures = <int, DateTime>{};
+
+  /// 每个时间窗连续失败了几次（0.8.19），决定退避时长：2 → 4 → 8 → 15 秒。
+  final _failureCounts = <int, int>{};
   PlaybackPlan? _plan;
   int _generation = 0;
   int? _pendingStart;
@@ -70,6 +73,7 @@ class DanmakuController extends ChangeNotifier {
     _plan = plan;
     _pages.clear();
     _failures.clear();
+    _failureCounts.clear();
     _rebuildItems();
     _seeking = false;
     _available = false;
@@ -83,6 +87,7 @@ class DanmakuController extends ChangeNotifier {
     _enabled = enabled;
     _cancel();
     _failures.clear();
+    _failureCounts.clear();
     _pages.clear();
     _rebuildItems();
     _resetMotion();
@@ -124,6 +129,7 @@ class DanmakuController extends ChangeNotifier {
       _cancel();
       _pages.clear();
       _failures.clear();
+      _failureCounts.clear();
       _rebuildItems();
     } else if (jumped) {
       _cancel();
@@ -170,6 +176,7 @@ class DanmakuController extends ChangeNotifier {
   void retry() {
     if (_closed || !visible) return;
     _failures.clear();
+    _failureCounts.clear();
     _ensureWindow();
     notifyListeners();
   }
@@ -203,7 +210,13 @@ class DanmakuController extends ChangeNotifier {
   }
 
   void _ensureWindow() {
-    if (!visible || _buffering || _pendingStart != null) return;
+    if (!visible || _pendingStart != null) return;
+    // 0.8.19：缓冲中也要允许**首次**取弹幕。
+    //
+    // 以前 `_buffering` 一律挡住，可起播那几秒恰好就在缓冲 —— 等缓冲结束
+    // 才发请求，用户看到的就是"弹幕过两秒才飘出来"。已经有页时不抢带宽，
+    // 仍按原来的节奏走。
+    if (_buffering && _pages.isNotEmpty) return;
     final page = _covering(positionMs);
     var start = positionMs ~/ danmakuWindowMs * danmakuWindowMs;
     if (page == null && _pages.containsKey(start)) start = positionMs;
@@ -246,6 +259,7 @@ class DanmakuController extends ChangeNotifier {
       }
       _pages[start] = page;
       _failures.remove(start);
+      _failureCounts.remove(start);
       final nearest = _pages.keys.toList()
         ..sort(
           (a, b) => (a - positionMs).abs().compareTo((b - positionMs).abs()),
@@ -256,9 +270,21 @@ class DanmakuController extends ChangeNotifier {
       _rebuildItems();
     } catch (_) {
       if (_closed || ticket != _generation) return;
-      _failures[start] = _now().add(const Duration(seconds: 15));
+      // 0.8.19：失败退避从"固定 15 秒"改成"2 → 4 → 8 → 15 秒"。
+      //
+      // 以前第一次失败就静默 15 秒，用户看到的就是"这一集没弹幕"，
+      // 而失败原因常常只是一次偶发超时。现在首次 2 秒后就再试，
+      // 连续失败才逐步拉长，最多仍只等 15 秒。
+      final failures = (_failureCounts[start] ?? 0) + 1;
+      _failureCounts[start] = failures;
+      final delay = Duration(
+        seconds: (2 << (failures - 1).clamp(0, 3)).clamp(2, 15),
+      );
+      _failures[start] = _now().add(delay);
       while (_failures.length > 8) {
-        _failures.remove(_failures.keys.first);
+        final key = _failures.keys.first;
+        _failures.remove(key);
+        _failureCounts.remove(key);
       }
     } finally {
       if (!_closed && ticket == _generation) {

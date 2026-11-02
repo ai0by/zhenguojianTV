@@ -26,6 +26,7 @@ import 'playback_preloader.dart';
 import 'playback_recovery.dart';
 import 'remote_widgets.dart';
 import 'player_interactions.dart';
+import 'player_status_hud.dart';
 import 'system_volume.dart';
 import 'screen_brightness.dart';
 import 'picture_in_picture.dart';
@@ -1714,9 +1715,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   bool _loadingOverlay = false;
   Timer? _loadingOverlayTimer;
 
-  /// 遮罩延迟。太长会让真的卡住时"毫无反应"，220ms 能盖住常规切集耗时，
-  /// 又不会让人觉得没反应。
-  static const Duration _loadingOverlayDelay = Duration(milliseconds: 220);
+  /// 遮罩延迟。
+  ///
+  /// 0.8.19：220ms → 320ms。用户仍反馈"切集不流畅"，而命中缓存 / 预载的
+  /// 换集（open + 首帧）经常落在 220~300ms 之间 —— 220ms 会**刚好**把动效
+  /// 闪出来一下又撤掉，比不显示更难受。320ms 让这段"其实很快"的切集
+  /// 彻底无闪动，真卡住时也还在一眨眼之内给到反馈。
+  static const Duration _loadingOverlayDelay = Duration(milliseconds: 320);
 
   /// 缓冲卡顿是否已经明显到该亮动效（0.8.16 第三批）。
   ///
@@ -1747,6 +1752,19 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// （连续两轮拿不到画面帧 → 判定硬解有问题 → 切软解重来一次）。
   /// 一旦置位，本页后续所有重试都用 `hwdec=no`。
   bool _softwareDecode = false;
+
+  /// 当前播放器实例是否已经下发过静态属性（0.8.19）。
+  ///
+  /// `demuxer-lavf-o` / `network-timeout` / `hwdec` / `cache-on-disk` /
+  /// `stream-buffer-size` 这些值在同一个 `Player` 实例上**不会随集数变化**，
+  /// 但以前每集都要串行 `await` 5~7 次平台调用再 `open()` —— 等于每次切集
+  /// 先白等几个通道往返（真机上是几十毫秒，正好压在"点下去到出画面"之间）。
+  /// 现在只在新实例、或解码模式被自动降级时重下发。
+  bool _playerConfigured = false;
+  bool _configuredSoftwareDecode = false;
+
+  /// 上一次下发的逐集属性签名（`local|decryptionKey`，0.8.19）。
+  String _configuredPlanSignature = '';
 
   /// 已经自动降级过几次（0.8.3）。
   ///
@@ -2029,6 +2047,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _quality = preferences.quality;
     // 电视兼容模式（0.8.3）：用户手动强制软解时，从第一次 open 就生效。
     _softwareDecode = widget.store.tvCompatMode;
+    // 网络类型预热（0.8.19）：换集时要判"是不是移动网络"，先把结果取回来，
+    // 免得每次切集都在 `open()` 之前白等一次平台通道往返。
+    NetworkState.warmUp();
     // 弹幕（0.8.11）：控制器自己判断"本集有没有弹幕"，这里只负责开关偏好。
     _danmakuEnabled = widget.store.danmakuEnabled;
     _danmaku = DanmakuController(widget.repository)
@@ -3140,6 +3161,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 而 media_kit 对已释放实例的操作在 release 包中静默失败。
   void _releasePlayer() {
     _playerReleased = true;
+    // 0.8.19：播放器实例没了，静态属性要重新下发。
+    _playerConfigured = false;
+    _configuredPlanSignature = '';
     // 丢弃旧队列：仍排队的操作会因 [_playerReleased] 已变而跳过。
     _operations = Future<void>.value();
     _saveTimer?.cancel();
@@ -4050,63 +4074,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       }
       // 与现有播放器保持一致：设置协议白名单、解密密钥与重试参数。
       // 所有原生调用串行执行（0.3.1），避免并发打断导致卡顿。
-      await _serialize(() async {
-        final platform = player.platform;
-        if (platform is NativePlayer) {
-          await platform.setProperty(
-            'demuxer-lavf-o',
-            [
-              'seg_max_retry=3',
-              'strict=experimental',
-              'allowed_extensions=ALL',
-              plan.local
-                  ? 'protocol_whitelist=[file,crypto,data]'
-                  : 'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
-              if (plan.decryptionKey.isNotEmpty)
-                'decryption_key=${plan.decryptionKey}',
-            ].join(','),
-          );
-          await platform.setProperty('network-timeout', '20');
-          // 解码方式（0.8.3）。
-          //
-          // 弱 GPU / 硬解不完整的电视盒子上，libmpv 用 `auto-safe` 选到
-          // 一个坏掉的 MediaCodec 时，表现是**有声音没画面 / 绿屏 / 纯黑**，
-          // 而应用侧一切正常（`playing == true`，只是永远拿不到帧尺寸）。
-          // 这里显式下发给 libmpv：
-          // - 正常：`auto-safe`（libmpv 只在"已知安全"的硬解上启用，
-          //   失败会自动回退软解，比 `auto` 稳）；
-          // - 兼容模式 / 自动降级后：`no`（纯软件解码，一定能出画面）。
-          //
-          // 必须在 `open()` 之前设置，播放中途改这个属性不会重建解码器。
-          try {
-            await platform.setProperty(
-              'hwdec',
-              _softwareDecode ? 'no' : 'auto-safe',
-            );
-          } catch (_) {
-            // 忽略：个别平台的 libmpv 版本不认这个属性，不影响播放。
-          }
-          // 弱网缓冲策略（0.5.0）。
-          //
-          // 背景：用户实测"开 VPN 就卡"，根因是视频请求全部绕道代理节点
-          // （Go 原生核心会读系统代理，见 `native/core/proxy_system.go`），
-          // 多一跳且节点质量不稳定 → 缓冲容易被抖动打空 → 表现为抽帧卡顿。
-          // 这里做两件事，都不改变解码/渲染方式、也不影响音调：
-          // 1. 关闭磁盘缓存，改用内存缓存：弱网下避免额外磁盘 IO 拖慢取流；
-          // 2. 加大流层缓冲：对代理带来的抖动更有容忍度。
-          // 属性不受支持时静默忽略，绝不影响播放。
-          for (final entry in const {
-            'cache-on-disk': 'no',
-            'stream-buffer-size': '524288',
-          }.entries) {
-            try {
-              await platform.setProperty(entry.key, entry.value);
-            } catch (_) {
-              // 忽略：仅属调优，失败不构成错误。
-            }
-          }
-        }
-      });
+      //
+      // 0.8.19：拆成"静态属性（每个播放器实例一次）"与"逐集属性（解密密钥）"，
+      // 见 [_configurePlayer]。
+      await _serialize(() => _configurePlayer(player, plan));
       if (!_attemptAlive(player)) return;
       _detail = detail;
       _plan = plan;
@@ -4261,6 +4232,81 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     return kind == NetworkKind.mobile;
   }
 
+  /// 给播放器下发属性（0.8.19 拆成两组）。
+  ///
+  /// **为什么拆**：以前每集都要串行 `await` 5~7 次 `setProperty` 再 `open()`。
+  /// 但其中只有 `demuxer-lavf-o` 里的 `decryption_key` 真的随集数变
+  /// （红果 CENC 每集一把钥匙），其余 4 个属性在同一个 `Player` 实例上
+  /// 恒定不变。现在：
+  ///
+  /// - 逐集组（`demuxer-lavf-o`）：按 `local|decryptionKey` 去重，
+  ///   回切缓存命中同一集时不再重复下发；
+  /// - 静态组（`network-timeout` / `hwdec` / 缓存类）：每个实例只下发一次，
+  ///   解码模式被自动降级时才重下发（`hwdec` 必须在 `open()` 之前生效）。
+  Future<void> _configurePlayer(Player player, PlaybackPlan plan) async {
+    if (!_attemptAlive(player)) return;
+    final platform = player.platform;
+    if (platform is! NativePlayer) return;
+    final signature = '${plan.local}|${plan.decryptionKey}';
+    if (signature != _configuredPlanSignature) {
+      await platform.setProperty(
+        'demuxer-lavf-o',
+        [
+          'seg_max_retry=3',
+          'strict=experimental',
+          'allowed_extensions=ALL',
+          plan.local
+              ? 'protocol_whitelist=[file,crypto,data]'
+              : 'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
+          if (plan.decryptionKey.isNotEmpty)
+            'decryption_key=${plan.decryptionKey}',
+        ].join(','),
+      );
+      _configuredPlanSignature = signature;
+    }
+    if (_playerConfigured && _configuredSoftwareDecode == _softwareDecode) {
+      return;
+    }
+    await platform.setProperty('network-timeout', '20');
+    // 解码方式（0.8.3）。
+    //
+    // 弱 GPU / 硬解不完整的电视盒子上，libmpv 用 `auto-safe` 选到
+    // 一个坏掉的 MediaCodec 时，表现是**有声音没画面 / 绿屏 / 纯黑**，
+    // 而应用侧一切正常（`playing == true`，只是永远拿不到帧尺寸）。
+    // 这里显式下发给 libmpv：
+    // - 正常：`auto-safe`（libmpv 只在"已知安全"的硬解上启用，
+    //   失败会自动回退软解，比 `auto` 稳）；
+    // - 兼容模式 / 自动降级后：`no`（纯软件解码，一定能出画面）。
+    //
+    // 必须在 `open()` 之前设置，播放中途改这个属性不会重建解码器。
+    try {
+      await platform.setProperty('hwdec', _softwareDecode ? 'no' : 'auto-safe');
+    } catch (_) {
+      // 忽略：个别平台的 libmpv 版本不认这个属性，不影响播放。
+    }
+    // 弱网缓冲策略（0.5.0）。
+    //
+    // 背景：用户实测"开 VPN 就卡"，根因是视频请求全部绕道代理节点
+    // （Go 原生核心会读系统代理，见 `native/core/proxy_system.go`），
+    // 多一跳且节点质量不稳定 → 缓冲容易被抖动打空 → 表现为抽帧卡顿。
+    // 这里做两件事，都不改变解码/渲染方式、也不影响音调：
+    // 1. 关闭磁盘缓存，改用内存缓存：弱网下避免额外磁盘 IO 拖慢取流；
+    // 2. 加大流层缓冲：对代理带来的抖动更有容忍度。
+    // 属性不受支持时静默忽略，绝不影响播放。
+    for (final entry in const {
+      'cache-on-disk': 'no',
+      'stream-buffer-size': '524288',
+    }.entries) {
+      try {
+        await platform.setProperty(entry.key, entry.value);
+      } catch (_) {
+        // 忽略：仅属调优，失败不构成错误。
+      }
+    }
+    _playerConfigured = true;
+    _configuredSoftwareDecode = _softwareDecode;
+  }
+
   Future<void> _openMedia(
     Player player,
     PlaybackPlan plan,
@@ -4334,7 +4380,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     child: SafeArea(
       bottom: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(0, 6, 6, 0),
+        // 0.8.19：让开顶部自绘状态条。
+        padding: const EdgeInsets.fromLTRB(0, 6 + _hudStrip, 6, 0),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -4496,12 +4543,30 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 竖屏时放在控件层内，**跟随控件一起显隐**（用户要求）；
   /// 全屏时由调用方放在控件层之外，改为**常显**（0.7.2，`XQ-0103`）。
   /// [textKey] 用于区分两个位置（全屏与竖屏可能同时在树中）。
+  /// 顶部自绘状态条占用的高度（0.8.19）。
+  ///
+  /// 播放期间系统状态栏**恒定隐藏**（见 [_syncSystemUi]），时间和电量改由
+  /// [PlayerStatusHud] 画在控件层顶部。左上角的返回键 / 集数标签、
+  /// 右上角的画中画 / 推送按钮都要让开这一条，否则会叠在一起。
+  static const double _hudStrip = 28;
+
+  /// 顶部自绘状态条：左时间、右电量（0.8.19）。
+  ///
+  /// 竖屏、全屏共用同一个组件，保证"点一下屏幕"两种状态下看到的东西一致。
+  Widget _statusHud() => const Positioned(
+    top: 0,
+    left: 0,
+    right: 0,
+    child: IgnorePointer(child: PlayerStatusHud()),
+  );
+
   Widget _episodeBadge({Key? textKey}) => Align(
     alignment: Alignment.topLeft,
     child: SafeArea(
       bottom: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 0, 0),
+        // 0.8.19：让开顶部自绘状态条。
+        padding: const EdgeInsets.fromLTRB(12, 10 + _hudStrip, 0, 0),
         child: _episodeBadgeBox(textKey: textKey),
       ),
     ),
@@ -4540,7 +4605,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     child: SafeArea(
       bottom: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(6, 8, 0, 0),
+        // 0.8.19：让开顶部自绘状态条。
+        padding: const EdgeInsets.fromLTRB(6, 8 + _hudStrip, 0, 0),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -5124,10 +5190,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
               ]
             : [DeviceOrientation.portraitUp],
       );
-      // 全屏时隐藏状态栏与导航栏（沉浸式），退出时恢复。
-      await SystemChrome.setEnabledSystemUIMode(
-        next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-      );
+      // 全屏时隐藏状态栏与导航栏（沉浸式）。0.8.19：竖屏也保持沉浸
+      // （时间电量由 [PlayerStatusHud] 自绘），所以这里只负责"进全屏"，
+      // 退出交给 `_syncSystemUi` 重新断言 —— 切模式会让窗口 inset 变、
+      // 画面跟着跳，能少切一次就少切一次。
+      if (next) {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      }
+      _appliedUiMode = null;
     } catch (_) {
       // 个别设备不支持锁定方向，忽略即可。
     }
@@ -5194,6 +5264,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   }
 
   /// 恢复竖屏方向与系统栏（退出全屏收尾）。
+  ///
+  /// 0.8.19：这里**不再切回 `edgeToEdge`** —— 播放页在播放期间恒定沉浸，
+  /// 时间电量由 [PlayerStatusHud] 自绘。把 `_appliedUiMode` 清空即可，
+  /// 下一帧 `_syncSystemUi` 会重新断言一次沉浸模式（方向切换后系统可能
+  /// 自行把状态栏叫回来，需要重新压下去）。
   Future<void> _restorePortraitSystemUi() async {
     // 电视（0.8.0）：不锁竖屏，也不切系统栏模式。
     if (_television) return;
@@ -5205,10 +5280,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       await SystemChrome.setPreferredOrientations([
         DeviceOrientation.portraitUp,
       ]);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     } catch (_) {
       // 个别设备不支持锁定方向，忽略即可。
     }
+    _appliedUiMode = null;
   }
 
   // ===== 全屏横屏分区手势（0.7.2，XQ-0105）=====
@@ -5660,6 +5735,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                 ),
                               ),
                             ),
+                            _statusHud(),
                             // 中央：播放/暂停。
                             if (!(state?.playing ?? false) &&
                                 !_loading &&
@@ -6255,6 +6331,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                               ),
                             ),
                           ),
+                          _statusHud(),
                           // 左上角：返回按钮（仅独立播放页）+ 集数标签。
                           //
                           // 集数标签只在有多个剧集时显示：单集、本地单文件
@@ -6590,13 +6667,17 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
 
   /// 把状态栏显隐同步到"播放中 / 控件可见"（0.8.15 第二批）。
   ///
-  /// 用户要的效果（参照红果）：
-  /// - 正常播放、控件已收起 → 状态栏隐藏，画面真正铺到屏幕最上沿，
-  ///   顶部不再有一条黑边压在电量时间上；
-  /// - 点击画面（暂停 / 唤起控件）、打开倍速 / 选集等弹层、加载或报错时
-  ///   → 状态栏回来，电量时间可见；
-  /// - 从屏幕顶部下拉时，系统自己会临时显示状态栏（`immersiveSticky`
-  ///   的既有行为），不需要我们处理。
+  /// 用户要的效果（参照红果）：正常播放时状态栏隐藏、画面真正铺到屏幕最上沿；
+  /// 点击画面时能看到时间和电量。
+  ///
+  /// **0.8.19 改法（用户反馈"点一下画面就抖一下"）**：
+  /// 以前靠 `edgeToEdge` ↔ `immersiveSticky` 来回切来"叫出系统状态栏"。
+  /// 每次切换窗口 inset 都会变，`Video` 的 `BoxFit.contain` 跟着重算尺寸，
+  /// 用户看到的就是画面跳一下 —— 这不是渲染卡顿，是布局真的变了。
+  ///
+  /// 现在**不再切换模式**：播放页在播放期间恒定 `immersiveSticky`
+  /// （窗口尺寸全程不变 → 不可能抖），时间与电量由 [PlayerStatusHud]
+  /// 自绘在控件层顶部。全屏（横屏）走同一套，所以全屏点击也能看到时间电量。
   ///
   /// 只对独立播放页生效（`widget.immersive`）：首页竖滑流外面还有 AppBar，
   /// 状态栏高度一变整页会跟着跳，得不偿失。
@@ -6609,17 +6690,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     if (!mounted || _closed || !widget.immersive) return;
     // 小窗里由系统接管，别再切沉浸模式（会把小窗里的状态栏也藏掉）。
     if (_pipActive) return;
-    // 全屏横屏自己管系统栏（`_toggleLandscape` / `_restorePortraitSystemUi`），
-    // 这里不要插手，否则退出横屏后会残留一个错误的状态。
-    if (_landscape) return;
-    final playing = _player?.state.playing ?? false;
-    // 有任何一层需要用户看的时候都得把状态栏还回来：
-    // 控件可见 / 弹层打开 / 正在加载 / 有错误 / 已暂停。
-    final chrome =
-        _controlsVisible || _panelOpen || _loading || _error != null || !playing;
-    final mode = chrome
-        ? SystemUiMode.edgeToEdge
-        : SystemUiMode.immersiveSticky;
+    // 电视没有状态栏概念，别去动它的系统栏（部分盒子会因此重排画面）。
+    if (_television) return;
+    const mode = SystemUiMode.immersiveSticky;
     if (mode == _appliedUiMode) return;
     _appliedUiMode = mode;
     unawaited(SystemChrome.setEnabledSystemUIMode(mode));
@@ -6687,7 +6760,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         _panelOpen = false;
       }
     });
-    if (!active) _scheduleHide();
+    if (!active) {
+      // 小窗期间系统可能改过系统栏模式（退出小窗会重建 Activity），
+      // 清掉缓存标记，让 _syncSystemUi 退出后无条件重放一次沉浸模式。
+      _appliedUiMode = null;
+      _scheduleHide();
+    }
     _queueSystemUiSync();
   }
 

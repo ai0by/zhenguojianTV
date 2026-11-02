@@ -100,11 +100,18 @@ func (d *Downloader) hongguoDanmaku(ctx context.Context, seriesID, videoID strin
 	}
 	entry := hongguoDanmakuCacheEntry{page: page, err: err, expires: time.Now().Add(5 * time.Minute)}
 	if err != nil {
-		entry.expires = time.Now().Add(15 * time.Second)
+		// 0.8.19：失败缓存 15s → 3s。
+		//
+		// 前端现在第一次失败 2 秒后就重试，15 秒的错误缓存会让那次重试
+		// 直接拿到旧错误、白白累加一次失败计数。3 秒既能挡住连续猛点，
+		// 又不至于把"偶发超时"钉死 15 秒。
+		entry.expires = time.Now().Add(3 * time.Second)
 	}
 	client.mu.Lock()
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		if client.danmaku == nil || len(client.danmaku) >= 128 {
+		// 0.8.19：128 → 256 条。弹幕按"集 + 时间窗"缓存，一集 24 分钟
+		// 就是 48 个窗口；预载预热 + 来回切集很容易把 128 挤爆。
+		if client.danmaku == nil || len(client.danmaku) >= 256 {
 			client.danmaku = map[string]hongguoDanmakuCacheEntry{}
 		}
 		client.danmaku[key] = entry

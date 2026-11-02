@@ -42,6 +42,9 @@ class CatalogAutoUpdater extends ChangeNotifier {
   final LocalStore store;
   final int _epoch;
 
+  /// 剧集快照灌进了新剧库时回调（0.8.19）。首页据此重读缓存。
+  void Function()? onSnapshotApplied;
+
   Timer? _timer;
   bool _running = false;
   bool _disposed = false;
@@ -92,6 +95,21 @@ class CatalogAutoUpdater extends ChangeNotifier {
     }
     _running = true;
     try {
+      // 先看剧集快照（0.8.19）：只拉几 KB 的 index.json，版本没变立刻返回，
+      // 不会白白吃流量。有新版本才会下载各站源文件 —— 那已经是一份由 CI
+      // 统一生成的最新剧库，本地抓一轮也拿不到更多，这一轮直接跳过。
+      var snapshotChanged = false;
+      try {
+        snapshotChanged = await repository.syncCatalogSnapshot();
+      } catch (_) {
+        // 快照不可用就走原来的现场抓取。
+      }
+      if (!_valid) return;
+      if (snapshotChanged) {
+        onSnapshotApplied?.call();
+        _finish(found: true, message: '已从剧集快照同步');
+        return;
+      }
       final started = <String>[];
       for (final source in sources) {
         if (!_valid) return;

@@ -104,6 +104,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _selectedDramas = <String, Drama>{};
   Timer? _cacheRefreshTimer;
   bool _refreshingUpdatedCache = false;
+
+  /// 剧集快照同步中（0.8.19），避免重复发起。
+  bool _snapshotSyncing = false;
   bool _updateNotice = false;
   bool _selectionMode = false;
   bool _showRecommendations = false;
@@ -312,6 +315,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _autoUpdateChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// 剧集快照灌进了新剧库（0.8.19）：按站源走一次缓存重读。
+  ///
+  /// 复用 [_catalogUpdated] 的合并逻辑 —— 它已经处理了「只补更新、不打断
+  /// 当前列表和已选剧集」的细节，没必要再写一份。
+  void _snapshotApplied() {
+    if (!mounted) return;
+    for (final site in widget.store.sources) {
+      _catalogUpdated(site.id);
+    }
   }
 
   void _catalogUpdated(String source) {
@@ -795,13 +809,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     // 连续无新剧后降级为 6 小时；设置里可完全关闭。
     _autoUpdater = CatalogAutoUpdater(widget.repository, widget.store)
       ..addListener(_autoUpdateChanged)
+      ..onSnapshotApplied = _snapshotApplied
       ..start();
     widget.repository.catalogUpdates.addListener(_metadataChanged);
     if (widget.store.sources.isNotEmpty) {
+      // 剧集快照（0.8.19）：并行拉一次仓库 catalog 分支的加密剧库。
+      // 不 await —— 最多要下载十几个站源，绝不能挡住首屏。
+      unawaited(_syncCatalogSnapshot());
       _load(useCache: true);
       _loadCategories();
     } else {
       _loading = false;
+    }
+  }
+
+  /// 拉一次剧集快照（0.8.19）。失败静默：快照只是加速，现场抓取照旧。
+  Future<void> _syncCatalogSnapshot() async {
+    if (_snapshotSyncing) return;
+    _snapshotSyncing = true;
+    final epoch = widget.store.profileEpoch;
+    try {
+      final changed = await widget.repository.syncCatalogSnapshot();
+      if (!mounted || !changed) return;
+      if (epoch != widget.store.profileEpoch) return;
+      // 只在「首屏还没内容」时补一次刷新。用户已经在翻列表了就别打断，
+      // 快照已经落盘，下次进首页自然吃到。
+      if (_items.isNotEmpty && _error == null) return;
+      await _load(useCache: true);
+      await _loadCategories();
+    } catch (_) {
+      // 网络不通 / 快照还没生成过 / 用户锁着，都当没这回事。
+    } finally {
+      _snapshotSyncing = false;
     }
   }
 

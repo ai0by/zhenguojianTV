@@ -157,6 +157,15 @@ abstract class AppRepository {
   Future<void> cancelSuggestions() async {}
   Future<void> cancelRecommendations() async {}
 
+  /// 剧集快照（0.8.19）：拉仓库 `catalog` 分支的加密剧库给本地打底。
+  ///
+  /// 每台设备各自按 2 小时去各站源抓目录太浪费，冷启动还得等一轮；
+  /// 改成 CI 统一生成一份快照、客户端优先吃它，现场抓取只做兜底。
+  ///
+  /// 返回 `true` 表示这次真的灌进了新数据，调用方可以据此刷新首页。
+  /// 失败时**不要**当成错误 —— 快照只是加速，抓取链路照旧。
+  Future<bool> syncCatalogSnapshot() async => false;
+
   /// 首页视频流专用的目录读取。
   ///
   /// 与「发现」页的 `catalog` 使用彼此独立的读取通道，
@@ -323,6 +332,9 @@ class NativeRepository extends AppRepository {
       await _read('danmaku', {
         'action': 'danmaku',
         'playbackSession': plan.session,
+        // 0.8.19：把视频 id 一起带下去。原生侧现在按它查弹幕坐标，
+        // 不再依赖播放会话还活着 —— 会话被预载顶掉 / 过期也能取到弹幕。
+        'danmakuId': plan.danmakuId,
         'startMs': startMs,
         'durationMs': durationMs,
       }),
@@ -735,6 +747,9 @@ class NativeRepository extends AppRepository {
               ? 620
               : action == 'precache'
               ? 190
+              // 快照要逐个下载十几个站源，原生侧整轮预算是 150 秒。
+              : action == 'syncCatalogSnapshot'
+              ? 170
               : action == 'preload'
               ? 20
               : 70,
@@ -847,6 +862,12 @@ class NativeRepository extends AppRepository {
           'category': category,
         }),
       );
+
+  @override
+  Future<bool> syncCatalogSnapshot() async {
+    final data = await _call({'action': 'syncCatalogSnapshot'});
+    return data['changed'] == true;
+  }
   @override
   Future<String> cover(Drama drama, {bool force = false}) async {
     final epoch = access?.profileEpoch;

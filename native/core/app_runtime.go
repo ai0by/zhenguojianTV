@@ -119,6 +119,10 @@ type nativeInput struct {
 	PlaybackSession string `json:"playbackSession"`
 	StartMS         int64  `json:"startMs"`
 	DurationMS      int64  `json:"durationMs"`
+	// 弹幕（0.8.19）：`DanmakuID` 是红果的视频 id（`nativePlan.DanmakuID`）。
+	// 带上它以后弹幕**不再依赖播放会话还活着** —— 会话被预载/预缓存顶掉、
+	// 或超过 12 小时过期，弹幕照样能取。详见 app_danmaku.go。
+	DanmakuID string `json:"danmakuId"`
 	// 预缓存（0.8.12）：`Entry` 是已预载好的本机播放地址，`Budget` 是
 	// 本次允许写入磁盘的字节数，`Limit` 是缓存容量上限，见 app_precache.go。
 	// `ReuseSession` 用来复用已预载的播放会话 —— 不能复用 `Session` 字段，
@@ -179,9 +183,15 @@ type nativeEngine struct {
 	covers           *nativeCoverCache
 	// 播放分片的磁盘缓存（0.8.12），引擎级持有：设置页要在**没播过任何东西**
 	// 的情况下也能读到占用与上限，所以不能挂在懒创建的流服务上。
-	media            *nativeMediaCache
-	stream           *nativeStreamServer
-	playbacks        map[string]nativePlaybackChoice
+	media     *nativeMediaCache
+	stream    *nativeStreamServer
+	playbacks map[string]nativePlaybackChoice
+	// 弹幕坐标登记表（0.8.19）：key = 红果视频 id。
+	//
+	// 以前弹幕只认 `playbacks[session]`，会话被预载/预缓存挤掉（上限 8 个）
+	// 或过期（12 小时）就报"播放会话已过期"，用户看到的就是"弹幕没了"。
+	// 这里单独按视频 id 记一份坐标，与会话生命周期彻底解耦。
+	danmakuTargets   map[string]nativeDanmakuTarget
 	playbackMu       sync.Mutex
 	playbackSequence int64
 	playbackCancel   context.CancelFunc
@@ -518,6 +528,11 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return plan, err
 	case "catalog":
 		return engine.nativeCatalog(ctx, input)
+	case "syncCatalogSnapshot":
+		// 剧集快照（0.8.19）：优先吃仓库 catalog 分支的加密快照，
+		// 冷启动不必等一轮现场抓取。返回 true 表示这次真的灌进了新数据。
+		changed, err := engine.nativeSyncCatalogSnapshot(ctx)
+		return map[string]bool{"changed": changed}, err
 	case "cached":
 		if !validNativeCategory(canonicalProviderSource(input.Source), input.Category) {
 			return nil, errors.New("内容分类无效")
@@ -639,7 +654,12 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 			result.Items = append(result.Items, nativeNormalize(drama))
 		}
 		result.Warning, result.Page = entry.Warning, 1
-		if entry.Limited && result.Warning == "" {
+		// 0.8.19：红果的"综合搜索"（`/search/<关键词>` 的 SSR）已永久失效，
+		// 现在只剩按剧名匹配。搜不到时给一句能指导下一步的话，
+		// 而不是让用户对着空列表反复重试。
+		if len(result.Items) == 0 && result.Warning == "" {
+			result.Warning = "红果只支持按剧名匹配，换个更完整的剧名试试"
+		} else if entry.Limited && result.Warning == "" {
 			result.Warning = "已显示当前可获取的匹配结果，使用更完整的剧名可继续查找"
 		}
 		return result, nil

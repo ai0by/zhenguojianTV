@@ -1,0 +1,120 @@
+name: Build Catalog Snapshot
+
+# 剧集快照（0.8.19）。
+#
+# 目的：别再让每台设备都自己去各站源抓目录。CI 每 2 小时抓一轮、加密后
+# 提交到 `catalog` 分支，App 冷启动时优先拉这份快照（走 jsDelivr），
+# 拿不到再退回现场抓取。
+#
+# 分支结构（由 scripts/build_catalog_snapshot.py 生成）：
+#   index.json                明文索引：版本 / 生成时间 / 每个站源的文件与 sha256
+#   sources/<站源>.json.enc   [12 字节 nonce][AES-256-GCM 密文]
+#
+# 注意：密钥随 APK 分发，加密只是"别让人随手把目录拖走"，不是安全边界。
+
+on:
+  schedule:
+    # 每 2 小时的第 15 分钟。与 App 侧「默认 2 小时一轮」的节奏对齐。
+    - cron: '15 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: '每个站源最多翻多少页'
+        type: string
+        default: '6'
+      sources:
+        description: '只导出这些站源（逗号分隔，留空表示全部）'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.24.1'
+
+# 同一时间只跑一个：避免两次运行互相覆盖 catalog 分支。
+concurrency:
+  group: catalog-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Restore catalog branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/catalog-out
+          if git ls-remote --exit-code --heads origin catalog >/dev/null 2>&1; then
+            git fetch --depth=1 origin catalog
+            git archive FETCH_HEAD | tar -x -C /tmp/catalog-out
+            echo "已还原上一轮快照：$(ls /tmp/catalog-out/sources 2>/dev/null | wc -l) 个站源"
+          else
+            echo "catalog 分支还不存在，本次是首轮"
+          fi
+
+      - name: Dump catalogs
+        working-directory: native
+        shell: bash
+        run: |
+          # 单个站源抓不到不该让整轮失败：境外 runner 访问国内站源偶发不通。
+          set -uo pipefail
+          go build -ldflags "-X duanjuapp/native/core.buildAllSources=true" -o /tmp/catalogdump ./cmd/catalogdump
+          /tmp/catalogdump \
+            -dir /tmp/catalog-work \
+            -out /tmp/catalog-dump \
+            -pages '${{ inputs.pages || '6' }}' \
+            -sources '${{ inputs.sources || '' }}'
+          echo "dump 退出码 $?（有站源失败是允许的）"
+
+      - name: Encrypt and index
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 -m pip install --quiet cryptography
+          python3 scripts/build_catalog_snapshot.py --input /tmp/catalog-dump --output /tmp/catalog-out
+          if [ ! -s /tmp/catalog-out/index.json ]; then
+            echo "::warning::这一轮没有产出任何站源快照，跳过提交"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, pathlib
+          index = json.loads(pathlib.Path('/tmp/catalog-out/index.json').read_text(encoding='utf-8'))
+          sources = index.get('sources') or {}
+          print(f"index.json：{len(sources)} 个站源，生成时间 {index.get('generatedAt')}")
+          for name, entry in sorted(sources.items()):
+              print(f"  - {name}: {entry.get('count')} 条")
+          if not sources:
+              raise SystemExit(1)
+          PY
+
+      - name: Publish to catalog branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/catalog-out
+          git init -q .
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b catalog
+          git add -A
+          if git diff --cached --quiet; then
+            echo "快照内容没有变化，跳过提交"
+            exit 0
+          fi
+          git commit -q -m "chore(catalog): 更新剧集快照 $(date -u +%Y-%m-%dT%H:%MZ)"
+          # 强制推送单个提交：快照每 2 小时一变，保留历史只会让仓库无限膨胀。
+          # jsDelivr 按分支名取最新，不影响 CDN。
+          git push --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" catalog

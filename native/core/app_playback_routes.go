@@ -138,6 +138,8 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 	}
 	engine.playbacks[plan.Session] = choice
 	engine.mu.Unlock()
+	// 弹幕坐标单独登记（0.8.19）：会话被挤掉 / 释放后弹幕仍然取得到。
+	engine.rememberDanmakuTarget(choice.danmakuSeries, choice.danmakuVideo)
 	if stream != nil {
 		for _, token := range expired {
 			stream.nativeRelease(token)

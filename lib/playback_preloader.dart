@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'core_bridge.dart';
+import 'danmaku_models.dart';
 import 'models.dart';
 
 /// 播放预载 / 预缓存。
@@ -186,6 +187,7 @@ class PlaybackPreloader extends ChangeNotifier {
         slot.expires = expires;
         slot.readyAt = _now();
         slot.error = '';
+        _warmDanmaku(plan);
       } catch (failure) {
         if (_closed || ticket != slot.generation) return;
         slot.error = failure.toString();
@@ -200,6 +202,29 @@ class PlaybackPreloader extends ChangeNotifier {
       }
     });
     notifyListeners();
+  }
+
+  /// 预载顺手预热弹幕（0.8.19）。
+  ///
+  /// 用户反馈"切集时弹幕要等一会儿才出来"。弹幕接口是独立的（红果的
+  /// `/novel/commentapi/comment/list`），切过去才发请求的话，画面已经动了
+  /// 弹幕才飘上来。这里在**预载拿到播放计划之后**就把开头那一窗拉一次，
+  /// 命中原生侧的弹幕页缓存（5 分钟 TTL），切集时弹幕与画面一起就位。
+  ///
+  /// 失败一律忽略：不支持的站源会直接抛 `AppFailure`，弹幕永远不该拖累播放。
+  void _warmDanmaku(PlaybackPlan plan) {
+    if (_closed || !plan.supportsDanmaku) return;
+    unawaited(() async {
+      try {
+        await repository.danmaku(
+          plan,
+          startMs: 0,
+          durationMs: danmakuWindowMs,
+        );
+      } catch (_) {
+        // 忽略：弹幕只是辅助信息。
+      }
+    }());
   }
 
   /// 只保留这一部剧的预载槽（"下一部"没了的时候把它的预载清掉）。

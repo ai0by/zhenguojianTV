@@ -168,7 +168,7 @@ void main() {
     expect(repo.active, contains('route-5'), reason: '当前这一集必须还在');
   });
 
-  testWidgets('0.8.16：加载遮罩延迟 220ms 才出现，短加载完全无感', (tester) async {
+  testWidgets('0.8.19：加载遮罩延迟 320ms 才出现，短加载完全无感', (tester) async {
     final repo = await mount(tester);
     // 首集已经播起来了，遮罩必须已经撤干净，否则下面的时序断言没有意义。
     expect(find.byKey(const ValueKey('feed-switch-loading')), findsNothing);
@@ -190,7 +190,7 @@ void main() {
       2,
       reason: '先确认切集确实发生了，否则下面的断言测的不是遮罩',
     );
-    // 换集后 40ms：还没到 220ms 的遮罩延迟。
+    // 换集后 40ms：还没到 320ms 的遮罩延迟。
     await tester.pump(const Duration(milliseconds: 40));
 
     // 只认「切集取流」这一条延迟遮罩（带 key）。
@@ -203,12 +203,12 @@ void main() {
       reason: '切过去才 40ms，遮罩还没到显示时间，用户不该看到转圈',
     );
 
-    // 再走 400ms，累计远超 220ms 延迟。
+    // 再走 400ms，累计超过 320ms 延迟。
     await tester.pump(const Duration(milliseconds: 400));
     expect(
       find.byKey(const ValueKey('feed-switch-loading')),
       findsOneWidget,
-      reason: '超过 220ms 还在加载，必须给出反馈',
+      reason: '超过 320ms 还在加载，必须给出反馈',
     );
 
     repo.gate!.complete();

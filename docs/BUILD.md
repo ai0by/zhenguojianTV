@@ -44,7 +44,26 @@ CI 会用官方工具逐个验，任何一项不过直接失败：
 
 ### 签名
 
-未配置 `android/key.properties` 时，工作流会生成并缓存 `android/app/ci-debug.keystore` 作为固定调试签名（Gradle 回落顺序 `release` → `ciDebug` → `debug`）。要正式上架请自行放置 `key.properties` 指向真实发布密钥。
+签名密钥从仓库 Secret `CI_KEYSTORE_BASE64` 还原（base64 的 keystore），**缺失即构建失败**。`Verify APK` 之后还有一道 `Assert signing certificate` 硬断言：实际证书指纹必须等于预期值，不符当场终止。
+
+历史上密钥存在 `actions/cache` 里，缓存一被清理就现造一把新的，导致 0.8.5 / 0.8.7 / 0.8.9 / 0.8.10~0.8.18 是**四把不同的证书**，跨这几版覆盖安装必然报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。别退回 keytool 现场生成 —— 换一次签名就等于让所有老用户卸载重装。
+
+未配置 `android/key.properties` 时，Gradle 按 `release` → `ciDebug` → `debug` 的顺序回落。
+
+## 剧集快照（`catalog` 分支）
+
+`Build Catalog Snapshot` 工作流每 2 小时（`15 */2 * * *`）跑一轮，把各站源的剧集目录导出、加密、提交到 `catalog` 分支：
+
+```
+index.json                    明文索引：version / generatedAt / sources{file, sha256, count}
+sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
+```
+
+- 密钥 = `sha256("zhenguojianTV/catalog-snapshot/v1")`，与 `native/core/app_catalog_snapshot.go` 的 `catalogSnapshotSecret`、`scripts/build_catalog_snapshot.py` 的 `SECRET` 三处必须一致。**密钥随 APK 分发，这是混淆不是安全边界。**
+- 客户端走 jsDelivr 分支引用（边缘缓存 12 小时），兜底 `gh-proxy.org` 代理 raw。`GeneratedAt` 没变就一个文件都不下载。
+- 加密/索引由 `scripts/build_catalog_snapshot.py` 完成，导出由 `native/cmd/catalogdump` 完成；单测在 `scripts/test_build_catalog_snapshot.py` 与 `native/core/app_catalog_snapshot_test.go`。
+- 分支用 `git push --force` 只保留一个提交 —— 每 2 小时一版，留历史会让仓库无限膨胀；jsDelivr 按分支名取最新，不受影响。
+- 抓不到的站源会沿用上一轮的文件（`previous_entries`），不会因为 runner 一时连不上就把某个站源从快照里抹掉。
 
 ## 源码结构
 
@@ -52,8 +71,9 @@ CI 会用官方工具逐个验，任何一项不过直接失败：
 | --- | --- |
 | `lib/` | 页面、播放器、本地用户、FFI、下载与媒体处理 |
 | `native/core/`、`native/bridge/` | Go 站源核心、缓存、下载与 C ABI |
+| `native/cmd/` | 辅助工具（`catalogdump` 导出剧集快照） |
 | `android/`、`windows/`、`ios/` | 平台工程与必要资源 |
-| `scripts/`、`.github/workflows/` | 构建、签名、验证与版本快照 |
+| `scripts/`、`.github/workflows/` | 构建、签名、验证、版本快照与剧集快照 |
 | `test/`、`integration_test/` | 自动化与设备回归 |
 
 仓库只提交业务源码，不包含构建产物、依赖缓存、本地机器配置、签名文件与任何密钥。

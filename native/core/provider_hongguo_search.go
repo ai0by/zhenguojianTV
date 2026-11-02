@@ -18,8 +18,29 @@ const (
 	hongguoSearchTimeout      = 40 * time.Second
 	hongguoSearchPageTimeout  = 12 * time.Second
 	hongguoSearchPendingLimit = 32
-	hongguoSearchNameCount    = 50
+
+	// 名称检索的条数（0.8.19：50 → 20）。
+	//
+	// `/incent_resource/suggestion` 的 `count` 参数**最大只认 20**，
+	// 传 50 与传 20 拿到的是同一批数据。写 50 只会让人误以为能取更多。
+	hongguoSearchNameCount = 20
 )
+
+// hongguoSearchPageEnabled 控制要不要再去抓 `/search/<关键词>` 的 SSR 结果（0.8.19）。
+//
+// **实测结论（2026-11-02）**：这条路由的服务端渲染已经彻底失效 —— 不论关键词
+// 是什么，返回的都是同一份 37215 字节的**未渲染模板**
+// （`<!--<?- html ?>-->` / `<!--<?- SSRDataScript ?>-->` 原样留着，没有
+// `_ROUTER_DATA`）。首页 `/` 和 `/category/*` 的 SSR 都还正常，只有 `/search`
+// 坏了；`.data` 后缀、`?keyword=`、带 `gfkadpd` cookie 都试过，结果一致。
+//
+// 也就是说"红果综合搜索"目前**不可用**，而且不是偶发失败。继续每次搜索都去
+// 拉这 37KB 模板，只会白等一次往返，再给用户挂一句"综合搜索暂不可用，可重试"
+// 的假提示（重试永远不会好）。
+//
+// 这里关掉它，只保留名称检索。若哪天站点把这条路由修好了，把它改回 true 即可
+// —— 下游合并、排序、季数补齐的逻辑都还在。
+const hongguoSearchPageEnabled = false
 
 type hongguoSearchEntry struct {
 	Dramas    []Drama
@@ -156,11 +177,15 @@ func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword st
 		return hongguoSearchEntry{}, err
 	}
 	reportHongguoSearchProgress(ctx, hongguoSearchEntry{Dramas: mergeHongguoSearchDramas([]Drama{}, names), Limited: true})
-	pageCtx, cancel := context.WithTimeout(ctx, hongguoSearchPageTimeout)
-	defer cancel()
-	page, pageErr := downloader.fetchHongguoSearchPage(pageCtx, keyword)
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return hongguoSearchEntry{}, ctx.Err()
+	var page hongguoSearchEntry
+	var pageErr error
+	if hongguoSearchPageEnabled {
+		pageCtx, cancel := context.WithTimeout(ctx, hongguoSearchPageTimeout)
+		page, pageErr = downloader.fetchHongguoSearchPage(pageCtx, keyword)
+		cancel()
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return hongguoSearchEntry{}, ctx.Err()
+		}
 	}
 	if pageErr != nil && namesErr != nil || len(page.Dramas)+len(names) == 0 && (pageErr != nil || namesErr != nil) {
 		return hongguoSearchEntry{}, errors.Join(pageErr, namesErr)
@@ -189,16 +214,27 @@ func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword st
 		}
 		return false
 	})
-	if pageErr != nil {
-		entry.Warning = "红果综合搜索暂不可用，已保留名称匹配结果，可重试"
-	} else if namesErr != nil {
+	// 告警只反映**真的能重试成功**的失败（0.8.19）。
+	//
+	// 综合搜索那条链路已经永久失效（见 [hongguoSearchPageEnabled] 的说明），
+	// 再挂"综合搜索暂不可用，可重试"就是骗人 —— 用户点了重试只会看到同一句话。
+	// 现在只有名称检索失败才提示，文案也点明是"名称检索"。
+	switch {
+	case namesErr != nil:
 		entry.Warning = "红果名称检索暂不可用，结果可能缺少部分剧集，可重试"
+	case pageErr != nil:
+		entry.Warning = "红果综合搜索暂不可用，已保留名称匹配结果，可重试"
 	}
 	if seasonsLimited {
 		if entry.Warning != "" {
 			entry.Warning += "；"
 		}
 		entry.Warning += "部分季数暂未补齐，已保留当前结果，可重试"
+	}
+	// 只用名称检索时结果天然是"当前可获取的这一批"，
+	// 交给上层提示"用更完整的剧名可继续查找"。
+	if !hongguoSearchPageEnabled && entry.Warning == "" {
+		entry.Limited = true
 	}
 	entry.Limited = entry.Limited || pageErr != nil || namesErr != nil || seasonsLimited
 	if entry.Total < len(entry.Dramas) {
