@@ -69,6 +69,8 @@ CI 会用官方工具逐个验，任何一项不过直接失败：
 
 **id 是合并的唯一依据，三层都要守住**：`providerDramaID(source, sourceID)` 固定拼成 `站源:id`，所以跨站源不会撞号；`catalogdump` 翻页时按 id 去重；`build_catalog_snapshot.py` 发布前再 `dedupe_items` 收一遍（同时检查 id 前缀是否属于本文件对应的站源，串了只告警不丢数据）。客户端 `mergeNativeCatalog` 两个方向都按 id 合并。种子阶段还会校验「文件名 / 条目 source / id 前缀」三者一致，不一致的条目直接跳过并在站源卡片上留提示 —— 塞错桶比少一条难排查得多。实测线上 14 源 119219 条：id 全唯一、无空 id、无跨源撞号、前缀全对。
 
+**id 的写法也要归一**（`normalizeProviderSourceID`）：同一个剧集在列表页 / 详情页 / 推荐位给出的 sourceID 常差一点点 —— 尾斜杠、`?` 后的追踪参数、`#` 锚点、HTML 属性带出来的引号。只要一处没归一就是两条剧，按 id 去重救不回来（id 真的不一样）。规则：去首尾空白/斜杠/引号、砍掉 `?#` 之后、站源走 `canonicalProviderSource`；**内部 `/` 保留**（黄果剧场 id 就是 `video/<code>`），**不做大小写折叠**（黄果 / 黄豆是 base62 / hex）。归一化必须幂等 —— 线上 119219 条 id 一条都不该被改动。`站源:` 这种只有前缀没有尾巴的 id 在导出、发布、种子三处都会被丢掉：解析不出 provider，也没有稳定的去重键。
+
 ```
 index.json                    明文索引：version / generatedAt / digest / sources{file, sha256, count}
 sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]

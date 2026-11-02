@@ -167,20 +167,33 @@ def dedupe_items(source: str, items: list) -> list:
     kept: list = []
     duplicated = 0
     foreign = 0
+    malformed = 0
     for item in items:
         ident = str(item.get("id") or "").strip()
         if not ident:
+            continue
+        prefix, _, tail = ident.partition(":")
+        # 只有前缀没有尾巴（`huangju:`）或根本没有前缀的裸 id：App 侧既解析
+        # 不出 provider（点开黑屏），也没有稳定的去重键，发出去只会变成
+        # 一张点不开的卡。
+        if not tail.strip() or not prefix:
+            malformed += 1
             continue
         if ident in seen:
             duplicated += 1
             continue
         seen.add(ident)
-        if ":" in ident and ident.split(":", 1)[0] != source:
+        if prefix != source:
             foreign += 1
         kept.append(item)
     if duplicated:
         print(
             f"[warn] {source}: 文件里有 {duplicated} 条重复 id，已按 id 去重",
+            file=sys.stderr,
+        )
+    if malformed:
+        print(
+            f"[warn] {source}: 有 {malformed} 条 id 不完整（缺前缀或缺 sourceID），已丢弃",
             file=sys.stderr,
         )
     if foreign:

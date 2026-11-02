@@ -93,12 +93,38 @@ type providerEpisode struct {
 	Locked bool
 }
 
+// normalizeProviderSourceID 把站点给的剧集标识收敛成唯一写法。
+//
+// 这是 id 唯一性的第一道地基，**必须所有站源共用**：同一个剧集在列表页 /
+// 详情页 / 推荐位 / 搜索结果里，写法经常差一点点 —— 尾斜杠、`?` 后面的追踪
+// 参数、`#` 锚点、HTML 属性里带出来的引号。只要有一处没归一，同一部剧就会
+// 算出两个 id，合并时变成两条，按 id 去重也救不回来（id 真的不一样）。
+//
+// 只做"写法归一"，不改语义：
+//   - 保留内部的 `/`：黄果剧场的 id 本身就是 `video/<code>` / `series/<code>`；
+//   - 不做大小写折叠：黄果 / 黄豆的 id 是 base62 / hex，大小写敏感。
+func normalizeProviderSourceID(raw string) string {
+	id := strings.TrimSpace(html.UnescapeString(raw))
+	id = strings.Trim(id, " \t\r\n\"'")
+	if cut := strings.IndexAny(id, "?#"); cut >= 0 {
+		id = strings.TrimRight(id[:cut], " \t/")
+	}
+	return strings.Trim(id, "/")
+}
+
+// providerDramaID 生成剧集的全局唯一标识：`<规范站源>:<归一化 sourceID>`。
+//
+// 两条硬规矩：
+//  1. **站源必须走 canonicalProviderSource**。`huangguo` 是 `huangguoai` 的别名，
+//     如果哪天某个调用点传了别名，同一部剧就会变成 `huangguo:123` 和
+//     `huangguoai:123` 两套 id —— 桶是同一个，去重却挡不住。
+//  2. **sourceID 必须归一化**，见 normalizeProviderSourceID。
 func providerDramaID(source, sourceID string) string {
-	return source + ":" + strings.TrimSpace(sourceID)
+	return canonicalProviderSource(source) + ":" + normalizeProviderSourceID(sourceID)
 }
 
 func providerChapterID(source, sourceID, chapterKey string) string {
-	return source + ":" + strings.TrimSpace(sourceID) + ":" + strings.TrimSpace(chapterKey)
+	return canonicalProviderSource(source) + ":" + normalizeProviderSourceID(sourceID) + ":" + normalizeProviderSourceID(chapterKey)
 }
 
 func splitProviderDramaID(id string) (source, sourceID string, ok bool) {

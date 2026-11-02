@@ -426,10 +426,16 @@ func (engine *nativeEngine) seedCatalogSnapshot(ctx context.Context, source stri
 		return errors.New("剧集快照为空")
 	}
 	items := make([]nativeDrama, 0, len(payload.Items))
-	mismatched := 0
+	mismatched, invalid := 0, 0
 	for _, item := range payload.Items {
 		item = migrateNativeDrama(item)
-		if item.ID == "" {
+		// id 必须能拆成 `站源:sourceID` 两段。拆不出来的条目（空 id、
+		// `huangju:` 这种只有前缀没有尾巴的）既解析不出 provider —— 点开
+		// 就是黑屏 —— 也没有稳定的去重键，留在库里只会变成一张点不开的卡。
+		idSource, sourceID, found := strings.Cut(strings.TrimSpace(item.ID), ":")
+		sourceID = strings.TrimSpace(sourceID)
+		if !found || sourceID == "" {
+			invalid++
 			continue
 		}
 		// 一份快照文件对应一个站源，条目自己又同时带 `source` 字段和
@@ -438,16 +444,14 @@ func (engine *nativeEngine) seedCatalogSnapshot(ctx context.Context, source stri
 		// 也不能塞进错误的桶**：桶是分站源的，塞错之后点开会拿另一个站源
 		// 去解析播放地址，直接播不出来，而且用户在剧库里看到的是"打不开
 		// 的剧"，比少一条难排查得多。
-		if idSource, sourceID, ok := splitProviderDramaID(item.ID); ok {
-			if canonicalProviderSource(idSource) != canonicalProviderSource(source) {
-				mismatched++
-				continue
-			}
-			// 前缀是别名时改写成桶里的写法（`huangguo:123` → `huangguoai:123`）。
-			// 不改的话，同一部剧会和现场抓到的 `huangguoai:123` 各留一份 ——
-			// 桶是同一个，id 却有两个，去重根本挡不住。
-			item.ID = providerDramaID(source, sourceID)
+		if canonicalProviderSource(idSource) != canonicalProviderSource(source) {
+			mismatched++
+			continue
 		}
+		// 前缀是别名时改写成桶里的写法（`huangguo:123` → `huangguoai:123`）。
+		// 不改的话，同一部剧会和现场抓到的 `huangguoai:123` 各留一份 ——
+		// 桶是同一个，id 却有两个，去重根本挡不住。
+		item.ID = providerDramaID(source, sourceID)
 		if item.Source != "" && canonicalProviderSource(item.Source) != canonicalProviderSource(source) {
 			mismatched++
 			continue
@@ -472,11 +476,11 @@ func (engine *nativeEngine) seedCatalogSnapshot(ctx context.Context, source stri
 	state := engine.catalogStates[source]
 	state.Page = max(1, state.Page)
 	state.HasMore = true
-	if mismatched > 0 {
+	if mismatched > 0 || invalid > 0 {
 		// 正常快照不会走到这里。真走到了，界面上要能看见 —— 否则用户只会
 		// 觉得"某个站源怎么少了几十部"，根本查不到是快照串了站源。
-		state.Warning = joinNativeWarnings(state.Warning,
-			fmt.Sprintf("快照里有 %d 条属于别的站源，已跳过", mismatched))
+		state.Warning = joinNativeWarnings(state.Warning, fmt.Sprintf(
+			"快照里有 %d 条属于别的站源、%d 条 id 不完整，已跳过", mismatched, invalid))
 	}
 	// 视为"刚刚更新过"：15 分钟内首页直接吃缓存，不必再等一轮抓取。
 	// 之后照常走原有的现场抓取 / 定时更新，快照只是把冷启动那一次省掉。

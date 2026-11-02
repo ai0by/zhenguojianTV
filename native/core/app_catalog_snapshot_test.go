@@ -306,6 +306,32 @@ func TestNativeSyncCatalogSnapshotSkipsItemsFromAnotherSource(t *testing.T) {
 	}
 }
 
+// `站源:` 这种只有前缀没有尾巴的 id、以及根本没有前缀的裸 id，既解析不出
+// provider（点开黑屏），也没有稳定的去重键 —— 一律不许进库。
+func TestNativeSyncCatalogSnapshotSkipsMalformedIDs(t *testing.T) {
+	payload := catalogSnapshotPayloadForTest(t, []nativeDrama{
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Title: "正常的剧"},
+		{ID: sourceHongguo + ":", Source: sourceHongguo, Title: "只有前缀没有尾巴"},
+		{ID: sourceHongguo + ":   ", Source: sourceHongguo, Title: "尾巴全是空格"},
+		{ID: "no-prefix", Source: sourceHongguo, Title: "裸 id"},
+	})
+	files := map[string][]byte{
+		"index.json":                catalogSnapshotIndexForTest(t, payload),
+		sourceHongguo + ".json.enc": payload,
+	}
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, nil))
+	if _, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil); err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	items := engine.catalogs[sourceHongguo]
+	if len(items) != 1 || items[0].ID != sourceHongguo+":a" {
+		t.Fatalf("畸形 id 应该被跳过：%+v", items)
+	}
+	if warning := engine.catalogStates[sourceHongguo].Warning; warning == "" {
+		t.Fatal("跳过畸形条目后应该留下警告")
+	}
+}
+
 // 别名（`huangguoduanju.com` → `hongguo`）和空 source 都要归一成本桶的站源，
 // 否则同一部剧会因为写法不同在桶里留下两份、点开时又找不到 provider。
 func TestNativeSyncCatalogSnapshotNormalizesItemSource(t *testing.T) {

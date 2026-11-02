@@ -124,6 +124,24 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             # 先出现的那条胜出（顺序也保持稳定，才谈得上"内容不变就不发新版"）。
             self.assertEqual(payload['items'][0]['title'], '甲')
 
+    def test_dedupe_items_drops_malformed_ids(self):
+        """只有前缀没有尾巴、或根本没有前缀的 id 必须丢掉。
+
+        这种条目在 App 里既解析不出站源（点开黑屏），也没有稳定的去重键 ——
+        发出去就是一张点不开的卡。
+        """
+        items = [
+            {'id': 'hongguo:1'},
+            {'id': 'hongguo:'},
+            {'id': 'hongguo:   '},
+            {'id': 'no-prefix'},
+        ]
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            kept = dedupe_items('hongguo', items)
+        self.assertEqual([item['id'] for item in kept], ['hongguo:1'])
+        self.assertIn('id 不完整', buffer.getvalue())
+
     def test_dedupe_items_flags_foreign_prefix(self):
         """id 前缀属于别的站源时只告警、不丢数据 —— 丢掉会让用户少剧。"""
         items = [
