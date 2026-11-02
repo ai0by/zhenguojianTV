@@ -32,6 +32,8 @@ python3 scripts/build_android.py --tv --universal --all-sources
 
 工作流固定 Flutter `3.47.4`、Go `1.24.1`、NDK `28.2.13676358`，与本机脚本一致。
 
+**同一个 tag 只会留最新一批附件**：0.8.20 起同一个 tag 会连发好几批（`+99` / `+100` / `+101`），而 `action-gh-release` 只上传、从不删除。发布后 `scripts/prune_release_assets.py` 会把同 tag 下 build 号更小的 `.apk` 删掉，只留当前这版的三套 ABI —— 否则 Release 页面上堆着几套同名包，手动下载的人很容易选到旧包，装完以为修复没生效。解析不出 build 号的文件（老命名 `zhenguojian-TV-v0.8.6-all.apk`、`SHA256SUMS.txt`）一律不动。客户端不受影响，`config/update.json` 本来就按 abi 只取 build 最大的。
+
 ### 出包校验
 
 CI 会用官方工具逐个验，任何一项不过直接失败：

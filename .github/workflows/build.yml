@@ -249,6 +249,13 @@ jobs:
           # `v0.8.16` 这种光秃秃的版本号，看不出是哪个应用。版本号取自
           # pubspec.yaml，跟 APK 里的一致；tag 带不带 `v` 都不影响。
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          # build 号也要带出去：发布后要靠它清掉同一 tag 下被取代的旧附件。
+          build=$(sed -n 's/^version:[[:space:]]*[0-9][0-9.]*+\([0-9][0-9]*\).*/\1/p' pubspec.yaml | head -n1)
+          if [ -z "$build" ]; then
+            echo "pubspec.yaml 里没读到 build 号" >&2
+            exit 1
+          fi
+          echo "APP_BUILD=$build" >> "$GITHUB_ENV"
 
       # 附件前缀统一成 `zhenguojianTV`（0.8.16）。
       #
@@ -284,6 +291,22 @@ jobs:
           fail_on_unmatched_files: true
           files: artifacts/**/*.apk
           body_path: release_body.md
+
+      # 0.8.20 第二批：同一个 tag 会连着发好几批（`+99` / `+100` / `+101`），
+      # 而 action-gh-release 只上传、从不删除，Release 页面上于是堆着好几套
+      # 同名 APK —— 手动点进去的人很可能选到旧包，装完发现修复没生效。
+      # 客户端不受影响（update.json 按 abi 只取 build 最大的），所以这一步
+      # 只解决"人看花眼"的问题，失败也不能把发布标成失败。
+      - name: Prune superseded assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+        run: |
+          python3 scripts/prune_release_assets.py \
+            --repo "${{ github.repository }}" \
+            --tag "$RELEASE_TAG" \
+            --keep-build "$APP_BUILD" || echo "::warning::旧附件清理失败，Release 页面上可能残留上一批包"
 
       # 0.8.18：把最新版本信息同步到 config/update.json。
       #
