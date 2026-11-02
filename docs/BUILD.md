@@ -52,7 +52,14 @@ CI 会用官方工具逐个验，任何一项不过直接失败：
 
 ## 剧集快照（`catalog` 分支）
 
-`Build Catalog Snapshot` 工作流每 2 小时（`15 */2 * * *`）跑一轮，把各站源的剧集目录导出、加密、提交到 `catalog` 分支：
+`Build Catalog Snapshot` 工作流把各站源的剧集目录导出、加密、提交到 `catalog` 分支。0.8.20 起分成两条定时任务：
+
+| 触发 | cron | 模式 | 说明 |
+| --- | --- | --- | --- |
+| 每 6 小时 | `20 */6 * * *` | 增量 | `-pages 3` + `--merge`，只翻前几页拿新剧，其余由上一轮快照按 id 补齐 |
+| 每天 03:40 UTC | `40 3 * * *` | 全量 | `-pages 60`，整站重抓，清掉增量期间残留的下架剧 |
+
+手动触发（`workflow_dispatch`）可以选 `mode`（`incremental` / `full`）、`pages`、`sources`；`pages` 留空按模式取默认值（3 / 60）。
 
 ```
 index.json                    明文索引：version / generatedAt / digest / sources{file, sha256, count}
@@ -61,11 +68,12 @@ sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
 
 - 密钥 = `sha256("zhenguojianTV/catalog-snapshot/v1")`，与 `native/core/app_catalog_snapshot.go` 的 `catalogSnapshotSecret`、`scripts/build_catalog_snapshot.py` 的 `SECRET` 三处必须一致。**密钥随 APK 分发，这是混淆不是安全边界。**
 - 客户端走 jsDelivr 分支引用（边缘缓存 12 小时），兜底 `gh-proxy.org` 代理 raw。`GeneratedAt` 没变就一个文件都不下载。
-- **内容不变就不发新版**：nonce 由明文派生（`sha256(明文)[:12]`），密文里不写时间戳，`index.json` 用 `digest` 判断内容是否真的变了 —— 否则每 2 小时都会产出一版「新快照」，客户端跟着重下几 MB。
-- 客户端只下载**用户启用的站源**（整份快照 12 源约 8MB，只开红果只需 1.9MB）；后来又开了别的源，下一轮会补下缺的那些。
+- **内容不变就不发新版**：nonce 由明文派生（`sha256(明文)[:12]`），密文里不写时间戳，`index.json` 用 `digest` 判断内容是否真的变了 —— 否则每轮都会产出一版「新快照」，客户端跟着重下几 MB。**增量模式同样要满足这条**，所以 `--merge` 的顺序是确定的：本轮抓到的在前（站点翻页顺序稳定），上一轮独有的按原顺序跟在后面，绝不按时间重排。
+- 客户端只下载**用户启用的站源**（整份快照 14 源约 8MB，只开红果只需 1.9MB）；后来又开了别的源，下一轮会补下缺的那些。
 - **客户端只在手动触发时同步**（0.8.20）：入口是「设置 → 站源管理 → 同步远程数据源」，首页 `initState` 与 `CatalogAutoUpdater.runNow()` 都不再自动拉快照。页面上那行「远端站源数据：…」来自 `catalogSnapshotInfo` 这个只读 action（只拉 `index.json`，不下载任何站源文件）。
+- **按站源同步**（0.8.20）：每张站源卡片上还有一个「同步远端」按钮（仅当远端快照里确实有这个站源时才出现），点它只传这一个站源 id 下去，原生只下载那一份文件。全量按钮和单站源按钮共用一个互斥门 —— 原生那侧要读改写状态文件，并发会把「已同步的站源」记错。
 - 加密/索引由 `scripts/build_catalog_snapshot.py` 完成，导出由 `native/cmd/catalogdump` 完成；单测在 `scripts/test_build_catalog_snapshot.py` 与 `native/core/app_catalog_snapshot_test.go`。
-- 分支用 `git push --force` 只保留一个提交 —— 每 2 小时一版，留历史会让仓库无限膨胀；jsDelivr 按分支名取最新，不受影响。
+- 分支用 `git push --force` 只保留一个提交 —— 一天要变好几次，留历史会让仓库无限膨胀；jsDelivr 按分支名取最新，不受影响。
 - 抓不到的站源会沿用上一轮的文件（`previous_entries`），不会因为 runner 一时连不上就把某个站源从快照里抹掉。
 - **花果 / 网果 / 发果在境外 runner 上是 HTTP 403**（Cloudflare / 站点自己的 WAF 按 IP 拦，换 UA 无效），CI 抓不到它们；App 在国内网络下照常现场抓取。
   - 花果、网果已用国内机器跑 `catalogdump` 导出后手工提交到 `catalog` 分支（2151 / 1440 条），之后的 CI 轮次靠 `previous_entries` 一直沿用这份，不会因为抓不到就被抹掉。

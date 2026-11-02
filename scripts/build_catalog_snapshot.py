@@ -15,6 +15,14 @@
 
 密钥派生与 Go 侧 `core/app_catalog_snapshot.go` 的 `catalogSnapshotKey()` 必须一致：
 `sha256(SECRET)`，AES-256-GCM，nonce 12 字节前置。
+
+两种运行模式（0.8.20）：
+
+    全量（默认，每天一次）   整站重抓，本轮抓到什么就写什么。
+    增量（`--merge`，每 6 小时）只翻前几页，用上一轮快照把后面的剧补齐。
+
+增量是给站点风控让路：每 2 小时整站翻 60 页太像爬虫，容易被封 IP。翻页节奏
+降下来之后，靠"新剧在最前面"这个事实做合并就够了 —— 老剧不会凭空消失。
 """
 
 from __future__ import annotations
@@ -124,8 +132,54 @@ def content_digest(entries: dict) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
-def build(input_dir: Path, output_dir: Path) -> dict:
-    """把 input_dir 下的 <source>.json 全部加密，写出 index.json 并返回它。"""
+def load_previous_items(output_dir: Path, source: str, key: bytes) -> list:
+    """解密上一轮该站源的快照，取出 items（读不到就当空）。
+
+    增量模式下 catalogdump 只翻前几页，靠这份旧数据把后面的剧补回来。
+    解不开 / 解析失败都不该让整轮失败 —— 最坏情况就是这一轮退化成"只有新抓到的"。
+    """
+    path = output_dir / f"sources/{source}.json.enc"
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(decrypt(path.read_bytes(), key))
+    except Exception as exc:  # noqa: BLE001 - 任何异常都只降级，不中断
+        print(f"[warn] {source}: 读不到上一轮快照（{exc}），本轮只写新抓到的", file=sys.stderr)
+        return []
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict) and item.get("id")]
+
+
+def merge_items(fresh: list, previous: list) -> list:
+    """本轮在前、上一轮独有的在后，按 id 去重。
+
+    顺序必须确定：本轮顺序来自站点翻页（稳定），上一轮顺序来自上一版文件
+    （也是确定的），所以同一组输入永远得到同一份明文 → 同一份密文 →
+    index 的 digest 不变 → 客户端不用重下。任何"按时间排序""随机打散"
+    都会让增量模式每轮都产出一版新快照，等于把 0.8.19 的幂等优化废掉。
+    """
+    merged: list = []
+    seen: set[str] = set()
+    for item in list(fresh) + list(previous):
+        ident = str(item.get("id") or "")
+        if not ident or ident in seen:
+            continue
+        seen.add(ident)
+        merged.append(item)
+    return merged
+
+
+def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
+    """把 input_dir 下的 <source>.json 全部加密，写出 index.json 并返回它。
+
+    `merge=True`（定时增量）：本轮只翻前几页，抓到的新剧放在前面，其余沿用
+    上一轮快照里的顺序。`merge=False`（默认，全量）：本轮抓到什么就写什么。
+
+    两种模式都必须满足"内容不变则产物逐字节不变"，CI 靠 `git diff --cached`
+    判断要不要提交，客户端靠 `digest` 判断要不要重下。
+    """
     sources_dir = output_dir / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
     key = derive_key()
@@ -149,15 +203,30 @@ def build(input_dir: Path, output_dir: Path) -> dict:
         if not cleaned:
             print(f"[warn] 跳过 {path.name}: 剧集缺少 id", file=sys.stderr)
             continue
+        # 增量模式：本轮只翻前几页，用上一轮快照把后面的剧补齐。
+        # 合并后如果超过单文件上限，退回"只用本轮抓到的"，而不是整站跳过。
+        fresh_count = len(cleaned)
+        candidates = [cleaned]
+        if merge:
+            older = load_previous_items(output_dir, source, key)
+            if older:
+                candidates.insert(0, merge_items(cleaned, older))
         # **不写时间戳**：写进去就等于每轮内容都不同，确定性 nonce 也救不回来。
-        body = json.dumps(
-            {"source": source, "items": cleaned},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        if len(body) > MAX_SOURCE_BYTES:
+        body = None
+        for candidate in candidates:
+            encoded = json.dumps(
+                {"source": source, "items": candidate},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(encoded) <= MAX_SOURCE_BYTES:
+                body, cleaned = encoded, candidate
+                break
+        if body is None:
             print(f"[warn] 跳过 {path.name}: 体积超过上限", file=sys.stderr)
             continue
+        if len(cleaned) > fresh_count:
+            print(f"[merge] {source}: 本轮 {fresh_count} 条 + 上一轮补齐 {len(cleaned) - fresh_count} 条")
         blob = encrypt(body, key)
         name = f"sources/{source}.json.enc"
         (output_dir / name).write_bytes(blob)
@@ -194,12 +263,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="生成加密的剧集快照")
     parser.add_argument("--input", required=True, help="catalogdump 的输出目录")
     parser.add_argument("--output", required=True, help="快照输出目录")
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="增量模式：本轮抓到的放前面，上一轮独有的按原顺序补齐（定时任务用）",
+    )
     args = parser.parse_args(argv)
-    index = build(Path(args.input), Path(args.output))
+    index = build(Path(args.input), Path(args.output), merge=args.merge)
     if not index["sources"]:
         print("没有任何站源被写入，快照为空", file=sys.stderr)
         return 1
-    print(f"index.json: {len(index['sources'])} 个站源，生成时间 {index['generatedAt']}")
+    mode = "增量" if args.merge else "全量"
+    print(f"index.json: {len(index['sources'])} 个站源（{mode}），生成时间 {index['generatedAt']}")
     return 0
 
 

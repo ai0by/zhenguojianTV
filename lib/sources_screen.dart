@@ -59,6 +59,19 @@ class _SourcesScreenState extends State<SourcesScreen> {
   bool _snapshotBusy = false;
   String _snapshotError = '';
 
+  /// 正在单独同步远端快照的站源（0.8.20）。
+  ///
+  /// 远端一份快照十几个站源、好几 MB，用户往往只想补某一个 —— 比如新开了
+  /// 野果，没必要为了它把红果的两千多部重下一遍。
+  final Set<String> _snapshotSyncing = <String>{};
+
+  /// 同一时刻只允许一个同步在跑。
+  ///
+  /// 原生侧 `nativeSyncCatalogSnapshot` 会读改写快照状态文件，两个并发调用
+  /// 互相覆盖会让"已同步站源"记错，下次又重下一遍。所以全量按钮和单站源
+  /// 按钮共用这一个门。
+  bool get _snapshotAnyBusy => _snapshotBusy || _snapshotSyncing.isNotEmpty;
+
   @override
   void initState() {
     super.initState();
@@ -172,12 +185,21 @@ class _SourcesScreenState extends State<SourcesScreen> {
   ///
   /// 取代了 0.8.19 在首页 initState 和自动更新里"顺手拉一次"的行为：用户明确
   /// 要求改成手动。同步完通知一次首页整库重读缓存，站源卡片上的条数也跟着刷新。
-  Future<void> _syncSnapshot() async {
-    if (_snapshotBusy) return;
+  ///
+  /// `only` 非空时只同步那一个站源 —— 传下去的 `catalogSources` 会与原生的
+  /// 可用站源求交集，原生据此只下载这一份文件；其余站源已灌过的记录保留不变。
+  Future<void> _syncSnapshot({SourceSite? only}) async {
+    if (_snapshotAnyBusy) return;
     final epoch = widget.store.profileEpoch;
-    final sources = [for (final site in widget.store.sources) site.id];
+    final sources = only == null
+        ? [for (final site in widget.store.sources) site.id]
+        : [only.id];
     setState(() {
-      _snapshotBusy = true;
+      if (only == null) {
+        _snapshotBusy = true;
+      } else {
+        _snapshotSyncing.add(only.id);
+      }
       _snapshotError = '';
     });
     try {
@@ -191,9 +213,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
       await _refresh();
       if (!mounted) return;
       final info = _snapshot;
-      final message = changed
-          ? '已同步远端剧集：${info?.total ?? 0} 部'
-          : '远端剧集没有新版本';
+      final String message;
+      if (only == null) {
+        message = changed
+            ? '已同步远端剧集：${info?.total ?? 0} 部'
+            : '远端剧集没有新版本';
+      } else {
+        message = changed ? '已同步「${only.name}」远端剧集' : '「${only.name}」远端剧集没有新版本';
+      }
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
@@ -201,7 +228,15 @@ class _SourcesScreenState extends State<SourcesScreen> {
       if (!mounted || epoch != widget.store.profileEpoch) return;
       setState(() => _snapshotError = '$error');
     } finally {
-      if (mounted) setState(() => _snapshotBusy = false);
+      if (mounted) {
+        setState(() {
+          if (only == null) {
+            _snapshotBusy = false;
+          } else {
+            _snapshotSyncing.remove(only.id);
+          }
+        });
+      }
     }
   }
 
@@ -473,14 +508,20 @@ class _SourcesScreenState extends State<SourcesScreen> {
                               if (television)
                                 _tvAction(
                                   key: const ValueKey('sync-catalog-snapshot'),
-                                  label: '同步远程数据源',
+                                  label: _snapshotBusy
+                                      ? '同步中…'
+                                      : '同步远程数据源',
                                   icon: Icons.cloud_download_outlined,
-                                  onPressed: _snapshotBusy ? null : _syncSnapshot,
+                                  onPressed: _snapshotAnyBusy
+                                      ? null
+                                      : () => _syncSnapshot(),
                                 )
                               else
                                 OutlinedButton.icon(
                                   key: const ValueKey('sync-catalog-snapshot'),
-                                  onPressed: _snapshotBusy ? null : _syncSnapshot,
+                                  onPressed: _snapshotAnyBusy
+                                      ? null
+                                      : () => _syncSnapshot(),
                                   icon: _snapshotBusy
                                       ? const SizedBox(
                                           width: 18,
@@ -584,6 +625,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
     );
   }
 
+  /// 站源 id → 显示名（找不到就原样返回 id）。
+  String _sourceName(String id) {
+    for (final site in widget.store.sources) {
+      if (site.id == id) return site.name;
+    }
+    return id;
+  }
+
   /// 远端剧集快照那一行说明（0.8.20）。
   ///
   /// 用户要求"要给出提示，远端站源数据同步时间"，所以这里必须始终有一行字：
@@ -593,8 +642,10 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final colors = Theme.of(context).colorScheme;
     final info = _snapshot;
     final String text;
-    if (_snapshotBusy) {
-      text = '正在同步远端剧集，请稍候…';
+    if (_snapshotAnyBusy) {
+      text = _snapshotSyncing.isEmpty
+          ? '正在同步远端剧集，请稍候…'
+          : '正在同步「${_snapshotSyncing.map(_sourceName).join('、')}」的远端剧集…';
     } else if (_snapshotError.isNotEmpty) {
       text = '远端剧集读取失败：$_snapshotError';
     } else if (info == null) {
@@ -641,6 +692,11 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final health = status?.health;
     final healthExpanded = _expandedHealth.contains(source.id);
     final colors = Theme.of(context).colorScheme;
+    // 远端快照里有没有这个站源、有多少部（0.8.20）。
+    // 只有远端真的有这份文件时才给"同步远端"按钮 —— 境外 runner 抓不到的
+    // 花果 / 网果 / 发果本来就不在 index.json 里，给按钮只会点了报错。
+    final remoteCount = _snapshot?.counts[source.id];
+    final syncingThis = _snapshotSyncing.contains(source.id);
     return Card(
       key: ValueKey('source-${source.id}'),
       margin: const EdgeInsets.only(bottom: 16),
@@ -686,6 +742,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
                 '已加载至第 ${status.page} 页${status.hasMore ? ' · 可继续加载' : ' · 当前分页已加载完'}',
                 style: TextStyle(fontSize: television ? 16 : null),
               ),
+            if (remoteCount != null)
+              Text(
+                '远端快照：$remoteCount 部',
+                style: TextStyle(
+                  fontSize: television ? 16 : null,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
             const SizedBox(height: 12),
             if (television)
               Wrap(
@@ -700,6 +764,15 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     filled: true,
                     onPressed: enabled ? () => _run(source, 'update') : null,
                   ),
+                  if (remoteCount != null)
+                    _tvAction(
+                      key: ValueKey('sync-snapshot-${source.id}'),
+                      label: syncingThis ? '同步中…' : '同步远端',
+                      icon: Icons.cloud_download_outlined,
+                      onPressed: _snapshotAnyBusy
+                          ? null
+                          : () => _syncSnapshot(only: source),
+                    ),
                   _tvAction(
                     key: ValueKey('check-${source.id}'),
                     label: '检测连接与播放',
@@ -737,6 +810,21 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     icon: const Icon(Icons.sync_rounded),
                     label: const Text('更新'),
                   ),
+                  if (remoteCount != null)
+                    OutlinedButton.icon(
+                      key: ValueKey('sync-snapshot-${source.id}'),
+                      onPressed: _snapshotAnyBusy
+                          ? null
+                          : () => _syncSnapshot(only: source),
+                      icon: syncingThis
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.cloud_download_outlined),
+                      label: Text(syncingThis ? '同步中…' : '同步远端'),
+                    ),
                   OutlinedButton.icon(
                     key: ValueKey('check-${source.id}'),
                     onPressed: enabled ? () => _run(source, 'check') : null,

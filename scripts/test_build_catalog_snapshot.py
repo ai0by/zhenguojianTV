@@ -160,6 +160,130 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             self.assertEqual(index['sources']['yeguo']['count'], 1)
             self.assertTrue((output / index['sources']['yeguo']['file']).is_file())
 
+    def test_merge_appends_previous_items_after_fresh_ones(self):
+        """增量模式：只翻前几页也不会把后面的剧丢掉。
+
+        这是 0.8.20 的核心：站点风控受不了每 2 小时整站翻 60 页，于是定时
+        任务只翻 3 页，剩下的靠上一轮快照补。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            full = root / 'full'
+            full.mkdir()
+            self._dump(
+                full,
+                'hongguo',
+                [
+                    {'id': 'hongguo:1', 'title': '甲'},
+                    {'id': 'hongguo:2', 'title': '乙'},
+                    {'id': 'hongguo:3', 'title': '丙'},
+                ],
+            )
+            build(full, output)
+            # 增量轮：只抓到一部新剧（真实场景里是新上架的排在最前面）。
+            fresh = root / 'fresh'
+            fresh.mkdir()
+            self._dump(fresh, 'hongguo', [{'id': 'hongguo:4', 'title': '丁'}])
+            index = build(fresh, output, merge=True)
+            self.assertEqual(index['sources']['hongguo']['count'], 4)
+            blob = (output / index['sources']['hongguo']['file']).read_bytes()
+            payload = json.loads(decrypt(blob))
+            # 新剧在前，老剧按原顺序跟在后面。
+            self.assertEqual(
+                [item['id'] for item in payload['items']],
+                ['hongguo:4', 'hongguo:1', 'hongguo:2', 'hongguo:3'],
+            )
+
+    def test_merge_deduplicates_by_id_and_prefers_fresh_fields(self):
+        """同一部剧两轮都有时只留一份，且用本轮抓到的字段（标题可能改过）。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(
+                first,
+                'hongguo',
+                [{'id': 'hongguo:1', 'title': '旧标题'}, {'id': 'hongguo:2', 'title': '乙'}],
+            )
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'hongguo', [{'id': 'hongguo:1', 'title': '新标题'}])
+            index = build(second, output, merge=True)
+            payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
+            self.assertEqual([item['id'] for item in payload['items']], ['hongguo:1', 'hongguo:2'])
+            self.assertEqual(payload['items'][0]['title'], '新标题')
+            self.assertEqual(index['sources']['hongguo']['count'], 2)
+
+    def test_merge_is_byte_stable_across_runs(self):
+        """同一份输入连跑两遍，增量产物必须逐字节一致。
+
+        否则 digest 每 6 小时都变 → 所有客户端每轮重下几 MB，
+        0.8.19 的"内容不变就不发新版"直接作废。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            full = root / 'full'
+            full.mkdir()
+            self._dump(
+                full,
+                'hongguo',
+                [{'id': 'hongguo:1', 'title': '甲'}, {'id': 'hongguo:2', 'title': '乙'}],
+            )
+            build(full, output)
+            fresh = root / 'fresh'
+            fresh.mkdir()
+            self._dump(fresh, 'hongguo', [{'id': 'hongguo:3', 'title': '丙'}])
+            first = build(fresh, output, merge=True)
+            before = (output / 'index.json').read_bytes()
+            second = build(fresh, output, merge=True)
+            self.assertEqual(second['digest'], first['digest'])
+            self.assertEqual(second['generatedAt'], first['generatedAt'])
+            self.assertEqual((output / 'index.json').read_bytes(), before)
+            self.assertEqual(second['sources']['hongguo']['count'], 3)
+
+    def test_full_mode_replaces_instead_of_merging(self):
+        """全量模式必须真的全量：抓到的就是全部，不许把上一轮的残留带进来。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(
+                first,
+                'hongguo',
+                [{'id': 'hongguo:1', 'title': '甲'}, {'id': 'hongguo:2', 'title': '乙'}],
+            )
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'hongguo', [{'id': 'hongguo:9', 'title': '新'}])
+            index = build(second, output, merge=False)
+            self.assertEqual(index['sources']['hongguo']['count'], 1)
+            payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
+            self.assertEqual([item['id'] for item in payload['items']], ['hongguo:9'])
+
+    def test_merge_falls_back_when_previous_file_is_corrupt(self):
+        """上一轮快照解不开时只降级成"本轮抓到的"，不能让整轮崩掉。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(first, 'hongguo', [{'id': 'hongguo:1', 'title': '甲'}])
+            build(first, output)
+            (output / 'sources/hongguo.json.enc').write_bytes(b'not a ciphertext')
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'hongguo', [{'id': 'hongguo:2', 'title': '乙'}])
+            index = build(second, output, merge=True)
+            self.assertEqual(index['sources']['hongguo']['count'], 1)
+            payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
+            self.assertEqual([item['id'] for item in payload['items']], ['hongguo:2'])
+
 
 if __name__ == '__main__':
     unittest.main()

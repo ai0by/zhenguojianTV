@@ -433,4 +433,29 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     store.dispose();
   });
+
+  // 0.8.20：远端快照十几个站源、好几 MB，用户常常只想补某一个。
+  testWidgets('source manager can sync a single remote source', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final store = LocalStore(await SharedPreferences.getInstance());
+    final repository = SnapshotFixtureRepository();
+    await tester.pumpWidget(
+      MaterialApp(home: SourcesScreen(repository: repository, store: store)),
+    );
+    await tester.pumpAndSettle();
+    // 卡片上要能看出远端有这个站源、有多少部，否则用户不知道点下去会得到什么。
+    expect(find.textContaining('远端快照：7 部'), findsOneWidget);
+
+    final single = find.byKey(const ValueKey('sync-snapshot-hongguo'));
+    await tester.ensureVisible(single);
+    await tester.pumpAndSettle();
+    await tester.tap(single);
+    await tester.pumpAndSettle();
+    expect(repository.syncCalls, 1);
+    // 关键：只传这一个站源，不是"全部启用站源"。
+    expect(repository.lastSources, ['hongguo']);
+    expect(find.textContaining('已同步「红果」远端剧集'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    store.dispose();
+  });
 }

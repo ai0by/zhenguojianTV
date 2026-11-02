@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 
 /// 远程升级（0.8.18）。
 ///
@@ -42,11 +41,15 @@ class Updater {
     'https://gh-proxy.com/{url}',
   ];
 
-  static const _userAgent = 'zhenguojianTV-updater';
+  static const userAgent = 'zhenguojianTV-updater';
 
   /// 检查更新。[currentVersion] 是当前版本号（如 `0.8.17`）。
   ///
   /// 返回 null 表示「已是最新」；抛 [UpdateException] 表示检查失败。
+  ///
+  /// 0.8.20 起**同版本也要比 build 号**：tag 只有一个（`v0.8.20`），同一个
+  /// tag 下可以连着发 `+99`、`+100`、`+101`。只比 semver 的话，装在 +99 上
+  /// 的用户永远看不到 +100，等于这一版永远发不出去。
   static Future<UpdateCheckResult?> check({
     required String currentVersion,
   }) async {
@@ -56,8 +59,44 @@ class Updater {
     if (release == null) {
       throw const UpdateException('检查更新失败，请稍后再试');
     }
-    if (!_isNewer(release.version, currentVersion)) return null;
+    final environment = await environment();
+    if (!isNewer(
+      release.version,
+      currentVersion,
+      candidateBuild: release.build,
+      currentBuild: buildFromVersionCode(environment.versionCode),
+    )) {
+      return null;
+    }
     return UpdateCheckResult(release: release, mirrors: mirrors);
+  }
+
+  /// 从已安装 APK 的 versionCode 反推 build 号。
+  ///
+  /// versionCode = build + 1000 的整数倍（Flutter 分包的 arm64/armv7 偏移是
+  /// 2000/1000，通用包再加 `universalVersionCodeOffset` = 4000），所以取模
+  /// 1000 就能拿回 build 本身：99 / 2099 / 4099 都是 99。
+  ///
+  /// 取不到（0）就返回 0，调用方据此退化成"只比 semver"，不会误判成降级。
+  static int buildFromVersionCode(int versionCode) {
+    if (versionCode <= 0) return 0;
+    return versionCode % 1000;
+  }
+
+  /// 候选版本是否比当前新。semver 相同时才比 build（0 表示未知，不参与）。
+  static bool isNewer(
+    String candidate,
+    String current, {
+    int candidateBuild = 0,
+    int currentBuild = 0,
+  }) {
+    final a = _versionParts(candidate);
+    final b = _versionParts(current);
+    for (var i = 0; i < 3; i++) {
+      if (a[i] != b[i]) return a[i] > b[i];
+    }
+    if (candidateBuild <= 0 || currentBuild <= 0) return false;
+    return candidateBuild > currentBuild;
   }
 
   /// 挑一个适合当前设备的安装包。
@@ -87,47 +126,23 @@ class Updater {
     return exact ?? fallback ?? universal;
   }
 
-  /// 下载并校验。[onProgress] 回调（已下载字节, 总字节）。
+  /// 把镜像模板展开成一组真实下载地址（去重、只留 https）。
   ///
-  /// 镜像按顺序尝试，任意一个成功即返回；全部失败抛 [UpdateException]。
-  /// 支持断点续传：`.part` 已存在时带 `Range` 续传，服务端不认（返回 200）
-  /// 就重头写。
-  static Future<File> download({
+  /// 0.8.20 起下载逻辑搬到了 `lib/update_downloader.dart`：它要先给这些地址
+  /// 测速排个序，再决定从哪个开始下、能不能分片并发。这里只负责"地址怎么拼"。
+  static List<String> mirrorURLs({
     required UpdateRelease release,
     required UpdateAsset asset,
     required List<String> mirrors,
-    void Function(int received, int total)? onProgress,
-  }) async {
-    final directory = await getTemporaryDirectory();
-    final target = File('${directory.path}/update-${release.version}.apk');
-    final part = File('${target.path}.part');
+  }) {
     final base = asset.url.isNotEmpty ? asset.url : _assetURL(release, asset);
-
-    UpdateException? lastError;
+    final out = <String>[];
     for (final template in mirrors) {
       final url = _applyTemplate(template, base);
-      if (url == null) continue;
-      try {
-        await _downloadOne(url, part, asset.size, onProgress);
-        final digest = await _sha256Of(part);
-        if (asset.sha256.isNotEmpty && digest != asset.sha256.toLowerCase()) {
-          await _deleteQuietly(part);
-          throw const UpdateException('安装包校验失败（sha256 不匹配），已丢弃');
-        }
-        if (await target.exists()) await target.delete();
-        await part.rename(target.path);
-        return target;
-      } on UpdateException catch (error) {
-        // 校验失败说明文件本身有问题，换镜像重试没有意义。
-        if (error.message.contains('校验失败')) rethrow;
-        // 其他失败**保留 .part**：下一个镜像可以带 Range 接着下，
-        // 这正是断点续传的意义（镜像 A 中途断了，不用从头再来）。
-        lastError = error;
-      } catch (_) {
-        lastError = const UpdateException('下载失败，请稍后再试');
-      }
+      if (url == null || out.contains(url)) continue;
+      out.add(url);
     }
-    throw lastError ?? const UpdateException('下载失败，请稍后再试');
+    return out;
   }
 
   /// 交给系统安装器。返回是否成功唤起。
@@ -225,74 +240,8 @@ class Updater {
     return out.isEmpty ? defaultMirrors : out;
   }
 
-  static Future<void> _downloadOne(
-    String url,
-    File part,
-    int expected,
-    void Function(int received, int total)? onProgress,
-  ) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 15);
-    try {
-      var offset = 0;
-      if (await part.exists()) {
-        offset = await part.length();
-        // 已经下完了就别再请求一次。
-        if (expected > 0 && offset == expected) {
-          onProgress?.call(offset, expected);
-          return;
-        }
-        // 明显超过预期说明是坏文件，重来。
-        if (expected > 0 && offset > expected) {
-          await _deleteQuietly(part);
-          offset = 0;
-        }
-      }
-      final request = await client.getUrl(Uri.parse(url));
-      request.headers.set(HttpHeaders.userAgentHeader, _userAgent);
-      if (offset > 0) {
-        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-');
-      }
-      final response = await request.close();
-      if (response.statusCode != 200 && response.statusCode != 206) {
-        await response.drain<void>();
-        throw UpdateException('镜像返回 ${response.statusCode}');
-      }
-      final resumed = response.statusCode == 206 && offset > 0;
-      final total = resumed
-          ? offset + (response.contentLength > 0 ? response.contentLength : 0)
-          : response.contentLength;
-      final sink = part.openWrite(
-        mode: resumed ? FileMode.append : FileMode.write,
-      );
-      var received = resumed ? offset : 0;
-      try {
-        await for (final chunk in response) {
-          sink.add(chunk);
-          received += chunk.length;
-          onProgress?.call(received, total > 0 ? total : expected);
-        }
-      } finally {
-        await sink.flush();
-        await sink.close();
-      }
-      if (expected > 0 && received != expected) {
-        throw UpdateException('下载不完整（$received/$expected 字节）');
-      }
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  static Future<void> _deleteQuietly(File file) async {
-    try {
-      if (await file.exists()) await file.delete();
-    } catch (_) {
-      // 删不掉就算了，下次写入会覆盖。
-    }
-  }
-
-  static Future<String> _sha256Of(File file) async {
+  /// 文件 sha256（十六进制小写）。下载器校验安装包用。
+  static Future<String> sha256OfFile(File file) async {
     final sink = _DigestSink();
     final input = sha256.startChunkedConversion(sink);
     await for (final chunk in file.openRead()) {
@@ -408,18 +357,7 @@ class Updater {
     return int.tryParse(match.group(1) ?? '') ?? 0;
   }
 
-  /// 版本比较只看 semver（0.8.17 > 0.8.16）。build 号不参与决策：
-  /// 通用包的 versionCode 带 +4000 偏移，跟文件名里的 build 号对不上，
-  /// 掺进来只会算错。
-  static bool _isNewer(String candidate, String current) {
-    final a = _versionParts(candidate);
-    final b = _versionParts(current);
-    for (var i = 0; i < 3; i++) {
-      if (a[i] != b[i]) return a[i] > b[i];
-    }
-    return false;
-  }
-
+  /// 版本比较只看 semver（0.8.17 > 0.8.16），build 号的处理见 [isNewer]。
   static List<int> _versionParts(String raw) {
     final out = <int>[0, 0, 0];
     final parts = raw.trim().replaceFirst(RegExp(r'^[vV]'), '').split('.');
@@ -443,7 +381,7 @@ class Updater {
       ..connectionTimeout = const Duration(seconds: 8);
     try {
       final request = await client.getUrl(Uri.parse(url));
-      request.headers.set(HttpHeaders.userAgentHeader, _userAgent);
+      request.headers.set(HttpHeaders.userAgentHeader, userAgent);
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       final response = await request.close().timeout(timeout);
       if (response.statusCode != 200) {
