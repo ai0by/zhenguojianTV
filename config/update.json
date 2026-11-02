@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.19",
-    "build": 98,
-    "tag": "v0.8.19",
-    "notes": "0.8.19 · 切集更顺 + 剧集快照 + 弹幕加固 + 全屏状态条",
+    "version": "0.8.20",
+    "build": 99,
+    "tag": "v0.8.20",
+    "notes": "0.8.20 · 远端剧集改手动同步 + 黄果站源留白修复",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.19+98-all.apk",
-        "size": 72855717,
-        "sha256": "98c8b1a494fc80b71ce257d4663e4a956813fdf509444f7abb94aff36dcb9a4c"
+        "name": "zhenguojianTV-0.8.20+99-all.apk",
+        "size": 72863660,
+        "sha256": "057d82a42ef6207f11516c2050541ed936a57fb620cd58735c3a6acbf88fb4ef"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.19+98-arm64-v8a.apk",
-        "size": 33045641,
-        "sha256": "a1125150c911413716764363aa1347834873934dabe611e4d9ec4e909d05569c"
+        "name": "zhenguojianTV-0.8.20+99-arm64-v8a.apk",
+        "size": 33048700,
+        "sha256": "add91cd1110a210ed4e0ce52d408abdf7387e7bbf14ffa5a348bf7900a7437f4"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.19+98-armeabi-v7a.apk",
-        "size": 41590472,
-        "sha256": "36da7cdac5ed5ea72ae611d9f945d26d2ccf22ed2b2012f2ce3ba8a1d2fb2ef6"
+        "name": "zhenguojianTV-0.8.20+99-armeabi-v7a.apk",
+        "size": 41595457,
+        "sha256": "28f57cf3bf26b26c57302b04fd4f7eaccdae00771f210c23633ec6c4e329af1b"
       }
     ]
   },
