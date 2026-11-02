@@ -102,15 +102,15 @@ def main() -> int:
         return 1
 
     version = release.get("tag_name", tag).lstrip("vV")
-    assets = []
-    build = 0
+    # 同一个 tag 下会连着发 +99、+100（0.8.20 起成为常态），Release 里会同时
+    # 躺着好几批附件。必须**按 abi 只留 build 最大的那一个** —— 否则配置里
+    # 同一个 abi 会出现两条，客户端可能拿到上一批的 sha256，把好包当坏包丢掉。
+    newest: dict[str, dict] = {}
     for asset in release.get("assets", []):
         name = asset.get("name", "")
         abi = abi_of(name)
         if not abi:
             continue
-        if build == 0:
-            build = build_of(name)
         digest = asset.get("digest") or ""
         if digest.startswith("sha256:"):
             digest = digest[len("sha256:") :]
@@ -119,14 +119,22 @@ def main() -> int:
             # 假的校验值 —— 校验失败会把好包丢掉。
             print(f"跳过没有 digest 的附件: {name}", file=sys.stderr)
             continue
-        assets.append(
-            {
-                "abi": abi,
-                "name": name,
-                "size": int(asset.get("size") or 0),
-                "sha256": digest.lower(),
-            }
-        )
+        candidate = {
+            "abi": abi,
+            "name": name,
+            "size": int(asset.get("size") or 0),
+            "sha256": digest.lower(),
+            "build": build_of(name),
+        }
+        kept = newest.get(abi)
+        if kept is None or candidate["build"] > kept["build"]:
+            newest[abi] = candidate
+
+    build = max((entry["build"] for entry in newest.values()), default=0)
+    assets = [
+        {key: entry[key] for key in ("abi", "name", "size", "sha256")}
+        for entry in sorted(newest.values(), key=lambda item: item["abi"])
+    ]
 
     if not assets:
         print("这个 Release 没有可用的 APK 附件", file=sys.stderr)
