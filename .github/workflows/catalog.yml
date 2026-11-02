@@ -151,9 +151,13 @@ jobs:
             status=${PIPESTATUS[0]}
             # 撞到翻页上限的站源在日志里是 [warn] 行，转成 Actions 注解，
             # 否则"快照被静默截断"又要靠人翻日志才发现（0.8.20 的教训）。
-            while IFS= read -r line; do
-              echo "::warning::${line#\[warn\] }"
-            done < <(grep '^\[warn\]' "$log" || true)
+            # **只有全量模式才转**：增量本来就只翻 3 页，每个站源都会"截断"，
+            # 每 6 小时亮 12 条注解等于教人忽略这个告警。
+            if [ "$MODE" = full ]; then
+              while IFS= read -r line; do
+                echo "::warning::${line#\[warn\] }"
+              done < <(grep '^\[warn\]' "$log" || true)
+            fi
             echo "dump 退出码 $status（有站源失败是允许的）"
             # 多轮取并集：红果的 App 分类接口每轮返回的切片都不一样
             # （实测 1331 / 2803 / 3217 / 3595，两两交集才一千多），
