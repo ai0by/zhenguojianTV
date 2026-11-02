@@ -67,7 +67,10 @@ sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
 - 加密/索引由 `scripts/build_catalog_snapshot.py` 完成，导出由 `native/cmd/catalogdump` 完成；单测在 `scripts/test_build_catalog_snapshot.py` 与 `native/core/app_catalog_snapshot_test.go`。
 - 分支用 `git push --force` 只保留一个提交 —— 每 2 小时一版，留历史会让仓库无限膨胀；jsDelivr 按分支名取最新，不受影响。
 - 抓不到的站源会沿用上一轮的文件（`previous_entries`），不会因为 runner 一时连不上就把某个站源从快照里抹掉。
-- **花果 / 网果 / 发果在境外 runner 上是 HTTP 403**（Cloudflare / 站点自己的 WAF 按 IP 拦，换 UA 无效），这三站永远抓不到，`index.json` 里也就没有它们；App 在国内网络下照常现场抓取。要补这三站只能在国内机器上跑 `catalogdump` 后手工提交到 `catalog` 分支，之后的 CI 轮次会靠 `previous_entries` 一直沿用。
+- **花果 / 网果 / 发果在境外 runner 上是 HTTP 403**（Cloudflare / 站点自己的 WAF 按 IP 拦，换 UA 无效），CI 抓不到它们；App 在国内网络下照常现场抓取。
+  - 花果、网果已用国内机器跑 `catalogdump` 导出后手工提交到 `catalog` 分支（2151 / 1440 条），之后的 CI 轮次靠 `previous_entries` 一直沿用这份，不会因为抓不到就被抹掉。
+  - 发果从国内也拿不到（Cloudflare 直接 403），`index.json` 里没有它。
+  - `dumpSource` 有一条硬规矩：**翻页中途出错就算整站失败**，不能把「第 1 页成功、第 2 页 403」的几十条当成完整目录去覆盖上一轮（花果真实目录 2000+，早期就踩过 36 条顶掉全量的坑）。
 
 ## 源码结构
 
