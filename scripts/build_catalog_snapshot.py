@@ -152,6 +152,46 @@ def load_previous_items(output_dir: Path, source: str, key: bytes) -> list:
     return [item for item in items if isinstance(item, dict) and item.get("id")]
 
 
+def dedupe_items(source: str, items: list) -> list:
+    """发布前的最后一道保险：按 id 去重，并检查 id 前缀是否属于这个站源。
+
+    App 侧合并是按 id 走的。文件里一旦出现重复 id，轻则列表里两张一样的卡，
+    重则同一部剧的字段互相覆盖；前缀串了站源更糟 —— 桶是分站源的，条目会被
+    拿去用错的 provider 解析播放地址，直接播不出来。
+
+    导出工具（`catalogdump`）本身已经按 id 去过重，这里是兜底：它哪天回归了，
+    也不该让残缺文件流到客户端。去重只保留先出现的那条，顺序不变，所以
+    "内容不变则产物逐字节不变"照样成立。
+    """
+    seen: set[str] = set()
+    kept: list = []
+    duplicated = 0
+    foreign = 0
+    for item in items:
+        ident = str(item.get("id") or "").strip()
+        if not ident:
+            continue
+        if ident in seen:
+            duplicated += 1
+            continue
+        seen.add(ident)
+        if ":" in ident and ident.split(":", 1)[0] != source:
+            foreign += 1
+        kept.append(item)
+    if duplicated:
+        print(
+            f"[warn] {source}: 文件里有 {duplicated} 条重复 id，已按 id 去重",
+            file=sys.stderr,
+        )
+    if foreign:
+        print(
+            f"[warn] {source}: 有 {foreign} 条 id 的前缀不是本战源"
+            "（可能是别名，也可能是串了站源）",
+            file=sys.stderr,
+        )
+    return kept
+
+
 def merge_items(fresh: list, previous: list) -> list:
     """本轮在前、上一轮独有的在后，按 id 去重。
 
@@ -198,8 +238,9 @@ def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
         if not source or not isinstance(items, list) or not items:
             print(f"[warn] 跳过 {path.name}: 没有有效剧集", file=sys.stderr)
             continue
-        # 只留 App 需要的字段，顺手把 id 为空的脏数据剔掉。
-        cleaned = [item for item in items if isinstance(item, dict) and item.get("id")]
+        # 只留 App 需要的字段，顺手把 id 为空的脏数据剔掉；再按 id 去重一次
+        # （导出工具本该去过重，这里是发布前兜底，见 dedupe_items）。
+        cleaned = dedupe_items(source, [item for item in items if isinstance(item, dict)])
         if not cleaned:
             print(f"[warn] 跳过 {path.name}: 剧集缺少 id", file=sys.stderr)
             continue

@@ -52,14 +52,19 @@ func catalogSnapshotTransport(files map[string][]byte, hits *int32) sourceFixtur
 
 func catalogSnapshotIndexForTest(t *testing.T, payload []byte) []byte {
 	t.Helper()
+	return catalogSnapshotIndexForSourceForTest(t, sourceHongguo, payload)
+}
+
+func catalogSnapshotIndexForSourceForTest(t *testing.T, source string, payload []byte) []byte {
+	t.Helper()
 	sum := sha256.Sum256(payload)
 	index, err := json.Marshal(map[string]any{
 		"version":     1,
 		"generatedAt": "2026-11-02T10:00:00Z",
 		"algorithm":   "aes-256-gcm",
 		"sources": map[string]any{
-			sourceHongguo: map[string]any{
-				"file":   "sources/" + sourceHongguo + ".json.enc",
+			source: map[string]any{
+				"file":   "sources/" + source + ".json.enc",
 				"sha256": hex.EncodeToString(sum[:]),
 				"count":  2,
 			},
@@ -73,8 +78,13 @@ func catalogSnapshotIndexForTest(t *testing.T, payload []byte) []byte {
 
 func catalogSnapshotPayloadForTest(t *testing.T, items []nativeDrama) []byte {
 	t.Helper()
+	return catalogSnapshotPayloadForSourceForTest(t, sourceHongguo, items)
+}
+
+func catalogSnapshotPayloadForSourceForTest(t *testing.T, source string, items []nativeDrama) []byte {
+	t.Helper()
 	plain, err := json.Marshal(catalogSnapshotPayload{
-		Source:      sourceHongguo,
+		Source:      source,
 		GeneratedAt: "2026-11-02T10:00:00Z",
 		Items:       items,
 	})
@@ -265,6 +275,98 @@ func TestNativeSyncCatalogSnapshotHonorsAllowedSources(t *testing.T) {
 	}
 	if !changed || len(engine.catalogs[sourceHongguo]) != 1 {
 		t.Fatalf("启用红果后应该灌进快照：changed=%v items=%+v", changed, engine.catalogs[sourceHongguo])
+	}
+}
+
+// 快照文件是按站源分的，条目自己还带 source 字段和 `source:id` 前缀。
+// 三者串了（文件被手工拼错、index 文件名写错）时，**不能**把别的站源的剧
+// 塞进这个桶 —— 桶决定点开时用哪个 provider 解析播放地址，塞错就播不出来。
+func TestNativeSyncCatalogSnapshotSkipsItemsFromAnotherSource(t *testing.T) {
+	payload := catalogSnapshotPayloadForTest(t, []nativeDrama{
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Title: "本源的剧"},
+		// id 前缀属于野果，source 字段也写着野果 —— 混进来的脏数据。
+		{ID: "yeguo:1", Source: "yeguo", Title: "串进来的剧"},
+		// id 是本源的，但 source 字段写成别的站源。
+		{ID: sourceHongguo + ":b", Source: "yeguo", Title: "source 写错的剧"},
+	})
+	files := map[string][]byte{
+		"index.json":                catalogSnapshotIndexForTest(t, payload),
+		sourceHongguo + ".json.enc": payload,
+	}
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, nil))
+	if _, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil); err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	items := engine.catalogs[sourceHongguo]
+	if len(items) != 1 || items[0].ID != sourceHongguo+":a" {
+		t.Fatalf("跨站源的条目应该被跳过：%+v", items)
+	}
+	if warning := engine.catalogStates[sourceHongguo].Warning; warning == "" {
+		t.Fatal("跳过条目后应该留下警告，否则用户只看到\"少了几部\"")
+	}
+}
+
+// 别名（`huangguoduanju.com` → `hongguo`）和空 source 都要归一成本桶的站源，
+// 否则同一部剧会因为写法不同在桶里留下两份、点开时又找不到 provider。
+func TestNativeSyncCatalogSnapshotNormalizesItemSource(t *testing.T) {
+	payload := catalogSnapshotPayloadForTest(t, []nativeDrama{
+		{ID: sourceHongguo + ":a", Title: "source 为空的剧"},
+		{ID: sourceHongguo + ":b", Source: "hongguoduanju.com", Title: "用别名的剧"},
+	})
+	files := map[string][]byte{
+		"index.json":                catalogSnapshotIndexForTest(t, payload),
+		sourceHongguo + ".json.enc": payload,
+	}
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, nil))
+	if _, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil); err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	items := engine.catalogs[sourceHongguo]
+	if len(items) != 2 {
+		t.Fatalf("别名不该被当成别的站源丢掉：%+v", items)
+	}
+	for _, item := range items {
+		if item.Source != sourceHongguo {
+			t.Fatalf("source 没有归一：%+v", item)
+		}
+	}
+	if warning := engine.catalogStates[sourceHongguo].Warning; warning != "" {
+		t.Fatalf("别名不该触发警告：%s", warning)
+	}
+}
+
+// 索引里写的是别名（`huangguo`）、桶用的是规范名（`huangguoai`）时，
+// 条目 id 的前缀必须跟着改写成桶的写法，否则同一部剧会和现场抓到的
+// `huangguoai:123` 在同一个桶里各留一份 —— 按 id 去重根本挡不住。
+func TestNativeSyncCatalogSnapshotRewritesAliasIDPrefix(t *testing.T) {
+	previous := buildAllSources
+	buildAllSources = "true"
+	defer func() { buildAllSources = previous }()
+
+	payload := catalogSnapshotPayloadForSourceForTest(t, "huangguo", []nativeDrama{
+		{ID: "huangguo:123", Source: "huangguo", SourceID: "123", Title: "别名前缀的剧"},
+	})
+	files := map[string][]byte{
+		// 索引 key 故意写成别名，文件也按别名命名。
+		"index.json":        catalogSnapshotIndexForSourceForTest(t, "huangguo", payload),
+		"huangguo.json.enc": payload,
+	}
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, nil))
+	if _, err := engine.nativeSyncCatalogSnapshot(context.Background(), []string{sourceHuangguoAI}); err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	items := engine.catalogs[sourceHuangguoAI]
+	if len(items) != 1 {
+		t.Fatalf("别名站源应该落进规范名的桶：%+v", engine.catalogs)
+	}
+	if items[0].ID != sourceHuangguoAI+":123" || items[0].Source != sourceHuangguoAI {
+		t.Fatalf("id 前缀 / source 没有归一：%+v", items[0])
+	}
+	// 归一之后，本地再抓到同一部剧（规范名 id）就能正常合并成一条。
+	engine.catalogs[sourceHuangguoAI] = mergeNativeCatalog(items,
+		[]nativeDrama{{ID: sourceHuangguoAI + ":123", Source: sourceHuangguoAI, Cover: "https://example.invalid/x.jpg"}})
+	if len(engine.catalogs[sourceHuangguoAI]) != 1 {
+		t.Fatalf("归一后仍出现重复：%+v", engine.catalogs[sourceHuangguoAI])
 	}
 }
 

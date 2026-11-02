@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -17,6 +19,7 @@ from build_catalog_snapshot import (
     SECRET,
     build,
     decrypt,
+    dedupe_items,
     derive_key,
     encrypt,
 )
@@ -92,6 +95,50 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             # 索引必须真的落盘（CI 直接提交这个文件）。
             on_disk = json.loads((output / 'index.json').read_text(encoding='utf-8'))
             self.assertEqual(on_disk['sources']['hongguo']['sha256'], entry['sha256'])
+
+    def test_build_deduplicates_repeated_ids_in_a_dump(self):
+        """同一份 dump 里出现重复 id 时，快照里只能留一条。
+
+        导出工具本来就会按 id 去重，但它是这条链路上最容易回归的一环；
+        快照一旦带重复 id，客户端按 id 合并只会互相覆盖字段，列表里还会
+        出现两张一样的卡 —— 所以发布前必须再收一遍。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            incoming, output = root / 'in', root / 'out'
+            incoming.mkdir()
+            self._dump(
+                incoming,
+                'hongguo',
+                [
+                    {'id': 'hongguo:1', 'title': '甲'},
+                    {'id': 'hongguo:2', 'title': '乙'},
+                    {'id': 'hongguo:1', 'title': '甲的重复'},
+                ],
+            )
+            index = build(incoming, output)
+            self.assertEqual(index['sources']['hongguo']['count'], 2)
+            payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
+            ids = [item['id'] for item in payload['items']]
+            self.assertEqual(ids, ['hongguo:1', 'hongguo:2'])
+            # 先出现的那条胜出（顺序也保持稳定，才谈得上"内容不变就不发新版"）。
+            self.assertEqual(payload['items'][0]['title'], '甲')
+
+    def test_dedupe_items_flags_foreign_prefix(self):
+        """id 前缀属于别的站源时只告警、不丢数据 —— 丢掉会让用户少剧。"""
+        items = [
+            {'id': 'hongguo:1'},
+            {'id': 'yeguo:1'},
+            {'id': ''},
+            {'id': 'hongguo:1'},
+        ]
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            kept = dedupe_items('hongguo', items)
+        self.assertEqual([item['id'] for item in kept], ['hongguo:1', 'yeguo:1'])
+        output = buffer.getvalue()
+        self.assertIn('重复 id', output)
+        self.assertIn('前缀不是本战源', output)
 
     def test_unchanged_content_keeps_generated_at(self):
         """内容没变时不许换 generatedAt —— 客户端靠它判断要不要重新下载。"""

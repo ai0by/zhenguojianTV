@@ -67,6 +67,8 @@ CI 会用官方工具逐个验，任何一项不过直接失败：
 
 **快照不允许比上一轮小**：全量模式如果本轮抓到的剧**上一轮全都有**（一条新剧都没有），说明接口又只吐了子集，此时保留上一轮而不是把 2000 部缩成几十部。真·缩水（有新剧、老剧下架）照旧按本轮写。
 
+**id 是合并的唯一依据，三层都要守住**：`providerDramaID(source, sourceID)` 固定拼成 `站源:id`，所以跨站源不会撞号；`catalogdump` 翻页时按 id 去重；`build_catalog_snapshot.py` 发布前再 `dedupe_items` 收一遍（同时检查 id 前缀是否属于本文件对应的站源，串了只告警不丢数据）。客户端 `mergeNativeCatalog` 两个方向都按 id 合并。种子阶段还会校验「文件名 / 条目 source / id 前缀」三者一致，不一致的条目直接跳过并在站源卡片上留提示 —— 塞错桶比少一条难排查得多。实测线上 14 源 119219 条：id 全唯一、无空 id、无跨源撞号、前缀全对。
+
 ```
 index.json                    明文索引：version / generatedAt / digest / sources{file, sha256, count}
 sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
