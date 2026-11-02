@@ -138,7 +138,6 @@ func main() {
 func dumpSource(source string, pages int) ([]json.RawMessage, error) {
 	seen := map[string]bool{}
 	items := make([]json.RawMessage, 0, 256)
-	var lastErr error
 	for page := 1; page <= pages; page++ {
 		raw, err := call(map[string]any{
 			"action": "catalog",
@@ -148,13 +147,21 @@ func dumpSource(source string, pages int) ([]json.RawMessage, error) {
 			"force": page == 1,
 		})
 		if err != nil {
-			lastErr = err
-			break
+			// **翻到一半失败必须当成失败**（0.8.20）。
+			//
+			// 原先只要抓到过一页就把已有条目当成功返回，于是「第 1 页成功、
+			// 第 2 页被 403」的花果会以 36 条（真实目录 2000+）覆盖掉上一轮
+			// 的完整快照。快照残缺比稍微陈旧更糟：用户会以为这个站只剩几十部。
+			// 报错后 `previous_entries` 会沿用上一轮的完整文件。
+			if len(items) > 0 {
+				return nil, fmt.Errorf(
+					"第 %d 页失败（已抓到 %d 条，视为不完整）：%w", page, len(items), err)
+			}
+			return nil, err
 		}
 		var result catalogPage
 		if err := json.Unmarshal(raw, &result); err != nil {
-			lastErr = err
-			break
+			return nil, fmt.Errorf("第 %d 页返回无法解析：%w", page, err)
 		}
 		added := 0
 		for _, item := range result.Items {
@@ -167,12 +174,10 @@ func dumpSource(source string, pages int) ([]json.RawMessage, error) {
 			added++
 		}
 		// 没有新增或没有下一页就收工，避免在只返回同一批数据的站源上空转。
+		// 这是**正常收尾**，不是失败。
 		if !result.HasMore || added == 0 {
 			break
 		}
-	}
-	if len(items) == 0 && lastErr != nil {
-		return nil, lastErr
 	}
 	return items, nil
 }
