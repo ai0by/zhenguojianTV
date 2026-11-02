@@ -279,3 +279,37 @@ func TestCoveredBy(t *testing.T) {
 		t.Fatal("多出来的站源不影响覆盖判断")
 	}
 }
+
+// 0.8.20：站源管理页的「同步远程数据源」按钮要先知道远端有多新。
+//
+// 这条链路必须**只读索引**：页面每次打开都会调它，顺手下载站源文件的话，
+// 光进一次设置页就要几十 MB。
+func TestNativeCatalogSnapshotInfoReadsIndexOnly(t *testing.T) {
+	payload := catalogSnapshotPayloadForTest(t, []nativeDrama{
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Title: "快照剧 A"},
+	})
+	files := map[string][]byte{
+		"index.json":                catalogSnapshotIndexForTest(t, payload),
+		sourceHongguo + ".json.enc": payload,
+	}
+	var hits int32
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, &hits))
+
+	info, err := engine.nativeCatalogSnapshotInfo(context.Background())
+	if err != nil {
+		t.Fatalf("读取索引失败：%v", err)
+	}
+	if info.GeneratedAt != "2026-11-02T10:00:00Z" {
+		t.Fatalf("远端生成时间不对：%+v", info)
+	}
+	if info.Counts[sourceHongguo] != 2 || len(info.Sources) != 1 {
+		t.Fatalf("站源条数不对：%+v", info)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("只该发一次索引请求，实际 %d 次", atomic.LoadInt32(&hits))
+	}
+	// 还没灌过任何快照：页面据此显示"本机有新版本可同步"。
+	if info.AppliedGeneratedAt != "" {
+		t.Fatalf("未同步过不该有已应用版本：%+v", info)
+	}
+}

@@ -63,9 +63,11 @@ sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
 - 客户端走 jsDelivr 分支引用（边缘缓存 12 小时），兜底 `gh-proxy.org` 代理 raw。`GeneratedAt` 没变就一个文件都不下载。
 - **内容不变就不发新版**：nonce 由明文派生（`sha256(明文)[:12]`），密文里不写时间戳，`index.json` 用 `digest` 判断内容是否真的变了 —— 否则每 2 小时都会产出一版「新快照」，客户端跟着重下几 MB。
 - 客户端只下载**用户启用的站源**（整份快照 12 源约 8MB，只开红果只需 1.9MB）；后来又开了别的源，下一轮会补下缺的那些。
+- **客户端只在手动触发时同步**（0.8.20）：入口是「设置 → 站源管理 → 同步远程数据源」，首页 `initState` 与 `CatalogAutoUpdater.runNow()` 都不再自动拉快照。页面上那行「远端站源数据：…」来自 `catalogSnapshotInfo` 这个只读 action（只拉 `index.json`，不下载任何站源文件）。
 - 加密/索引由 `scripts/build_catalog_snapshot.py` 完成，导出由 `native/cmd/catalogdump` 完成；单测在 `scripts/test_build_catalog_snapshot.py` 与 `native/core/app_catalog_snapshot_test.go`。
 - 分支用 `git push --force` 只保留一个提交 —— 每 2 小时一版，留历史会让仓库无限膨胀；jsDelivr 按分支名取最新，不受影响。
 - 抓不到的站源会沿用上一轮的文件（`previous_entries`），不会因为 runner 一时连不上就把某个站源从快照里抹掉。
+- **花果 / 网果 / 发果在境外 runner 上是 HTTP 403**（Cloudflare / 站点自己的 WAF 按 IP 拦，换 UA 无效），这三站永远抓不到，`index.json` 里也就没有它们；App 在国内网络下照常现场抓取。要补这三站只能在国内机器上跑 `catalogdump` 后手工提交到 `catalog` 分支，之后的 CI 轮次会靠 `previous_entries` 一直沿用。
 
 ## 源码结构
 

@@ -62,6 +62,29 @@ class SourceFixtureRepository extends FixtureRepository {
   }
 }
 
+/// 剧集快照手动同步用（0.8.20）：只统计调用次数，不碰网络。
+class SnapshotFixtureRepository extends SourceFixtureRepository {
+  int infoReads = 0;
+  int syncCalls = 0;
+  List<String> lastSources = const [];
+
+  @override
+  Future<CatalogSnapshotInfo?> catalogSnapshotInfo() async {
+    infoReads++;
+    return CatalogSnapshotInfo(
+      generatedAt: DateTime.utc(2026, 11, 2, 2, 30),
+      counts: const {'hongguo': 7, 'huangju': 5},
+    );
+  }
+
+  @override
+  Future<bool> syncCatalogSnapshot({List<String> sources = const []}) async {
+    syncCalls++;
+    lastSources = sources;
+    return true;
+  }
+}
+
 void main() {
   // 0.8.10 第三批：香蕉（xiangjiao）暂时下线。
   //
@@ -377,4 +400,37 @@ void main() {
       store.dispose();
     },
   );
+
+  // 0.8.20：剧集快照改成手动同步。
+  //
+  // 用户要求"后续全改为手动同步，而不是自动同步，要给出提示，远端站源数据
+  // 同步时间"，所以这里守住三件事：① 打开站源管理只读索引（不下载站源文件）；
+  // ② 页面上始终有一行远端同步时间；③ 点按钮才真正同步，并广播给首页。
+  testWidgets('source manager syncs the remote catalog only when asked', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final store = LocalStore(await SharedPreferences.getInstance());
+    final repository = SnapshotFixtureRepository();
+    await tester.pumpWidget(
+      MaterialApp(home: SourcesScreen(repository: repository, store: store)),
+    );
+    await tester.pumpAndSettle();
+    expect(repository.infoReads, 1);
+    expect(repository.syncCalls, 0);
+    expect(find.textContaining('远端站源数据：'), findsOneWidget);
+    expect(find.textContaining('2 个站源 / 12 部'), findsOneWidget);
+
+    final sync = find.byKey(const ValueKey('sync-catalog-snapshot'));
+    await tester.ensureVisible(sync);
+    await tester.tap(sync);
+    await tester.pumpAndSettle();
+    expect(repository.syncCalls, 1);
+    // 只同步当前用户启用的站源，别把十几个站源全下下来。
+    expect(repository.lastSources, ['hongguo']);
+    expect(repository.catalogUpdates.snapshotRevision, 1);
+    expect(find.textContaining('已同步远端剧集'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    store.dispose();
+  });
 }

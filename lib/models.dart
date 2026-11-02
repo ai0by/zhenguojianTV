@@ -179,6 +179,58 @@ class CatalogCategory {
       );
 }
 
+/// 远端剧集快照的索引摘要（0.8.20）。
+///
+/// 站源管理页的「同步远程数据源」按钮靠它显示两件事：
+/// **远端那份剧库是什么时候生成的**，以及本机是不是已经吃到了这一版。
+/// 只包含索引里的元信息，不含任何剧集正文 —— 读它只花几 KB。
+class CatalogSnapshotInfo {
+  const CatalogSnapshotInfo({
+    this.generatedAt,
+    this.appliedAt,
+    this.appliedGeneratedAt,
+    this.counts = const {},
+  });
+
+  /// 远端这一版快照的生成时间。内容没变时不会前进（CI 会沿用上一版时间）。
+  final DateTime? generatedAt;
+
+  /// 本机最后一次真正把快照灌进剧库的时间。
+  final DateTime? appliedAt;
+
+  /// 本机已经灌过的那一版；与 [generatedAt] 相同即"已是最新"。
+  final DateTime? appliedGeneratedAt;
+
+  /// 各站源在快照里的条数（已按这份构建可用的站源过滤）。
+  final Map<String, int> counts;
+
+  int get total => counts.values.fold(0, (sum, count) => sum + count);
+
+  int get sourceCount => counts.length;
+
+  /// 本机已经吃过远端这一版。两边都为空时按"未同步"处理。
+  bool get upToDate =>
+      generatedAt != null && appliedGeneratedAt == generatedAt;
+
+  factory CatalogSnapshotInfo.fromJson(Map<String, dynamic> json) {
+    DateTime? parse(Object? value) =>
+        value is String && value.isNotEmpty ? DateTime.tryParse(value) : null;
+    final counts = <String, int>{};
+    final raw = json['counts'];
+    if (raw is Map) {
+      raw.forEach((key, value) {
+        if (key is String) counts[key] = intValue(value);
+      });
+    }
+    return CatalogSnapshotInfo(
+      generatedAt: parse(json['generatedAt']),
+      appliedAt: parse(json['appliedAt']),
+      appliedGeneratedAt: parse(json['appliedGeneratedAt']),
+      counts: counts,
+    );
+  }
+}
+
 int intValue(Object? value) =>
     value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 

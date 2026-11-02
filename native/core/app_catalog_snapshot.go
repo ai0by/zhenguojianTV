@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -75,6 +76,68 @@ type catalogSnapshotState struct {
 	GeneratedAt string    `json:"generatedAt"`
 	AppliedAt   time.Time `json:"appliedAt"`
 	Sources     []string  `json:"sources"`
+}
+
+// nativeCatalogSnapshotInfo 是「同步远程数据源」按钮要显示的那点信息（0.8.20）。
+//
+// 只读远端 index.json（几 KB），**不下载任何站源文件** —— 站源管理页每次打开
+// 都会读一次，如果这里顺手把十几个站源全下一遍，光打开设置页就要几十 MB。
+//
+//	GeneratedAt        远端这一版快照的生成时间（内容没变时不会前进）
+//	AppliedAt          本机最后一次真正灌进快照的时间
+//	AppliedGeneratedAt 本机已经灌过的那一版（与 GeneratedAt 相同即"已是最新"）
+//	Counts             各站源在快照里的条数，按这份构建可用的站源过滤过
+type nativeCatalogSnapshotInfo struct {
+	GeneratedAt        string         `json:"generatedAt"`
+	AppliedAt          string         `json:"appliedAt"`
+	AppliedGeneratedAt string         `json:"appliedGeneratedAt"`
+	Counts             map[string]int `json:"counts"`
+	Sources            []string       `json:"sources"`
+}
+
+// nativeCatalogSnapshotInfo 读远端索引，返回给站源管理页做提示。
+func (engine *nativeEngine) nativeCatalogSnapshotInfo(ctx context.Context) (nativeCatalogSnapshotInfo, error) {
+	// 索引本身只有几 KB，但 jsDelivr 冷启动偶尔要等十几秒；两次镜像尝试
+	// 各 20 秒，这里给 45 秒总预算（Dart 侧 `_call` 给 55 秒）。
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	body, err := engine.fetchCatalogSnapshot(ctx, "index.json", catalogSnapshotMaxIndex)
+	if err != nil {
+		return nativeCatalogSnapshotInfo{}, err
+	}
+	var index catalogSnapshotIndex
+	if err := json.Unmarshal(body, &index); err != nil {
+		return nativeCatalogSnapshotInfo{}, errors.New("剧集快照索引无效")
+	}
+	if index.Version < 1 || index.GeneratedAt == "" || len(index.Sources) == 0 {
+		return nativeCatalogSnapshotInfo{}, errors.New("剧集快照索引不完整")
+	}
+	counts := make(map[string]int, len(index.Sources))
+	sources := make([]string, 0, len(index.Sources))
+	seen := make(map[string]bool, len(index.Sources))
+	for source, asset := range index.Sources {
+		// 索引里可能同时有别名（`huangguo` / `huangguoai`），规范化后去重，
+		// 否则同一个站源会被数两次、条数也跟着翻倍。
+		source = canonicalProviderSource(source)
+		if source == "" || !nativeSourceAvailable(source) || seen[source] {
+			continue
+		}
+		seen[source] = true
+		counts[source] = asset.Count
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	applied := engine.loadCatalogSnapshotState()
+	info := nativeCatalogSnapshotInfo{
+		GeneratedAt:        index.GeneratedAt,
+		AppliedGeneratedAt: applied.GeneratedAt,
+		Counts:             counts,
+		Sources:            sources,
+	}
+	if !applied.AppliedAt.IsZero() {
+		info.AppliedAt = applied.AppliedAt.UTC().Format(time.RFC3339)
+	}
+	return info, nil
 }
 
 func catalogSnapshotKey() [32]byte {

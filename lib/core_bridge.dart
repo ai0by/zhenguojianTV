@@ -170,6 +170,12 @@ abstract class AppRepository {
   Future<bool> syncCatalogSnapshot({List<String> sources = const []}) async =>
       false;
 
+  /// 读远端剧集快照的索引摘要（0.8.20）。
+  ///
+  /// 只拉 `index.json`（几 KB），不下载任何站源文件 —— 站源管理页每次打开
+  /// 都会读一次，用来显示"远端站源数据同步时间"。不支持的环境返回 null。
+  Future<CatalogSnapshotInfo?> catalogSnapshotInfo() async => null;
+
   /// 首页视频流专用的目录读取。
   ///
   /// 与「发现」页的 `catalog` 使用彼此独立的读取通道，
@@ -754,6 +760,9 @@ class NativeRepository extends AppRepository {
               // 快照要逐个下载十几个站源，原生侧整轮预算是 150 秒。
               : action == 'syncCatalogSnapshot'
               ? 170
+              // 只读索引，原生侧给 45 秒（jsDelivr 冷启动偶尔要等十几秒）。
+              : action == 'catalogSnapshotInfo'
+              ? 55
               : action == 'preload'
               ? 20
               : 70,
@@ -875,6 +884,12 @@ class NativeRepository extends AppRepository {
     });
     return data['changed'] == true;
   }
+
+  @override
+  Future<CatalogSnapshotInfo?> catalogSnapshotInfo() async =>
+      CatalogSnapshotInfo.fromJson(
+        await _call({'action': 'catalogSnapshotInfo'}),
+      );
   @override
   Future<String> cover(Drama drama, {bool force = false}) async {
     final epoch = access?.profileEpoch;

@@ -42,9 +42,6 @@ class CatalogAutoUpdater extends ChangeNotifier {
   final LocalStore store;
   final int _epoch;
 
-  /// 剧集快照灌进了新剧库时回调（0.8.19）。首页据此重读缓存。
-  void Function()? onSnapshotApplied;
-
   Timer? _timer;
   bool _running = false;
   bool _disposed = false;
@@ -95,23 +92,11 @@ class CatalogAutoUpdater extends ChangeNotifier {
     }
     _running = true;
     try {
-      // 先看剧集快照（0.8.19）：只拉几 KB 的 index.json，版本没变立刻返回，
-      // 不会白白吃流量。有新版本才会下载各站源文件 —— 那已经是一份由 CI
-      // 统一生成的最新剧库，本地抓一轮也拿不到更多，这一轮直接跳过。
-      var snapshotChanged = false;
-      try {
-        snapshotChanged = await repository.syncCatalogSnapshot(
-          sources: [for (final site in store.sources) site.id],
-        );
-      } catch (_) {
-        // 快照不可用就走原来的现场抓取。
-      }
-      if (!_valid) return;
-      if (snapshotChanged) {
-        onSnapshotApplied?.call();
-        _finish(found: true, message: '已从剧集快照同步');
-        return;
-      }
+      // 剧集快照不再在这里自动拉（0.8.20）。
+      //
+      // 用户要求"后续全改为手动同步，而不是自动同步"：快照入口挪到
+      // 「设置 → 站源管理 → 同步远程数据源」，那里会显示远端数据的同步时间。
+      // 这里的定时任务只做原来的现场抓取，行为和 0.8.19 之前完全一致。
       final started = <String>[];
       for (final source in sources) {
         if (!_valid) return;

@@ -538,6 +538,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		// `CatalogSources` 是用户当前启用的站源，只下载这些，省流量。
 		changed, err := engine.nativeSyncCatalogSnapshot(ctx, input.CatalogSources)
 		return map[string]bool{"changed": changed}, err
+	case "catalogSnapshotInfo":
+		// 剧集快照索引摘要（0.8.20）：只读 index.json，给「同步远程数据源」
+		// 按钮显示远端数据的同步时间与规模，不下载任何站源文件。
+		return engine.nativeCatalogSnapshotInfo(ctx)
 	case "cached":
 		if !validNativeCategory(canonicalProviderSource(input.Source), input.Category) {
 			return nil, errors.New("内容分类无效")

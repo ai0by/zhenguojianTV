@@ -51,10 +51,19 @@ class _SourcesScreenState extends State<SourcesScreen> {
   /// 该标记用于按钮禁用与进度文案（"正在自动继续更新…"）。
   bool _autoUpdating = false;
 
+  /// 远端剧集快照的索引摘要（0.8.20）。
+  ///
+  /// 站源管理页现在承担"手动同步远端剧集"的入口，所以要把远端那份数据的
+  /// 生成时间摆出来 —— 用户点按钮之前就该知道远端有多新、本机是不是已经吃过。
+  CatalogSnapshotInfo? _snapshot;
+  bool _snapshotBusy = false;
+  String _snapshotError = '';
+
   @override
   void initState() {
     super.initState();
     unawaited(_refresh());
+    unawaited(_loadSnapshot());
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       _ticks++;
       if (_statuses.values.any((status) => status.retryAt != null)) {
@@ -136,6 +145,63 @@ class _SourcesScreenState extends State<SourcesScreen> {
       }
     } finally {
       if (mounted) setState(() => _pending.remove(source.id));
+    }
+  }
+
+  /// 读一次远端快照索引（0.8.20）。
+  ///
+  /// 只拉几 KB 的 `index.json`，不下载任何站源文件，所以进页面就读一次没问题。
+  /// 失败不弹窗：远端不通时按钮照样能点（点了会给出明确的失败提示）。
+  Future<void> _loadSnapshot() async {
+    if (!widget.repository.supportsSourceManagement) return;
+    final epoch = widget.store.profileEpoch;
+    try {
+      final info = await widget.repository.catalogSnapshotInfo();
+      if (!mounted || epoch != widget.store.profileEpoch) return;
+      setState(() {
+        _snapshot = info;
+        _snapshotError = '';
+      });
+    } catch (error) {
+      if (!mounted || epoch != widget.store.profileEpoch) return;
+      setState(() => _snapshotError = '$error');
+    }
+  }
+
+  /// 手动同步远端剧集快照（0.8.20）。
+  ///
+  /// 取代了 0.8.19 在首页 initState 和自动更新里"顺手拉一次"的行为：用户明确
+  /// 要求改成手动。同步完通知一次首页整库重读缓存，站源卡片上的条数也跟着刷新。
+  Future<void> _syncSnapshot() async {
+    if (_snapshotBusy) return;
+    final epoch = widget.store.profileEpoch;
+    final sources = [for (final site in widget.store.sources) site.id];
+    setState(() {
+      _snapshotBusy = true;
+      _snapshotError = '';
+    });
+    try {
+      final changed = await widget.repository.syncCatalogSnapshot(
+        sources: sources,
+      );
+      if (!mounted || epoch != widget.store.profileEpoch) return;
+      if (changed) widget.repository.catalogUpdates.markSnapshotSynced();
+      await _loadSnapshot();
+      if (!mounted || epoch != widget.store.profileEpoch) return;
+      await _refresh();
+      if (!mounted) return;
+      final info = _snapshot;
+      final message = changed
+          ? '已同步远端剧集：${info?.total ?? 0} 部'
+          : '远端剧集没有新版本';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } catch (error) {
+      if (!mounted || epoch != widget.store.profileEpoch) return;
+      setState(() => _snapshotError = '$error');
+    } finally {
+      if (mounted) setState(() => _snapshotBusy = false);
     }
   }
 
@@ -364,49 +430,85 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   const Padding(
                     padding: EdgeInsets.only(bottom: 16),
                     child: Text(
-                      '各站源可分别更新和检测。更新会查找新剧、继续加载一页历史内容，并分批补齐资料；离开此页后任务继续。',
+                      '各站源可分别更新和检测。更新会查找新剧、继续加载一页历史内容，并分批补齐资料；离开此页后任务继续。'
+                      '「同步远程数据源」会拉取仓库里由服务器统一抓好的剧库（不再自动同步）。',
                     ),
                   ),
-                  // 一键全部更新：无需逐个点。
+                  // 一键全部更新 + 手动同步远端剧集（0.8.20）。
                   if (sources.isNotEmpty &&
                       widget.repository.supportsSourceManagement)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // TV 上用带焦点环的 RemoteTarget，手机沿用 FilledButton。
-                          if (television)
-                            _tvAction(
-                              key: const ValueKey('update-all-sources'),
-                              label: '全部更新',
-                              icon: Icons.sync_rounded,
-                              filled: true,
-                              onPressed: _runningCount > 0 || _autoUpdating
-                                  ? null
-                                  : _updateAll,
-                            )
-                          else
-                            FilledButton.icon(
-                              key: const ValueKey('update-all-sources'),
-                              onPressed: _runningCount > 0 || _autoUpdating
-                                  ? null
-                                  : _updateAll,
-                              icon: const Icon(Icons.sync_rounded),
-                              label: const Text('全部更新'),
-                            ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              _autoUpdating
-                                  ? '正在自动继续更新（分批进行，请勿离开）…'
-                                  : _runningCount > 0
-                                  ? '正在更新 $_runningCount / ${sources.length} 个站源…'
-                                  : '共 ${sources.length} 个站源，可一键依次更新',
-                              style: television
-                                  ? const TextStyle(fontSize: 15)
-                                  : Theme.of(context).textTheme.bodySmall,
-                            ),
+                          // 两个按钮都可能很长，窄屏 / 大字号下用 Wrap 换行，
+                          // 不要塞进 Row —— 一行放不下会直接溢出。
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 10,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              // TV 上用带焦点环的 RemoteTarget，手机沿用 Material 按钮。
+                              if (television)
+                                _tvAction(
+                                  key: const ValueKey('update-all-sources'),
+                                  label: '全部更新',
+                                  icon: Icons.sync_rounded,
+                                  filled: true,
+                                  onPressed: _runningCount > 0 || _autoUpdating
+                                      ? null
+                                      : _updateAll,
+                                )
+                              else
+                                FilledButton.icon(
+                                  key: const ValueKey('update-all-sources'),
+                                  onPressed:
+                                      _runningCount > 0 || _autoUpdating
+                                      ? null
+                                      : _updateAll,
+                                  icon: const Icon(Icons.sync_rounded),
+                                  label: const Text('全部更新'),
+                                ),
+                              if (television)
+                                _tvAction(
+                                  key: const ValueKey('sync-catalog-snapshot'),
+                                  label: '同步远程数据源',
+                                  icon: Icons.cloud_download_outlined,
+                                  onPressed: _snapshotBusy ? null : _syncSnapshot,
+                                )
+                              else
+                                OutlinedButton.icon(
+                                  key: const ValueKey('sync-catalog-snapshot'),
+                                  onPressed: _snapshotBusy ? null : _syncSnapshot,
+                                  icon: _snapshotBusy
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.cloud_download_outlined),
+                                  label: Text(
+                                    _snapshotBusy ? '同步中…' : '同步远程数据源',
+                                  ),
+                                ),
+                            ],
                           ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _autoUpdating
+                                ? '正在自动继续更新（分批进行，请勿离开）…'
+                                : _runningCount > 0
+                                ? '正在更新 $_runningCount / ${sources.length} 个站源…'
+                                : '共 ${sources.length} 个站源，可一键依次更新',
+                            style: television
+                                ? const TextStyle(fontSize: 15)
+                                : Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 4),
+                          _snapshotLine(television),
                         ],
                       ),
                     ),
@@ -415,35 +517,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       padding: EdgeInsets.all(24),
                       child: Text('当前用户没有可用站源'),
                     ),
-                  for (final group in SourceGroup.fromSources(sources))
-                    if (group.id == 'huangguo')
-                      Card(
-                        clipBehavior: Clip.antiAlias,
-                        child: ExpansionTile(
-                          key: const PageStorageKey('source-group-huangguo'),
-                          initiallyExpanded: group.sources.any(
-                            (source) => source.id == widget.initialSource,
-                          ),
-                          leading: const Icon(Icons.hub_outlined),
-                          title: Text(
-                            '黄果',
-                            style: television
-                                ? const TextStyle(fontSize: 20)
-                                : null,
-                          ),
-                          subtitle: Text(
-                            '${group.sources.length} 个入口 · ${group.sources.fold<int>(0, (count, source) => count + (_statuses[source.id]?.count ?? 0))} 部',
-                          ),
-                          childrenPadding: const EdgeInsets.all(8),
-                          children: [
-                            for (final source in group.sources)
-                              _sourceCard(source, television: television),
-                          ],
-                        ),
-                      )
-                    else
-                      for (final source in group.sources)
-                        _sourceCard(source, television: television),
+                  for (final group in SourceGroup.fromSources(sources)) ...[
+                    // 多入口站源（黄果 = 剧场 / AI / 旧版）先给一行分组标题，
+                    // 再平铺各自的卡片 —— 详见 [_groupHeader] 的注释。
+                    if (group.sources.length > 1)
+                      _groupHeader(group, television),
+                    for (final source in group.sources)
+                      _sourceCard(source, television: television),
+                  ],
                 ],
               ),
             ),
@@ -452,6 +533,102 @@ class _SourcesScreenState extends State<SourcesScreen> {
       );
     },
   );
+
+  /// 多入口站源的分组标题（0.8.20）。
+  ///
+  /// 历史问题（用户反馈"黄果的站源管理那里有大片留白"）：
+  /// 黄果是「剧场 / AI / 旧版」三个入口，原来渲染成
+  /// `Card > ExpansionTile > Card` 的三层嵌套 —— 外层和里层用的都是
+  /// `surfaceContainerLow`，展开后整块连成一片纯色，三张卡片的边界根本看不出来，
+  /// 观感就是"一大片空白"；折叠时又只剩一行标题，用户以为这三个源没加载出来。
+  ///
+  /// 现在改成**一行分组标题 + 三张和其他站源完全一致的卡片**：没有嵌套卡片、
+  /// 没有折叠态，视觉和行为都不再有特例。
+  Widget _groupHeader(SourceGroup group, bool television) {
+    final colors = Theme.of(context).colorScheme;
+    final total = group.sources.fold<int>(
+      0,
+      (sum, source) => sum + (_statuses[source.id]?.count ?? 0),
+    );
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 10),
+      child: Row(
+        children: [
+          Icon(
+            Icons.hub_outlined,
+            size: television ? 24 : 20,
+            color: colors.primary,
+          ),
+          SizedBox(width: television ? 10 : 8),
+          Text(
+            group.name,
+            style: TextStyle(
+              fontSize: television ? 20 : 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${group.sources.length} 个入口 · $total 部',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: television ? 15 : 12,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 远端剧集快照那一行说明（0.8.20）。
+  ///
+  /// 用户要求"要给出提示，远端站源数据同步时间"，所以这里必须始终有一行字：
+  /// 读到了就写远端生成时间 + 站源数 + 总条数 + 本机是否已同步，
+  /// 读不到就明确写"尚未读取 / 读取失败"，而不是留一片空白。
+  Widget _snapshotLine(bool television) {
+    final colors = Theme.of(context).colorScheme;
+    final info = _snapshot;
+    final String text;
+    if (_snapshotBusy) {
+      text = '正在同步远端剧集，请稍候…';
+    } else if (_snapshotError.isNotEmpty) {
+      text = '远端剧集读取失败：$_snapshotError';
+    } else if (info == null) {
+      text = '远端站源数据：尚未读取';
+    } else if (info.generatedAt == null) {
+      text = '远端站源数据：还没有可用的快照';
+    } else {
+      final state = info.upToDate ? '本机已同步' : '本机有新版本可同步';
+      text =
+          '远端站源数据：${sourceTimestamp(info.generatedAt)} · '
+          '${info.sourceCount} 个站源 / ${info.total} 部 · $state';
+    }
+    final failed = _snapshotError.isNotEmpty;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          Icons.cloud_outlined,
+          size: television ? 20 : 15,
+          color: failed ? colors.error : colors.onSurfaceVariant,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: television ? 15 : 12,
+              color: failed ? colors.error : colors.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _sourceCard(SourceSite source, {required bool television}) {
     final status = _statuses[source.id];

@@ -98,6 +98,9 @@ func main() {
 	}
 
 	failed := 0
+	// 失败的站源单独记名字：CI 日志里只写"3 个站源失败"没法判断是偶发
+	// 还是这几站长期拦境外 IP（花果 / 网果 / 发果就是长期 403）。
+	var failedSources []string
 	for _, source := range sources {
 		if len(wanted) > 0 && !wanted[source] {
 			continue
@@ -107,6 +110,7 @@ func main() {
 			// 单个站源失败不终止整体：快照少一个站源，App 侧会继续现场抓取。
 			fmt.Fprintf(os.Stderr, "[warn] %s: %v\n", source, err)
 			failed++
+			failedSources = append(failedSources, source)
 			continue
 		}
 		payload := sourceDump{Source: source, GeneratedAt: time.Now().UTC().Format(time.RFC3339), Items: items}
@@ -114,18 +118,20 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[warn] %s: 序列化失败 %v\n", source, err)
 			failed++
+			failedSources = append(failedSources, source)
 			continue
 		}
 		path := filepath.Join(*out, source+".json")
 		if err := os.WriteFile(path, body, 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "[warn] %s: 写文件失败 %v\n", source, err)
 			failed++
+			failedSources = append(failedSources, source)
 			continue
 		}
 		fmt.Printf("[ok] %s: %d 条 -> %s\n", source, len(items), path)
 	}
 	if failed > 0 {
-		fmt.Printf("完成，%d 个站源失败\n", failed)
+		fmt.Printf("完成，%d 个站源失败：%s\n", failed, strings.Join(failedSources, ", "))
 	}
 }
 
