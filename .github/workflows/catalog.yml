@@ -19,9 +19,9 @@ on:
   workflow_dispatch:
     inputs:
       pages:
-        description: '每个站源最多翻多少页'
+        description: '每个站源最多翻多少页（翻到没有下一页会提前收工）'
         type: string
-        default: '6'
+        default: '60'
       sources:
         description: '只导出这些站源（逗号分隔，留空表示全部）'
         type: string
@@ -75,7 +75,7 @@ jobs:
           /tmp/catalogdump \
             -dir /tmp/catalog-work \
             -out /tmp/catalog-dump \
-            -pages '${{ inputs.pages || '6' }}' \
+            -pages '${{ inputs.pages || '60' }}' \
             -sources '${{ inputs.sources || '' }}'
           echo "dump 退出码 $?（有站源失败是允许的）"
 

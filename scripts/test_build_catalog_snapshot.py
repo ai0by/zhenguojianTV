@@ -36,9 +36,19 @@ class CatalogSnapshotCryptoTests(unittest.TestCase):
         self.assertEqual(decrypt(blob), plain)
 
     @unittest.skipUnless(HAVE_CRYPTO, '缺少 cryptography')
-    def test_each_encryption_uses_a_fresh_nonce(self):
+    def test_encryption_is_deterministic(self):
+        """同一份明文必须产出同一份密文。
+
+        随机 nonce 会让每轮快照的 sha256 都不同，index.json 每 2 小时
+        都是一版"新快照"，所有客户端于是每轮重下几 MB。这条断言就是
+        把"内容没变就不该变"钉住。
+        """
         plain = b'same input'
-        self.assertNotEqual(encrypt(plain)[:NONCE_SIZE], encrypt(plain)[:NONCE_SIZE])
+        first, second = encrypt(plain), encrypt(plain)
+        self.assertEqual(first, second)
+        self.assertEqual(decrypt(first), plain)
+        # 不同明文的 nonce 不能撞（nonce 是明文的函数，但也不能退化成常量）。
+        self.assertNotEqual(encrypt(b'other input')[:NONCE_SIZE], first[:NONCE_SIZE])
 
 
 @unittest.skipUnless(HAVE_CRYPTO, '缺少 cryptography')
@@ -65,18 +75,60 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             index = build(incoming, output)
             self.assertEqual(index['version'], 1)
             self.assertEqual(index['algorithm'], ALGORITHM)
-            self.assertEqual(index['generatedAt'], '2026-11-02T02:00:00Z')
+            # generatedAt 由脚本自己生成（不再取 dump 里的时间戳 —— 那个每轮都变，
+            # 会让"内容没变就不发新版"失效）。
+            self.assertRegex(index['generatedAt'], r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+            self.assertEqual(len(index['digest']), 64)
             entry = index['sources']['hongguo']
             # 缺 id 的脏数据必须被剔掉，否则 App 侧会灌进一条空剧。
             self.assertEqual(entry['count'], 1)
+            # 密文里不能残留时间戳（否则确定性 nonce 也救不回来）。
             blob = (output / entry['file']).read_bytes()
             self.assertEqual(hashlib.sha256(blob).hexdigest(), entry['sha256'])
             payload = json.loads(decrypt(blob))
             self.assertEqual(payload['source'], 'hongguo')
+            self.assertNotIn('generatedAt', payload)
             self.assertEqual(len(payload['items']), 1)
             # 索引必须真的落盘（CI 直接提交这个文件）。
             on_disk = json.loads((output / 'index.json').read_text(encoding='utf-8'))
             self.assertEqual(on_disk['sources']['hongguo']['sha256'], entry['sha256'])
+
+    def test_unchanged_content_keeps_generated_at(self):
+        """内容没变时不许换 generatedAt —— 客户端靠它判断要不要重新下载。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            incoming, output = root / 'in', root / 'out'
+            incoming.mkdir()
+            self._dump(incoming, 'hongguo', [{'id': 'hongguo:1', 'title': '甲'}])
+            first = build(incoming, output)
+            # 同一份 dump 再跑一遍：索引必须逐字节一致（CI 的 `git diff --cached`
+            # 靠这个判断"没有变化就跳过提交"）。
+            before = (output / 'index.json').read_bytes()
+            second = build(incoming, output)
+            self.assertEqual(second['generatedAt'], first['generatedAt'])
+            self.assertEqual(second['digest'], first['digest'])
+            self.assertEqual((output / 'index.json').read_bytes(), before)
+
+            # 把上一版的 generatedAt 改成一个明显不是"现在"的值（digest 不动）。
+            # 内容再跑一遍时如果还是这个值，说明确实是"沿用"而不是"重新生成"。
+            on_disk = json.loads((output / 'index.json').read_text(encoding='utf-8'))
+            on_disk['generatedAt'] = '2020-01-01T00:00:00Z'
+            (output / 'index.json').write_text(
+                json.dumps(on_disk, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+                encoding='utf-8',
+            )
+            third = build(incoming, output)
+            self.assertEqual(third['generatedAt'], '2020-01-01T00:00:00Z')
+
+            # 内容真变了就必须换新时间戳。
+            self._dump(
+                incoming,
+                'hongguo',
+                [{'id': 'hongguo:1', 'title': '甲'}, {'id': 'hongguo:2', 'title': '乙'}],
+            )
+            fourth = build(incoming, output)
+            self.assertNotEqual(fourth['digest'], first['digest'])
+            self.assertNotEqual(fourth['generatedAt'], '2020-01-01T00:00:00Z')
 
     def test_build_skips_sources_without_items(self):
         with tempfile.TemporaryDirectory() as temporary:
