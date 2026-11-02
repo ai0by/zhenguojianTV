@@ -829,7 +829,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _snapshotSyncing = true;
     final epoch = widget.store.profileEpoch;
     try {
-      final changed = await widget.repository.syncCatalogSnapshot();
+      final changed = await widget.repository.syncCatalogSnapshot(
+        sources: [for (final site in widget.store.sources) site.id],
+      );
       if (!mounted || !changed) return;
       if (epoch != widget.store.profileEpoch) return;
       // 只在「首屏还没内容」时补一次刷新。用户已经在翻列表了就别打断，

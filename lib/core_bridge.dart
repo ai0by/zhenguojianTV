@@ -162,9 +162,13 @@ abstract class AppRepository {
   /// 每台设备各自按 2 小时去各站源抓目录太浪费，冷启动还得等一轮；
   /// 改成 CI 统一生成一份快照、客户端优先吃它，现场抓取只做兜底。
   ///
+  /// [sources] 是用户当前启用的站源 —— 整份快照十几个站源约 8MB，
+  /// 只开红果的用户只需要其中 1.9MB，不传就会把全部站源都下下来。
+  ///
   /// 返回 `true` 表示这次真的灌进了新数据，调用方可以据此刷新首页。
   /// 失败时**不要**当成错误 —— 快照只是加速，抓取链路照旧。
-  Future<bool> syncCatalogSnapshot() async => false;
+  Future<bool> syncCatalogSnapshot({List<String> sources = const []}) async =>
+      false;
 
   /// 首页视频流专用的目录读取。
   ///
@@ -864,8 +868,11 @@ class NativeRepository extends AppRepository {
       );
 
   @override
-  Future<bool> syncCatalogSnapshot() async {
-    final data = await _call({'action': 'syncCatalogSnapshot'});
+  Future<bool> syncCatalogSnapshot({List<String> sources = const []}) async {
+    final data = await _call({
+      'action': 'syncCatalogSnapshot',
+      if (sources.isNotEmpty) 'catalogSources': sources,
+    });
     return data['changed'] == true;
   }
   @override

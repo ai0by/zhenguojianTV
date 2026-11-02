@@ -123,6 +123,10 @@ type nativeInput struct {
 	// 带上它以后弹幕**不再依赖播放会话还活着** —— 会话被预载/预缓存顶掉、
 	// 或超过 12 小时过期，弹幕照样能取。详见 app_danmaku.go。
 	DanmakuID string `json:"danmakuId"`
+	// 剧集快照（0.8.19）：`CatalogSources` 是用户当前启用的站源。
+	// 整份快照 12 个站源约 8 MB，只开红果的用户只需要 1.9 MB，
+	// 所以按这个列表过滤后再下载。留空表示"全都要"。
+	CatalogSources []string `json:"catalogSources"`
 	// 预缓存（0.8.12）：`Entry` 是已预载好的本机播放地址，`Budget` 是
 	// 本次允许写入磁盘的字节数，`Limit` 是缓存容量上限，见 app_precache.go。
 	// `ReuseSession` 用来复用已预载的播放会话 —— 不能复用 `Session` 字段，
@@ -531,7 +535,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "syncCatalogSnapshot":
 		// 剧集快照（0.8.19）：优先吃仓库 catalog 分支的加密快照，
 		// 冷启动不必等一轮现场抓取。返回 true 表示这次真的灌进了新数据。
-		changed, err := engine.nativeSyncCatalogSnapshot(ctx)
+		// `CatalogSources` 是用户当前启用的站源，只下载这些，省流量。
+		changed, err := engine.nativeSyncCatalogSnapshot(ctx, input.CatalogSources)
 		return map[string]bool{"changed": changed}, err
 	case "cached":
 		if !validNativeCategory(canonicalProviderSource(input.Source), input.Category) {

@@ -117,7 +117,7 @@ func TestNativeSyncCatalogSnapshotSeedsCatalog(t *testing.T) {
 	var hits int32
 	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, &hits))
 
-	changed, err := engine.nativeSyncCatalogSnapshot(context.Background())
+	changed, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("同步失败：%v", err)
 	}
@@ -140,7 +140,7 @@ func TestNativeSyncCatalogSnapshotSeedsCatalog(t *testing.T) {
 
 	// 同一版快照再同步一次：直接命中状态，一个请求都不该发。
 	before := atomic.LoadInt32(&hits)
-	changed, err = engine.nativeSyncCatalogSnapshot(context.Background())
+	changed, err = engine.nativeSyncCatalogSnapshot(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("二次同步失败：%v", err)
 	}
@@ -171,7 +171,7 @@ func TestNativeSyncCatalogSnapshotKeepsLocalDetail(t *testing.T) {
 		Episodes:    80,
 	}}
 
-	if _, err := engine.nativeSyncCatalogSnapshot(context.Background()); err != nil {
+	if _, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil); err != nil {
 		t.Fatalf("同步失败：%v", err)
 	}
 	items := engine.catalogs[sourceHongguo]
@@ -208,7 +208,7 @@ func TestNativeSyncCatalogSnapshotRejectsBadChecksum(t *testing.T) {
 	}
 	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, nil))
 
-	changed, err := engine.nativeSyncCatalogSnapshot(context.Background())
+	changed, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("校验失败不该冒泡成错误：%v", err)
 	}
@@ -222,11 +222,60 @@ func TestNativeSyncCatalogSnapshotRejectsBadChecksum(t *testing.T) {
 
 func TestNativeSyncCatalogSnapshotToleratesMissingIndex(t *testing.T) {
 	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(map[string][]byte{}, nil))
-	changed, err := engine.nativeSyncCatalogSnapshot(context.Background())
+	changed, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil)
 	if err == nil {
 		t.Fatal("索引拉不到应该返回错误，交给调用方静默处理")
 	}
 	if changed {
 		t.Fatal("索引拉不到时不该声称灌库成功")
+	}
+}
+
+func TestNativeSyncCatalogSnapshotHonorsAllowedSources(t *testing.T) {
+	payload := catalogSnapshotPayloadForTest(t, []nativeDrama{
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Title: "快照剧 A"},
+	})
+	files := map[string][]byte{
+		"index.json":                catalogSnapshotIndexForTest(t, payload),
+		sourceHongguo + ".json.enc": payload,
+	}
+	var hits int32
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, &hits))
+
+	// 用户只开了红果以外的站源：这份构建里红果是唯一可用源，
+	// 交不出交集就该一个字节都不下（省流量的意义就在这里）。
+	changed, err := engine.nativeSyncCatalogSnapshot(context.Background(), []string{"yeguo"})
+	if err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	if changed {
+		t.Fatal("启用的站源与快照没有交集时不该灌库")
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Fatalf("只该拉一次索引，实际发了 %d 次请求", n)
+	}
+	if len(engine.catalogs[sourceHongguo]) != 0 {
+		t.Fatal("没被启用的站源不该进剧库")
+	}
+
+	// 用户把红果打开：这次才真灌。
+	changed, err = engine.nativeSyncCatalogSnapshot(context.Background(), []string{"hongguo"})
+	if err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	if !changed || len(engine.catalogs[sourceHongguo]) != 1 {
+		t.Fatalf("启用红果后应该灌进快照：changed=%v items=%+v", changed, engine.catalogs[sourceHongguo])
+	}
+}
+
+func TestCoveredBy(t *testing.T) {
+	if !coveredBy(nil, nil) {
+		t.Fatal("空需求应该视为已覆盖")
+	}
+	if coveredBy([]string{"hongguo"}, []string{"hongguo", "yeguo"}) {
+		t.Fatal("缺一个站源就不算覆盖")
+	}
+	if !coveredBy([]string{"yeguo", "hongguo"}, []string{"hongguo"}) {
+		t.Fatal("多出来的站源不影响覆盖判断")
 	}
 }

@@ -100,7 +100,9 @@ class CatalogAutoUpdater extends ChangeNotifier {
       // 统一生成的最新剧库，本地抓一轮也拿不到更多，这一轮直接跳过。
       var snapshotChanged = false;
       try {
-        snapshotChanged = await repository.syncCatalogSnapshot();
+        snapshotChanged = await repository.syncCatalogSnapshot(
+          sources: [for (final site in store.sources) site.id],
+        );
       } catch (_) {
         // 快照不可用就走原来的现场抓取。
       }

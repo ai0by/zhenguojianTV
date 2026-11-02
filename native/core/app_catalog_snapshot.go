@@ -220,9 +220,13 @@ func decryptCatalogSnapshot(data []byte) ([]byte, error) {
 
 // nativeSyncCatalogSnapshot 同步一次剧集快照（0.8.19）。
 //
-// 返回是否真的灌进了新数据。整个过程**不阻塞任何 UI**：调用方（Dart 首页）
-// 在后台发起，失败就当作没这回事，现场抓取照旧。
-func (engine *nativeEngine) nativeSyncCatalogSnapshot(ctx context.Context) (bool, error) {
+// [allowed] 是调用方（Dart 首页）当前启用的站源：只下载用户真的会看到的那些。
+// 整份快照 12 个站源约 8 MB，而只开红果的用户只需要其中 1.9 MB —— 不按
+// 启用列表过滤的话，最省流量的用法反而要付最贵的账单。传空表示"全都要"。
+//
+// 返回是否真的灌进了新数据。整个过程**不阻塞任何 UI**：调用方在后台发起，
+// 失败就当作没这回事，现场抓取照旧。
+func (engine *nativeEngine) nativeSyncCatalogSnapshot(ctx context.Context, allowed []string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, catalogSnapshotTotalTimeout)
 	defer cancel()
 	body, err := engine.fetchCatalogSnapshot(ctx, "index.json", catalogSnapshotMaxIndex)
@@ -236,24 +240,71 @@ func (engine *nativeEngine) nativeSyncCatalogSnapshot(ctx context.Context) (bool
 	if index.Version < 1 || index.GeneratedAt == "" || len(index.Sources) == 0 {
 		return false, errors.New("剧集快照索引不完整")
 	}
-	applied := engine.loadCatalogSnapshotState()
-	if applied.GeneratedAt == index.GeneratedAt {
+
+	// 把"用户启用的"与"这份构建里可用的"求交集，得到这一轮真正要灌的站源。
+	available := make(map[string]bool, len(index.Sources))
+	for source := range index.Sources {
+		if source = canonicalProviderSource(source); source != "" && nativeSourceAvailable(source) {
+			available[source] = true
+		}
+	}
+	wanted := make([]string, 0, len(available))
+	if len(allowed) == 0 {
+		for source := range available {
+			wanted = append(wanted, source)
+		}
+	} else {
+		seen := make(map[string]bool, len(allowed))
+		for _, source := range allowed {
+			source = canonicalProviderSource(source)
+			if source == "" || !available[source] || seen[source] {
+				continue
+			}
+			seen[source] = true
+			wanted = append(wanted, source)
+		}
+	}
+	if len(wanted) == 0 {
 		return false, nil
 	}
-	seeded := make([]string, 0, len(index.Sources))
-	for source, asset := range index.Sources {
+
+	applied := engine.loadCatalogSnapshotState()
+	sameVersion := applied.GeneratedAt == index.GeneratedAt
+	if sameVersion && coveredBy(applied.Sources, wanted) {
+		return false, nil
+	}
+	seeded := make([]string, 0, len(wanted)+len(applied.Sources))
+	if sameVersion {
+		// 同一版快照，只是用户又开了几个站源：保留已灌过的，补新的。
+		seeded = append(seeded, applied.Sources...)
+	}
+	for _, source := range wanted {
 		if ctx.Err() != nil {
 			break
 		}
-		source = canonicalProviderSource(source)
-		if source == "" || !nativeSourceAvailable(source) || asset.File == "" {
+		if sameVersion && containsSource(applied.Sources, source) {
+			continue
+		}
+		asset, ok := index.Sources[source]
+		if !ok {
+			// 索引里可能是别名（例如 huangguo 的其它入口）。
+			for key, candidate := range index.Sources {
+				if canonicalProviderSource(key) == source {
+					asset, ok = candidate, true
+					break
+				}
+			}
+		}
+		if !ok || asset.File == "" {
 			continue
 		}
 		if err := engine.seedCatalogSnapshot(ctx, source, asset); err != nil {
 			// 单个站源失败不影响其他站源，也不影响现场抓取。
 			continue
 		}
-		seeded = append(seeded, source)
+		if !containsSource(seeded, source) {
+			seeded = append(seeded, source)
+		}
 	}
 	if len(seeded) == 0 {
 		return false, nil
@@ -264,6 +315,24 @@ func (engine *nativeEngine) nativeSyncCatalogSnapshot(ctx context.Context) (bool
 		Sources:     seeded,
 	})
 	return true, nil
+}
+
+func containsSource(sources []string, target string) bool {
+	for _, source := range sources {
+		if source == target {
+			return true
+		}
+	}
+	return false
+}
+
+func coveredBy(have, wanted []string) bool {
+	for _, source := range wanted {
+		if !containsSource(have, source) {
+			return false
+		}
+	}
+	return true
 }
 
 func (engine *nativeEngine) seedCatalogSnapshot(ctx context.Context, source string, asset catalogSnapshotAsset) error {
