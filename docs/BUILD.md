@@ -55,12 +55,14 @@ CI 会用官方工具逐个验，任何一项不过直接失败：
 `Build Catalog Snapshot` 工作流每 2 小时（`15 */2 * * *`）跑一轮，把各站源的剧集目录导出、加密、提交到 `catalog` 分支：
 
 ```
-index.json                    明文索引：version / generatedAt / sources{file, sha256, count}
+index.json                    明文索引：version / generatedAt / digest / sources{file, sha256, count}
 sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
 ```
 
 - 密钥 = `sha256("zhenguojianTV/catalog-snapshot/v1")`，与 `native/core/app_catalog_snapshot.go` 的 `catalogSnapshotSecret`、`scripts/build_catalog_snapshot.py` 的 `SECRET` 三处必须一致。**密钥随 APK 分发，这是混淆不是安全边界。**
 - 客户端走 jsDelivr 分支引用（边缘缓存 12 小时），兜底 `gh-proxy.org` 代理 raw。`GeneratedAt` 没变就一个文件都不下载。
+- **内容不变就不发新版**：nonce 由明文派生（`sha256(明文)[:12]`），密文里不写时间戳，`index.json` 用 `digest` 判断内容是否真的变了 —— 否则每 2 小时都会产出一版「新快照」，客户端跟着重下几 MB。
+- 客户端只下载**用户启用的站源**（整份快照 12 源约 8MB，只开红果只需 1.9MB）；后来又开了别的源，下一轮会补下缺的那些。
 - 加密/索引由 `scripts/build_catalog_snapshot.py` 完成，导出由 `native/cmd/catalogdump` 完成；单测在 `scripts/test_build_catalog_snapshot.py` 与 `native/core/app_catalog_snapshot_test.go`。
 - 分支用 `git push --force` 只保留一个提交 —— 每 2 小时一版，留历史会让仓库无限膨胀；jsDelivr 按分支名取最新，不受影响。
 - 抓不到的站源会沿用上一轮的文件（`previous_entries`），不会因为 runner 一时连不上就把某个站源从快照里抹掉。
