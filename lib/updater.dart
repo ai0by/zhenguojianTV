@@ -59,12 +59,14 @@ class Updater {
     if (release == null) {
       throw const UpdateException('检查更新失败，请稍后再试');
     }
-    final environment = await environment();
+    // 注意变量名别叫 environment：会和同名静态方法 `environment()` 撞车，
+    // Dart 会报 "Local variable can't be referenced before it is declared"。
+    final device = await environment();
     if (!isNewer(
       release.version,
       currentVersion,
       candidateBuild: release.build,
-      currentBuild: buildFromVersionCode(environment.versionCode),
+      currentBuild: buildFromVersionCode(device.versionCode),
     )) {
       return null;
     }
