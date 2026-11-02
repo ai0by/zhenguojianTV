@@ -101,17 +101,27 @@ func main() {
 	// 失败的站源单独记名字：CI 日志里只写"3 个站源失败"没法判断是偶发
 	// 还是这几站长期拦境外 IP（花果 / 网果 / 发果就是长期 403）。
 	var failedSources []string
+	// 撞到翻页上限的站源也单独记（0.8.20）。以前这种事完全静默 ——
+	// `-pages 60` 翻到第 60 页就直接收工，看起来"成功"，实际只是前 60 页，
+	// 红果 3595 部被截成 2868 部，用户那边本机反而比远端多。
+	var truncatedSources []string
 	for _, source := range sources {
 		if len(wanted) > 0 && !wanted[source] {
 			continue
 		}
-		items, err := dumpSource(source, *pages)
+		items, truncated, err := dumpSource(source, *pages)
 		if err != nil {
 			// 单个站源失败不终止整体：快照少一个站源，App 侧会继续现场抓取。
 			fmt.Fprintf(os.Stderr, "[warn] %s: %v\n", source, err)
 			failed++
 			failedSources = append(failedSources, source)
 			continue
+		}
+		if truncated {
+			fmt.Fprintf(os.Stderr,
+				"[warn] %s: 翻到第 %d 页上限还没到底（已抓 %d 条），快照不完整 —— 把 -pages 调大\n",
+				source, *pages, len(items))
+			truncatedSources = append(truncatedSources, source)
 		}
 		payload := sourceDump{Source: source, GeneratedAt: time.Now().UTC().Format(time.RFC3339), Items: items}
 		body, err := json.Marshal(payload)
@@ -133,11 +143,19 @@ func main() {
 	if failed > 0 {
 		fmt.Printf("完成，%d 个站源失败：%s\n", failed, strings.Join(failedSources, ", "))
 	}
+	if len(truncatedSources) > 0 {
+		fmt.Printf("完成，%d 个站源被翻页上限截断：%s\n", len(truncatedSources), strings.Join(truncatedSources, ", "))
+	}
 }
 
-func dumpSource(source string, pages int) ([]json.RawMessage, error) {
+// dumpSource 翻完一个站源的目录。
+//
+// 第二个返回值表示"撞到翻页上限还没到底"——数据仍然写出去（总比沿用更旧的
+// 强），但调用方必须打日志，否则残缺快照会被当成完整快照发布。
+func dumpSource(source string, pages int) ([]json.RawMessage, bool, error) {
 	seen := map[string]bool{}
 	items := make([]json.RawMessage, 0, 256)
+	exhausted := false
 	for page := 1; page <= pages; page++ {
 		raw, err := call(map[string]any{
 			"action": "catalog",
@@ -154,14 +172,14 @@ func dumpSource(source string, pages int) ([]json.RawMessage, error) {
 			// 的完整快照。快照残缺比稍微陈旧更糟：用户会以为这个站只剩几十部。
 			// 报错后 `previous_entries` 会沿用上一轮的完整文件。
 			if len(items) > 0 {
-				return nil, fmt.Errorf(
+				return nil, false, fmt.Errorf(
 					"第 %d 页失败（已抓到 %d 条，视为不完整）：%w", page, len(items), err)
 			}
-			return nil, err
+			return nil, false, err
 		}
 		var result catalogPage
 		if err := json.Unmarshal(raw, &result); err != nil {
-			return nil, fmt.Errorf("第 %d 页返回无法解析：%w", page, err)
+			return nil, false, fmt.Errorf("第 %d 页返回无法解析：%w", page, err)
 		}
 		added := 0
 		for _, item := range result.Items {
@@ -176,10 +194,11 @@ func dumpSource(source string, pages int) ([]json.RawMessage, error) {
 		// 没有新增或没有下一页就收工，避免在只返回同一批数据的站源上空转。
 		// 这是**正常收尾**，不是失败。
 		if !result.HasMore || added == 0 {
+			exhausted = true
 			break
 		}
 	}
-	return items, nil
+	return items, !exhausted, nil
 }
 
 func dramaID(item json.RawMessage) string {

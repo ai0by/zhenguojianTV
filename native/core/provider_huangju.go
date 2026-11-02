@@ -170,7 +170,16 @@ func (d *Downloader) fetchHuangjuCatalogPage(ctx context.Context, page int, cate
 	}
 	if row["page"] != nil {
 		actualPage, valid := huangjuInteger(row["page"], 1000000)
-		if !valid || actualPage != page {
+		if !valid {
+			return nil, false, errors.New("黄剧返回的页码无效")
+		}
+		// 站点把页码夹住了（要第 101 页，它回第 100 页）—— 说明它只服务到
+		// 这里，再往后没有数据了。这是**正常收尾**，不是错误：
+		// 当成错误会让整站目录被判"不完整"而丢弃，2000 部退回旧的 1200 部。
+		if actualPage < page {
+			return nil, false, nil
+		}
+		if actualPage != page {
 			return nil, false, errors.New("黄剧返回的页码与请求不符")
 		}
 	}

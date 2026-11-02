@@ -11,8 +11,18 @@ name: Build Catalog Snapshot
 #
 #   增量  每 6 小时（:20）  `-pages 3` + `--merge`，只翻前几页拿新剧，
 #                          剩下的由上一轮快照按 id 补齐。
-#   全量  每天 03:40 UTC    `-pages 60`，整站重抓。既清理增量模式下会残留的
-#                          下架剧，也是站点改版后重新对齐的兜底。
+#   全量  每天 03:40 UTC    `-pages 600` + 3 轮取并集，整站重抓。既清理增量
+#                          模式下会残留的下架剧，也是站点改版后重新对齐的兜底。
+#
+# **全量的页数必须给足**：`-pages 60` 会把红果截成 2868 部（真实 3595 部），
+# 而截断以前是完全静默的 —— 用户那边本机反而比远端多。现在 catalogdump 撞到
+# 上限会打 `[warn] ... 快照不完整`，看到这行就该调大 `pages`。
+#
+# **单轮还不够，必须多轮取并集**（2026-11-02 实测）：红果的 App 分类接口每次
+# 返回的切片都不一样 —— 同一天四轮分别拿到 1331 / 2803 / 3217 / 3595 条，
+# 两两交集只有 1200~2100，每轮都"看起来翻到底了"。并集是收敛的（2803 →
+# 3903 → 不再新增），所以全量模式跑 3 轮，没有新增就提前收工。
+# 合并逻辑见 `scripts/merge_catalog_dumps.py`。
 #
 # 两种模式都保证「内容不变则产物逐字节不变」，没变化时下面的 `git diff` 直接跳过提交。
 #
@@ -38,7 +48,11 @@ on:
           - full
         default: incremental
       pages:
-        description: '每个站源最多翻多少页（留空按模式取默认：增量 3 / 全量 60）'
+        description: '每个站源最多翻多少页（留空按模式取默认：增量 3 / 全量 600）'
+        type: string
+        default: ''
+      passes:
+        description: '每个站源跑几轮取并集（留空按模式取默认：增量 1 / 全量 3）'
         type: string
         default: ''
       sources:
@@ -60,7 +74,9 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 全量要整站翻到底：红果 3595 部约 4 分钟，青空 4700 部更久，15 个站源
+    # 串行跑下来 20 分钟起步，45 分钟不够用。
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,11 +115,16 @@ jobs:
           fi
           pages='${{ inputs.pages }}'
           if [ -z "$pages" ]; then
-            if [ "$mode" = full ]; then pages=60; else pages=3; fi
+            if [ "$mode" = full ]; then pages=600; else pages=3; fi
+          fi
+          passes='${{ inputs.passes }}'
+          if [ -z "$passes" ]; then
+            if [ "$mode" = full ]; then passes=3; else passes=1; fi
           fi
           echo "MODE=$mode" >> "$GITHUB_ENV"
           echo "PAGES=$pages" >> "$GITHUB_ENV"
-          echo "本轮模式：$mode，每个站源最多 $pages 页"
+          echo "PASSES=$passes" >> "$GITHUB_ENV"
+          echo "本轮模式：$mode，每个站源最多 $pages 页，跑 $passes 轮取并集"
 
       - name: Dump catalogs
         working-directory: native
@@ -112,12 +133,41 @@ jobs:
           # 单个站源抓不到不该让整轮失败：境外 runner 访问国内站源偶发不通。
           set -uo pipefail
           go build -ldflags "-X duanjuapp/native/core.buildAllSources=true" -o /tmp/catalogdump ./cmd/catalogdump
-          /tmp/catalogdump \
-            -dir /tmp/catalog-work \
-            -out /tmp/catalog-dump \
-            -pages "$PAGES" \
-            -sources '${{ inputs.sources || '' }}'
-          echo "dump 退出码 $?（有站源失败是允许的）"
+          mkdir -p /tmp/catalog-passes
+          previous_total=-1
+          for pass in $(seq 1 "$PASSES"); do
+            echo "::group::第 $pass / $PASSES 轮"
+            out="/tmp/catalog-passes/pass-$pass"
+            log="/tmp/catalogdump-$pass.log"
+            mkdir -p "$out"
+            # 每轮换一个工作目录：原生侧 `initialize` 只在 engine 为空时生效，
+            # 同一进程里换目录不会重置红果的分页游标。用新目录 = 新会话，
+            # 才能拿到一个不同的切片。
+            /tmp/catalogdump \
+              -dir "/tmp/catalog-work-$pass" \
+              -out "$out" \
+              -pages "$PAGES" \
+              -sources '${{ inputs.sources || '' }}' 2>&1 | tee "$log"
+            status=${PIPESTATUS[0]}
+            # 撞到翻页上限的站源在日志里是 [warn] 行，转成 Actions 注解，
+            # 否则"快照被静默截断"又要靠人翻日志才发现（0.8.20 的教训）。
+            while IFS= read -r line; do
+              echo "::warning::${line#\[warn\] }"
+            done < <(grep '^\[warn\]' "$log" || true)
+            echo "dump 退出码 $status（有站源失败是允许的）"
+            # 多轮取并集：红果的 App 分类接口每轮返回的切片都不一样
+            # （实测 1331 / 2803 / 3217 / 3595，两两交集才一千多），
+            # 任何单轮都不能当全站目录。
+            python3 ../scripts/merge_catalog_dumps.py --input /tmp/catalog-passes --output /tmp/catalog-dump
+            total=$(python3 -c "import json,pathlib;print(sum(len(json.loads(p.read_text(encoding='utf-8')).get('items') or []) for p in pathlib.Path('/tmp/catalog-dump').glob('*.json')))")
+            echo "第 $pass 轮并集后合计 $total 条"
+            echo "::endgroup::"
+            if [ "$pass" -gt 1 ] && [ "$total" = "$previous_total" ]; then
+              echo "第 $pass 轮没有任何新增，并集已收敛，提前收工"
+              break
+            fi
+            previous_total=$total
+          done
 
       - name: Encrypt and index
         shell: bash

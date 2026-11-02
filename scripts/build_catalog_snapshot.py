@@ -211,6 +211,26 @@ def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
             older = load_previous_items(output_dir, source, key)
             if older:
                 candidates.insert(0, merge_items(cleaned, older))
+        elif previous_count := int(entries.get(source, {}).get("count") or 0):
+            # 全量模式的兜底（0.8.20）：本轮抓到的东西**上一轮全都有**，
+            # 一条新剧都没有 —— 这几乎不可能是"站点真的缩水了"，更像是接口
+            # 又只吐了一个子集（红果的 App 分类接口就会这样，同一天四轮分别
+            # 是 1331 / 2803 / 3217 / 3595 条，两两交集才一千多）。
+            #
+            # 所以这种情况保留上一轮：宁可多留几部下架剧，也不能把 2000 部
+            # 的站源缩成几十部 —— 用户会以为这个站只剩这些，而他本机反而更多。
+            # 真·缩水（新剧有增、老剧减少）照旧按本轮写。
+            older = load_previous_items(output_dir, source, key)
+            known = {str(item.get("id") or "") for item in older}
+            if older and all(str(item.get("id") or "") in known for item in cleaned):
+                merged = merge_items(cleaned, older)
+                if len(merged) > fresh_count:
+                    print(
+                        f"[keep] {source}: 本轮 {fresh_count} 条全是旧数据（上一轮 {previous_count} 条），"
+                        f"判定为接口截断，保留上一轮 {len(merged)} 条",
+                        file=sys.stderr,
+                    )
+                    candidates.insert(0, merged)
         # **不写时间戳**：写进去就等于每轮内容都不同，确定性 nonce 也救不回来。
         body = None
         for candidate in candidates:

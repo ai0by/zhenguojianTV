@@ -266,6 +266,59 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
             self.assertEqual([item['id'] for item in payload['items']], ['hongguo:9'])
 
+    def test_full_mode_keeps_previous_when_fresh_only_repeats_old_items(self):
+        """全量轮一条新剧都没抓到 → 判定为接口截断，保留上一轮。
+
+        红果的 App 分类接口同一天四轮分别给 1331 / 2803 / 3217 / 3595 条，
+        两两交集才一千多 —— 每次都说"翻到底了"，其实是不同子集。如果哪一轮
+        碰巧只吐了一个小子集，全量模式就会把 2000 部的站源缩成几十部，
+        用户那边本机反而比远端多。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(
+                first,
+                'hongguo',
+                [{'id': 'hongguo:1', 'title': '甲'}, {'id': 'hongguo:2', 'title': '乙'}],
+            )
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            # 只抓到上一轮就有的那部，没有任何新剧。
+            self._dump(second, 'hongguo', [{'id': 'hongguo:2', 'title': '乙'}])
+            index = build(second, output, merge=False)
+            self.assertEqual(index['sources']['hongguo']['count'], 2)
+            payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
+            self.assertEqual([item['id'] for item in payload['items']], ['hongguo:2', 'hongguo:1'])
+
+    def test_full_mode_allows_genuine_shrink(self):
+        """真·缩水（有新剧、老剧下架）照旧按本轮写，别被截断保护挡住。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(
+                first,
+                'hongguo',
+                [
+                    {'id': 'hongguo:1', 'title': '甲'},
+                    {'id': 'hongguo:2', 'title': '乙'},
+                    {'id': 'hongguo:3', 'title': '丙'},
+                ],
+            )
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'hongguo', [{'id': 'hongguo:3', 'title': '丙'}, {'id': 'hongguo:4', 'title': '新'}])
+            index = build(second, output, merge=False)
+            self.assertEqual(index['sources']['hongguo']['count'], 2)
+            payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
+            self.assertEqual([item['id'] for item in payload['items']], ['hongguo:3', 'hongguo:4'])
+
     def test_merge_falls_back_when_previous_file_is_corrupt(self):
         """上一轮快照解不开时只降级成"本轮抓到的"，不能让整轮崩掉。"""
         with tempfile.TemporaryDirectory() as temporary:
