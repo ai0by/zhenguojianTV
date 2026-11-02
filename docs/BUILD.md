@@ -75,7 +75,7 @@ sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
 - 密钥 = `sha256("zhenguojianTV/catalog-snapshot/v1")`，与 `native/core/app_catalog_snapshot.go` 的 `catalogSnapshotSecret`、`scripts/build_catalog_snapshot.py` 的 `SECRET` 三处必须一致。**密钥随 APK 分发，这是混淆不是安全边界。**
 - 客户端走 jsDelivr 分支引用（边缘缓存 12 小时），兜底 `gh-proxy.org` 代理 raw。`GeneratedAt` 没变就一个文件都不下载。
 - **内容不变就不发新版**：nonce 由明文派生（`sha256(明文)[:12]`），密文里不写时间戳，`index.json` 用 `digest` 判断内容是否真的变了 —— 否则每轮都会产出一版「新快照」，客户端跟着重下几 MB。**增量模式同样要满足这条**，所以 `--merge` 的顺序是确定的：本轮抓到的在前（站点翻页顺序稳定），上一轮独有的按原顺序跟在后面，绝不按时间重排。
-- 客户端只下载**用户启用的站源**（整份快照 14 源约 8MB，只开红果只需 1.9MB）；后来又开了别的源，下一轮会补下缺的那些。
+- 客户端只下载**用户启用的站源**（整份快照 14 源约 42MB，只开红果只需 4.4MB）；后来又开了别的源，下一轮会补下缺的那些。单个文件最大 11MB（网果 / 无果各 3.8 万部），所以原生侧单文件超时 90 秒、整轮 400 秒 —— 20 秒对应 550KB/s，弱网下必失败。
 - **客户端只在手动触发时同步**（0.8.20）：入口是「设置 → 站源管理 → 同步远程数据源」，首页 `initState` 与 `CatalogAutoUpdater.runNow()` 都不再自动拉快照。页面上那行「远端站源数据：…」来自 `catalogSnapshotInfo` 这个只读 action（只拉 `index.json`，不下载任何站源文件）。
 - **按站源同步**（0.8.20）：每张站源卡片上还有一个「同步远端」按钮（仅当远端快照里确实有这个站源时才出现），点它只传这一个站源 id 下去，原生只下载那一份文件。全量按钮和单站源按钮共用一个互斥门 —— 原生那侧要读改写状态文件，并发会把「已同步的站源」记错。
 - 加密/索引由 `scripts/build_catalog_snapshot.py` 完成，导出由 `native/cmd/catalogdump` 完成；单测在 `scripts/test_build_catalog_snapshot.py` 与 `native/core/app_catalog_snapshot_test.go`。

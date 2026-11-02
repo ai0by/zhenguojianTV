@@ -38,10 +38,14 @@ const (
 	catalogSnapshotMirrorBase = "https://gh-proxy.org/https://raw.githubusercontent.com/ai0by/zhenguojianTV/catalog/"
 
 	// 单次下载超时（单个文件）。
-	catalogSnapshotTimeout = 20 * time.Second
-	// 整轮同步超时。15 个站源各几 MB，逐个下载，20 秒根本不够；
-	// 但这个动作是后台静默跑的，宁可慢一点也别把用户的流量一次吃光。
-	catalogSnapshotTotalTimeout = 150 * time.Second
+	//
+	// 0.8.20 补齐全站目录后单文件最大能到 11MB（网果 / 无果各 3.8 万部），
+	// 20 秒意味着要 550KB/s，手机流量下必然失败 —— 那时候的表现是「同步了
+	// 但网果还是空的」。90 秒对应 128KB/s，弱网也能过。
+	catalogSnapshotTimeout = 90 * time.Second
+	// 整轮同步超时。十几个站源、大的单个十几 MB，逐个下载；这个动作是用户
+	// 手动点的，慢一点可以接受，但要给足预算，别让最后一个站源永远轮不到。
+	catalogSnapshotTotalTimeout = 400 * time.Second
 
 	catalogSnapshotMaxIndex  = 256 << 10
 	catalogSnapshotMaxFile   = 24 << 20
@@ -214,7 +218,7 @@ func (engine *nativeEngine) fetchCatalogSnapshot(ctx context.Context, file strin
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// 每个请求单独限时：整轮预算 150 秒，但单个文件不该拖满整轮。
+		// 每个请求单独限时：整轮预算 400 秒，但单个文件不该拖满整轮。
 		reqCtx, cancel := context.WithTimeout(ctx, catalogSnapshotTimeout)
 		body, err := engine.fetchCatalogSnapshotOnce(reqCtx, catalogSnapshotURL(file, mirror), limit)
 		cancel()
