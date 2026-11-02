@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -39,6 +40,14 @@ class NetworkState {
   /// 网络真的变了最多迟 15 秒生效，对"要不要自动播放"这种判断完全够用。
   static const Duration _ttl = Duration(seconds: 15);
 
+  /// 单元测试短路：理由同 `SystemVolume`。
+  ///
+  /// 未 mock 的 `MethodChannel` 在测试里不会抛异常，而是**永远不返回**，
+  /// `warmUp()` 在 `initState` 里一调用就留下一个 800ms 的 `.timeout` 定时器，
+  /// 用例结束时报「A Timer is still pending even after the widget tree was
+  /// disposed」（实测：`vertical_feed_test` 直接被它带挂）。
+  static bool get _testing => Platform.environment['FLUTTER_TEST'] == 'true';
+
   static NetworkKind? _cached;
   static DateTime? _cachedAt;
 
@@ -78,6 +87,12 @@ class NetworkState {
   }
 
   static Future<NetworkKind> _read() async {
+    if (_testing) {
+      // 测试环境按"判断失败"处理，与通道不可用的语义一致（放行自动播放）。
+      _cached = NetworkKind.unknown;
+      _cachedAt = DateTime.now();
+      return NetworkKind.unknown;
+    }
     if (defaultTargetPlatform != TargetPlatform.android) {
       _cached = NetworkKind.unknown;
       _cachedAt = DateTime.now();
