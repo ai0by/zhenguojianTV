@@ -280,6 +280,69 @@ func TestCoveredBy(t *testing.T) {
 	}
 }
 
+// 0.8.20：远端同步灌库走的是「并集」，并集就必须按 id 去重。
+//
+// 两个来源都可能带重复 id：① 快照是多轮并集 + 增量 `--merge` 叠出来的，
+// 脚本一旦出错就会写进两份；② 本地剧库本身是分页抓的，翻页重叠也会重复。
+// 合并时按 id 收一遍，重复的字段取并（空字段回落到先出现的那份）。
+func TestMergeNativeCatalogDedupesRepeatedIDs(t *testing.T) {
+	merged := mergeNativeCatalog([]nativeDrama{
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Title: "剧 A"},
+		{ID: sourceHongguo + ":b", Source: sourceHongguo, Title: "剧 B"},
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Cover: "https://example.invalid/a.jpg"},
+	}, nil)
+	if len(merged) != 2 {
+		t.Fatalf("first 内部的重复 id 没有去掉：%+v", merged)
+	}
+	if merged[0].ID != sourceHongguo+":a" || merged[0].Title != "剧 A" || merged[0].Cover == "" {
+		t.Fatalf("重复条目应该合并字段而不是丢弃：%+v", merged[0])
+	}
+	if merged[1].ID != sourceHongguo+":b" {
+		t.Fatalf("顺序被打乱了：%+v", merged)
+	}
+
+	// 两边都有同一个 id：只留一份，且新值优先。
+	merged = mergeNativeCatalog(
+		[]nativeDrama{{ID: sourceHongguo + ":a", Title: "旧标题"}},
+		[]nativeDrama{{ID: sourceHongguo + ":a", Title: "新标题"}, {ID: sourceHongguo + ":a", Description: "补的简介"}},
+	)
+	if len(merged) != 1 {
+		t.Fatalf("跨两个切片的重复 id 没有去掉：%+v", merged)
+	}
+	if merged[0].Title != "新标题" || merged[0].Description != "补的简介" {
+		t.Fatalf("重复条目字段没有合并：%+v", merged[0])
+	}
+
+	// 没有 id 的条目无法判重，原样保留 —— 宁可多一条也不要吞数据。
+	merged = mergeNativeCatalog([]nativeDrama{{Title: "无 id 一"}, {Title: "无 id 二"}}, nil)
+	if len(merged) != 2 {
+		t.Fatalf("空 id 不该被当成同一个：%+v", merged)
+	}
+}
+
+// 快照文件里如果写了同一个 id 两次，灌进剧库后只能剩一条。
+func TestNativeSyncCatalogSnapshotDedupesRepeatedItems(t *testing.T) {
+	payload := catalogSnapshotPayloadForTest(t, []nativeDrama{
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Title: "快照剧 A"},
+		{ID: sourceHongguo + ":a", Source: sourceHongguo, Cover: "https://example.invalid/a.jpg"},
+	})
+	files := map[string][]byte{
+		"index.json":                catalogSnapshotIndexForTest(t, payload),
+		sourceHongguo + ".json.enc": payload,
+	}
+	engine := reopenCatalogEngine(t, t.TempDir(), catalogSnapshotTransport(files, nil))
+	if _, err := engine.nativeSyncCatalogSnapshot(context.Background(), nil); err != nil {
+		t.Fatalf("同步失败：%v", err)
+	}
+	items := engine.catalogs[sourceHongguo]
+	if len(items) != 1 {
+		t.Fatalf("快照里的重复条目应该被合并成一条：%+v", items)
+	}
+	if items[0].Title != "快照剧 A" || items[0].Cover == "" {
+		t.Fatalf("合并后字段不全：%+v", items[0])
+	}
+}
+
 // 0.8.20：站源管理页的「同步远程数据源」按钮要先知道远端有多新。
 //
 // 这条链路必须**只读索引**：页面每次打开都会调它，顺手下载站源文件的话，

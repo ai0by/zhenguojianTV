@@ -10,9 +10,13 @@ name: Build Catalog Snapshot
 # 来说就是一台永不休息的爬虫，容易被风控盯上。现在拆成两条：
 #
 #   增量  每 6 小时（:20）  `-pages 3` + `--merge`，只翻前几页拿新剧，
-#                          剩下的由上一轮快照按 id 补齐。
-#   全量  每天 03:40 UTC    `-pages 2000` + 3 轮取并集，整站重抓。既清理增量
+#                          剩下的由上一轮快照按 id 补齐。**这是唯一的定时任务。**
+#   全量  只能手动触发      `-pages 2000` + 3 轮取并集，整站重抓。既清理增量
 #                          模式下会残留的下架剧，也是站点改版后重新对齐的兜底。
+#
+# **全量不再进 cron**（2026-11-02 用户要求）：14 个站源整站翻到底一天一轮，
+# 请求量和规律性都太显眼，容易触发对端风控。需要时在 Actions 页面手动跑
+# `workflow_dispatch` 并选 `mode=full`，跑完那一次就够。
 #
 # **全量的页数必须给足**：`-pages 60` 会把红果截成 2868 部（真实 3900 部以上），
 # 更夸张的是网果 / 无果 —— 它们各有 3.8 万部，`-pages 60` 只拿到 1440 部。
@@ -35,14 +39,14 @@ name: Build Catalog Snapshot
 
 on:
   schedule:
-    # 增量：每 6 小时的第 20 分钟（UTC）。
+    # 只保留增量：每 6 小时的第 20 分钟（UTC）。
+    # 全量**故意不放进 cron** —— 整站翻到底太像爬虫，会触发对端风控，
+    # 需要时手动 workflow_dispatch 选 mode=full。
     - cron: '20 */6 * * *'
-    # 全量：每天 03:40 UTC = 北京时间 11:40，站点低峰、也避开增量那几条。
-    - cron: '40 3 * * *'
   workflow_dispatch:
     inputs:
       mode:
-        description: 'incremental=只翻前几页并与上一轮合并；full=整站重抓'
+        description: 'incremental=只翻前几页并与上一轮合并；full=整站重抓（慢，慎用）'
         type: choice
         options:
           - incremental
@@ -105,14 +109,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 定时触发只有增量一条 cron，inputs 为空时一律按增量走；
+          # 全量只能从 workflow_dispatch 的 mode=full 进来。
           mode='${{ inputs.mode }}'
           if [ -z "$mode" ]; then
-            # 定时触发时 inputs 为空，按命中的那条 cron 判断。
-            if [ '${{ github.event.schedule }}' = '40 3 * * *' ]; then
-              mode=full
-            else
-              mode=incremental
-            fi
+            mode=incremental
           fi
           pages='${{ inputs.pages }}'
           if [ -z "$pages" ]; then

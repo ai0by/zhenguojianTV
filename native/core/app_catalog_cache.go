@@ -109,12 +109,28 @@ func (engine *nativeEngine) nativeCached(source string) nativeCatalogResult {
 }
 
 func mergeNativeCatalog(first, second []nativeDrama) []nativeDrama {
-	items := append([]nativeDrama{}, first...)
-	indices := make(map[string]int, len(items))
-	for index, item := range items {
-		indices[item.ID] = index
+	items := make([]nativeDrama, 0, len(first)+len(second))
+	indices := make(map[string]int, len(first)+len(second))
+	// first 自己也可能带重复 id：远端快照是多轮并集 + 增量合并出来的，
+	// 万一哪天合并脚本出错、或者手工提交了重叠文件，这里兜住 ——
+	// 否则同一部剧会在列表里出现两次，用户看到的就是"重复卡片"。
+	for _, item := range first {
+		if item.ID == "" {
+			items = append(items, item)
+			continue
+		}
+		if index, found := indices[item.ID]; found {
+			items[index] = mergeNativeDrama(items[index], item)
+			continue
+		}
+		indices[item.ID] = len(items)
+		items = append(items, item)
 	}
 	for _, item := range second {
+		if item.ID == "" {
+			items = append(items, item)
+			continue
+		}
 		if index, found := indices[item.ID]; found {
 			items[index] = mergeNativeDrama(items[index], item)
 		} else {
