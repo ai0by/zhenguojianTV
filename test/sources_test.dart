@@ -386,11 +386,17 @@ void main() {
       expect(find.textContaining('检测未通过'), findsOneWidget);
       expect(find.textContaining('HTTP 403'), findsNothing);
       final toggle = find.byKey(const ValueKey('health-toggle-hongguo'));
+      // ensureVisible 只是发起滚动，**必须再 pump 一帧**滚动才落地；否则
+      // 窄屏 + 1.5 倍字号下 toggle 还在视口外，tap 会打到空处（0.8.20 卡过）。
       await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
       await tester.tap(toggle);
       await tester.pumpAndSettle();
       expect(find.textContaining('HTTP 403'), findsOneWidget);
       expect(find.textContaining('连接检测通过'), findsNothing);
+      // 展开后内容变高，toggle 位置会挪，收起前重新滚一次。
+      await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
       await tester.tap(toggle);
       await tester.pumpAndSettle();
       expect(find.textContaining('HTTP 403'), findsNothing);
@@ -423,11 +429,16 @@ void main() {
 
     final sync = find.byKey(const ValueKey('sync-catalog-snapshot'));
     await tester.ensureVisible(sync);
+    await tester.pumpAndSettle();
     await tester.tap(sync);
     await tester.pumpAndSettle();
     expect(repository.syncCalls, 1);
     // 只同步当前用户启用的站源，别把十几个站源全下下来。
-    expect(repository.lastSources, ['hongguo']);
+    // 注意别写死 `['hongguo']`：CI 用 `--dart-define=ALL_SOURCES=true` 跑，
+    // 那时启用的站源是全部，写死必然红。这里断言"等于 store 里启用的那一批"。
+    expect(repository.lastSources, [
+      for (final site in store.sources) site.id,
+    ]);
     expect(repository.catalogUpdates.snapshotRevision, 1);
     expect(find.textContaining('已同步远端剧集'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
