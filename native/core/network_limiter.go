@@ -107,6 +107,18 @@ type requestLimiter struct {
 
 type backgroundCatalogKey struct{}
 
+// skipCatalogObserveKey 标记"不要把响应记成 host 级封禁"的请求。
+//
+// 红果 App 接口（api5-normal-sinfonlineb.fqnovel.com）的 4xx 绝大多数来自
+// 签名随机失配：客户端每次请求现算一套 x-gorgon / x-argus，算错了服务端就
+// 回 403，换一套签名重试通常就过。把它当成"站点封禁"记成 1~30 分钟的 host
+// 退避，后果是一次偶发 403 之后，同一域名下的详情、取流、弹幕**全部**在
+// acquire 阶段直接失败 —— 用户看到的就是"刚才还能看，突然就全都请求失败，
+// 过一分钟又自己好了"。
+//
+// 页面目录（HTML 站源）继续走 observe：那边 403 才是真的被拦。
+type skipCatalogObserveKey struct{}
+
 // skipCatalogGateKey 标记"镜像竞速请求"，不参与全局并发与间隔节流。
 //
 // 原因：黄果AI 的镜像站时通时不通，只有真正并行撞上去才有可能命中可用节点；
@@ -231,6 +243,22 @@ func (limiter *requestLimiter) clearBackoffs() {
 	limiter.mu.Unlock()
 }
 
+// clearBackoff 只清掉某个 host 的退避。
+//
+// 用于"这条链路自己知道刚才的失败是签名/瞬时问题"的场景（红果 App 接口），
+// 避免为了一次 403 把无关站源的退避一起清掉。
+func (limiter *requestLimiter) clearBackoff(host string) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return
+	}
+	limiter.mu.Lock()
+	delete(limiter.backoffs, host)
+	delete(limiter.backgroundBackoffs, host)
+	limiter.notifyLocked()
+	limiter.mu.Unlock()
+}
+
 func (limiter *requestLimiter) observe(request *http.Request, response *http.Response) {
 	if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusTooManyRequests && !strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge") {
 		return
@@ -322,7 +350,11 @@ func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout tim
 		release()
 		return nil, err
 	}
-	d.limiter.observe(request, response)
+	// 红果 App 接口的 4xx 是签名失配，不是封禁，不能计入 host 退避
+	// （见 skipCatalogObserveKey 的说明）。
+	if request.Context().Value(skipCatalogObserveKey{}) == nil {
+		d.limiter.observe(request, response)
+	}
 	observeSourceResponse(request.Context(), response)
 	response.Body = &limitedResponseBody{ReadCloser: response.Body, release: func() { cancel(); release() }}
 	return response, nil

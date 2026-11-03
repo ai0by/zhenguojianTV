@@ -17,6 +17,13 @@ class DanmakuController extends ChangeNotifier {
 
   /// 每个时间窗连续失败了几次（0.8.19），决定退避时长：2 → 4 → 8 → 15 秒。
   final _failureCounts = <int, int>{};
+
+  /// 失败后自己排的那一次重试（0.8.21）。
+  ///
+  /// 以前重试完全靠播放器的位置 tick 驱动：缓冲卡住、暂停、切后台时位置
+  /// 不再推进，tick 一停，一次偶发失败就再没人去重试 —— 用户看到的就是
+  /// "这一集的弹幕一直没出来"，退出重进才有。
+  Timer? _retryTimer;
   PlaybackPlan? _plan;
   int _generation = 0;
   int? _pendingStart;
@@ -54,7 +61,20 @@ class DanmakuController extends ChangeNotifier {
       positionMs < durationMs;
   bool get moving => visible && _playing && !_buffering;
   bool get loading => _pendingStart != null;
-  bool get canRetry => visible && _failures.isNotEmpty;
+
+  /// 当前这一窗是否刚失败过（0.8.21）。
+  ///
+  /// 以前这个判断是"任何一窗失败过"，失败记录又不清空，于是上一窗的偶发
+  /// 失败会让重试入口一直亮着；而同一次失败本身**没有任何提示** ——
+  /// 用户看到的就是"弹幕有时候就是没加载上"，也没法手动救。
+  /// 现在只看当前正在看（或正要取）的那一窗。
+  bool get canRetry {
+    if (!visible) return false;
+    final page = _covering(positionMs);
+    final start =
+        page?.startMs ?? positionMs ~/ danmakuWindowMs * danmakuWindowMs;
+    return _failures.containsKey(start);
+  }
   String get status {
     if (!_enabled) return '弹幕已关闭';
     if (_plan?.local == true) return '本地播放不加载弹幕';
@@ -119,7 +139,16 @@ class DanmakuController extends ChangeNotifier {
     final expected =
         _anchorPosition + (_anchorMoving ? elapsed * _anchorRate : 0);
     final drift = !_seeking && (nextPosition - expected).abs() > 600;
-    final durationChanged = nextDuration != durationMs && durationMs > 0;
+    // 时长抖动不算"换片源"（0.8.21）。
+    //
+    // 以前只要 duration 差 1 毫秒就把所有已缓存的窗口清空、重发请求。真实
+    // 播放中时长偶尔会被播放器修正一点点（元数据时长 ↔ 实际探测时长），
+    // 用户看到的就是"弹幕突然全没了，过一会儿才重新飘"。1 秒以内当作同一
+    // 个时长，超过才重新开始。
+    final durationChanged =
+        nextDuration != durationMs &&
+        durationMs > 0 &&
+        (nextDuration - durationMs).abs() > 1000;
     final jumped =
         !_seeking &&
         (discontinuity ||
@@ -190,6 +219,8 @@ class DanmakuController extends ChangeNotifier {
   }
 
   void _cancel() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
     _generation++;
     if (_pendingStart != null) {
       _pendingStart = null;
@@ -221,8 +252,12 @@ class DanmakuController extends ChangeNotifier {
     var start = positionMs ~/ danmakuWindowMs * danmakuWindowMs;
     if (page == null && _pages.containsKey(start)) start = positionMs;
     if (page != null) {
-      if (!moving ||
-          positionMs < page.nextMs - danmakuLifetimeMs ||
+      // 0.8.21：不再要求"正在播放"才预取下一窗。
+      //
+      // 以前暂停在窗口末尾（比如 28 秒）时不预取，用户一按继续，开头几秒
+      // 正好是空的 —— 等新窗口回来弹幕已经飘过一段了。预取只是读数据，
+      // 暂停时做掉最划算；位置不会再自己往前走，也不会连发。
+      if (positionMs < page.nextMs - danmakuLifetimeMs ||
           page.nextMs >= durationMs ||
           _covering(page.nextMs) != null) {
         return;
@@ -260,6 +295,8 @@ class DanmakuController extends ChangeNotifier {
       _pages[start] = page;
       _failures.remove(start);
       _failureCounts.remove(start);
+      _retryTimer?.cancel();
+      _retryTimer = null;
       final nearest = _pages.keys.toList()
         ..sort(
           (a, b) => (a - positionMs).abs().compareTo((b - positionMs).abs()),
@@ -281,6 +318,8 @@ class DanmakuController extends ChangeNotifier {
         seconds: (2 << (failures - 1).clamp(0, 3)).clamp(2, 15),
       );
       _failures[start] = _now().add(delay);
+      // 0.8.21：自己排一次重试，不再只靠播放位置 tick 驱动。
+      _scheduleRetry(delay);
       while (_failures.length > 8) {
         final key = _failures.keys.first;
         _failures.remove(key);
@@ -293,6 +332,22 @@ class DanmakuController extends ChangeNotifier {
         _ensureWindow();
       }
     }
+  }
+
+  /// 排一次"自己醒来再试"的定时器（0.8.21）。
+  ///
+  /// 失败重试以前完全依附于播放器位置 tick：暂停、缓冲卡死、切到后台时位置
+  /// 不推进，tick 就停了，一次偶发失败之后再没人去重试 —— 用户看到的就是
+  /// "这一集弹幕一直没加载上"，退出重进才有。这里独立排一个定时器，时间到
+  /// 就重新走 [_ensureWindow]（它自己会判断窗口、退避与可见性）。
+  void _scheduleRetry(Duration delay) {
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () {
+      _retryTimer = null;
+      if (_closed) return;
+      notifyListeners();
+      _ensureWindow();
+    });
   }
 
   void _rebuildItems() {

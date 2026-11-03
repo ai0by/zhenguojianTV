@@ -191,6 +191,58 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
   );
 }
 
+/// 弹幕加载失败时的小提示（0.8.21）。
+///
+/// 弹幕失败以前是**完全静默**的：`status` / `canRetry` 写好了却没有任何界面
+/// 用它，用户只能觉得"这一集弹幕没加载上"，也无从判断是该等一会儿还是重进。
+/// 这里给一条能点的提示：文案短、不挡画面、只在当前窗口确实失败过时出现。
+///
+/// 放在视频层内部（`_withDanmaku`）而不是控件层，竖屏与全屏都能看到。
+class DanmakuRetryHint extends StatelessWidget {
+  const DanmakuRetryHint({super.key, required this.controller});
+
+  final DanmakuController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) {
+      if (!controller.canRetry) return const SizedBox.shrink();
+      // 用 Align 而不是 Positioned：Stack 的非定位子节点按 loose 约束铺满后
+      // 对齐，避免依赖 ParentDataWidget 的祖先链（外层可能再包一层）。
+      return Align(
+        alignment: Alignment.topCenter,
+        child: Padding(
+          // 让开顶部的标题 / 返回行（竖屏 38 高、全屏返回键同高），
+          // 不跟自己画的控件抢位置。
+          padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top + 52),
+          child: GestureDetector(
+            key: const ValueKey('danmaku-retry'),
+            behavior: HitTestBehavior.opaque,
+            onTap: controller.retry,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: .58),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Text(
+                '弹幕加载失败 · 点击重试',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.2,
+                  color: Colors.white,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
 class _DanmakuMotion extends StatefulWidget {
   const _DanmakuMotion({
     required this.flight,

@@ -155,6 +155,28 @@ func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 }
 
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
+	// 这条链路的所有重试都由自己管，因此不参与 host 级封禁统计
+	// （红果 App 接口的 4xx 基本是签名随机失配，不是站点封禁）。
+	ctx = context.WithValue(ctx, skipCatalogObserveKey{}, true)
+	comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
+	// 单次调用的总预算。
+	//
+	// 以前这里只有"每次尝试 20 秒 × 最多 8 次"，正常情况下弹幕/详情几百毫秒
+	// 就回，真出问题时会一路耗到外层 60 秒超时 —— 用户看到的是转圈，然后
+	// 一个没有指向性的"读取失败"。把预算收到十几秒，失败得更快，前端也就
+	// 有机会用新的随机签名重来一次。
+	budget := 25 * time.Second
+	if comment {
+		// 弹幕是"当下就要"的数据：30 秒窗口的弹幕晚到 15 秒就没有意义了。
+		budget = 15 * time.Second
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 && remaining < budget {
+			budget = remaining
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	client := downloader.hongguoClient()
 	client.mu.Lock()
 	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
@@ -219,7 +241,6 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		// 0.8.11：弹幕走红果的**评论接口**，它用的是另一套签名
 		// （X-Gorgon / X-Argus / X-Ladon），而且必须带这两个业务头，
 		// 少一个就返回空列表。上下文里带 hongguoCommentKey 时切过去。
-		comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 		var commentNonce hongguoCommentNonce
 		if comment {
 			commentNonce, err = newHongguoCommentNonce()
@@ -247,7 +268,16 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		if err != nil {
 			lastErr = err
 			var backoff *requestBackoff
-			if errors.As(err, &backoff) || ctx.Err() != nil {
+			if errors.As(err, &backoff) {
+				// 之前某个请求留下的 host 退避会在这里把重试直接挡掉，而红果
+				// App 接口的退避本来就不可信（见 skipCatalogObserveKey）。
+				// 就地清掉这一条，继续用新签名重试。
+				if downloader.limiter != nil {
+					downloader.limiter.clearBackoff(backoff.host)
+				}
+				continue
+			}
+			if ctx.Err() != nil {
 				return nil, err
 			}
 			continue
@@ -260,10 +290,12 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		if response.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("红果 App 接口 HTTP %d", response.StatusCode)
-			if response.StatusCode >= 400 && response.StatusCode < 500 {
-				return nil, lastErr
+			// 4xx 不能一概放弃：红果对**签名失配**回的就是 403，换一套随机签名
+			// 重试通常就过。只有 429（真的被限流）继续硬打才会更糟。
+			if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
+				continue
 			}
-			continue
+			return nil, lastErr
 		}
 		if len(content) == 0 {
 			// 这是"随机空响应"，属于可重试的临时状态，不能当作终态错误。

@@ -33,6 +33,19 @@ func (engine *nativeEngine) nativePreload(ctx context.Context, input nativeInput
 		plan.PrefetchedBytes = stream.nativePrefetch(warming, choice.streamSession, plan.URL, input.Quality)
 		cancel()
 	}
+	// 弹幕第一屏预取（0.8.21）：`prefetchDanmaku` 在 0.8.19 就写好了，但一直
+	// 没有调用点 —— 切集时第一窗弹幕永远要等画面先出、再发一次请求，用户看到
+	// 的就是"新一集开头两秒没有弹幕"。这里顺手预热，切过去时直接命中缓存。
+	//
+	// 必须异步：预载本身有 15 秒预算，弹幕只是顺带，绝不能拖慢取流。上下文
+	// 用 WithoutCancel 保留"后台优先级"等标记，再单独给 8 秒上限。
+	if seriesID, videoID, ok := hongguoPlaybackIDs(Task{DramaID: input.Drama.ID, Chapter: input.Chapter}); ok {
+		go func() {
+			warming, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+			defer cancel()
+			engine.prefetchDanmaku(warming, seriesID, videoID, 0)
+		}()
+	}
 	if err := ctx.Err(); err != nil {
 		engine.nativeReleasePlayback(plan.Session)
 		return nativePlan{}, err

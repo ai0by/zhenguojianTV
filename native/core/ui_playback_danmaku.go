@@ -57,13 +57,58 @@ func (d *Downloader) hongguoDanmaku(ctx context.Context, seriesID, videoID strin
 	if !hongguoNumericID.MatchString(seriesID) || !hongguoNumericID.MatchString(videoID) || start < 0 || duration <= start || duration > danmakuMaxDurationMS {
 		return hongguoDanmakuPage{}, errors.New("弹幕请求参数无效")
 	}
-	key := fmt.Sprintf("%s:%s:%d:%d", seriesID, videoID, start, duration)
+	// 0.8.21：缓存键不再包含"整集时长"。
+	//
+	// 预取（`prefetchDanmaku`）发生在切到这一集之前，那时还不知道真实时长，
+	// 只能按 30 秒窗口请求；而播放时的请求带的是真实时长。键里带时长，两份
+	// 数据就永远对不上 —— 预取等于白做，用户切集后照样要等一次网络往返。
+	// 现在按"集 + 视频 + 起点"缓存，命中时再按本次时长裁剪窗口。
+	key := fmt.Sprintf("%s:%s:%d", seriesID, videoID, start)
 	client := d.hongguoClient()
 	client.mu.Lock()
-	if entry, found := client.danmaku[key]; found && time.Now().Before(entry.expires) {
-		client.mu.Unlock()
-		return cloneDanmakuPage(entry.page), entry.err
+	entry, found := client.danmaku[key]
+	client.mu.Unlock()
+	if found && time.Now().Before(entry.expires) {
+		if entry.err != nil {
+			return cloneDanmakuPage(entry.page), entry.err
+		}
+		if page, ok := fitDanmakuPage(entry.page, start, duration); ok {
+			return page, nil
+		}
+		// 缓存的这一页装不进本次时长（极少见：片长短于 30 秒），重新取。
 	}
+	return d.hongguoDanmakuFetch(ctx, seriesID, videoID, start, duration, key)
+}
+
+// fitDanmakuPage 把缓存页适配到本次请求的时长上。
+//
+// 命中缓存的前提是"起点一致、窗口有长度、且不超过本次时长"。缓存的窗口比
+// 本次时长更长时（预取不知道真实时长），裁掉超出部分即可，不需要重发请求。
+func fitDanmakuPage(page hongguoDanmakuPage, start, duration int64) (hongguoDanmakuPage, bool) {
+	if page.StartMS != start || page.NextMS <= start || start >= duration {
+		return hongguoDanmakuPage{}, false
+	}
+	cloned := cloneDanmakuPage(page)
+	if cloned.NextMS > duration {
+		cloned.NextMS = duration
+		kept := cloned.Items[:0]
+		for _, item := range cloned.Items {
+			if item.TimeMS < cloned.NextMS {
+				kept = append(kept, item)
+			}
+		}
+		cloned.Items = kept
+	}
+	return cloned, true
+}
+
+// hongguoDanmakuFetch 是真正的取弹幕流程（同键去重 + 写缓存）。
+//
+// 缓存命中由 `hongguoDanmaku` 负责判断（还要按本次时长裁剪），这里只看
+// "同键是否已有请求在跑"，避免同一窗口被连点打出好几发。
+func (d *Downloader) hongguoDanmakuFetch(ctx context.Context, seriesID, videoID string, start, duration int64, key string) (hongguoDanmakuPage, error) {
+	client := d.hongguoClient()
+	client.mu.Lock()
 	if pending := client.danmakuPending[key]; pending != nil {
 		client.mu.Unlock()
 		select {
@@ -71,6 +116,15 @@ func (d *Downloader) hongguoDanmaku(ctx context.Context, seriesID, videoID strin
 			return hongguoDanmakuPage{}, ctx.Err()
 		case <-pending.done:
 			if ctx.Err() == nil && (errors.Is(pending.entry.err, context.Canceled) || errors.Is(pending.entry.err, context.DeadlineExceeded)) {
+				return d.hongguoDanmaku(ctx, seriesID, videoID, start, duration)
+			}
+			if pending.entry.err == nil {
+				// 等到的这一发可能是别的调用方按不同时长发起的，窗口要按
+				// 本次时长适配；装不下就自己重新取一发，别把越界的窗口
+				// 交给前端（前端会判成"时间范围无效"并一直重试）。
+				if page, ok := fitDanmakuPage(pending.entry.page, start, duration); ok {
+					return page, nil
+				}
 				return d.hongguoDanmaku(ctx, seriesID, videoID, start, duration)
 			}
 			return cloneDanmakuPage(pending.entry.page), pending.entry.err
@@ -100,12 +154,12 @@ func (d *Downloader) hongguoDanmaku(ctx context.Context, seriesID, videoID strin
 	}
 	entry := hongguoDanmakuCacheEntry{page: page, err: err, expires: time.Now().Add(5 * time.Minute)}
 	if err != nil {
-		// 0.8.19：失败缓存 15s → 3s。
+		// 0.8.21：失败缓存 3s → 1.5s。
 		//
-		// 前端现在第一次失败 2 秒后就重试，15 秒的错误缓存会让那次重试
-		// 直接拿到旧错误、白白累加一次失败计数。3 秒既能挡住连续猛点，
-		// 又不至于把"偶发超时"钉死 15 秒。
-		entry.expires = time.Now().Add(3 * time.Second)
+		// 前端第一次失败 2 秒后重试，3 秒的错误缓存会让这次重试**必然**拿到
+		// 同一个错误、白白把失败计数 +1（退避直接翻到 4 秒）。1.5 秒短于前端
+		// 的 2 秒，重试才真的会重新打一次网络。
+		entry.expires = time.Now().Add(1500 * time.Millisecond)
 	}
 	client.mu.Lock()
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
@@ -131,9 +185,27 @@ func cloneDanmakuPage(page hongguoDanmakuPage) hongguoDanmakuPage {
 func parseHongguoDanmaku(result map[string]any, videoID string, start, duration int64) (hongguoDanmakuPage, error) {
 	data := nestedMap(result, "data")
 	rows, valid := data["data_list"].([]any)
-	next, err := strconv.ParseInt(mapString(nestedMap(data, "extra"), "next_query_danmaku_list_time"), 10, 64)
-	if !valid || err != nil || next <= start || next > danmakuMaxDurationMS {
+	if !valid {
 		return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
+	}
+	next, err := strconv.ParseInt(mapString(nestedMap(data, "extra"), "next_query_danmaku_list_time"), 10, 64)
+	if err != nil || next <= start || next > danmakuMaxDurationMS {
+		// 0.8.21：空窗口不是错误。
+		//
+		// 片头片尾、冷门片段经常一条弹幕都没有，这时服务端可能干脆不下发
+		// next_query_danmaku_list_time。以前直接判"格式无效"，前端就会把
+		// 这一窗标成"弹幕暂不可用"并按失败退避反复重试 —— 用户看到的是
+		// "这一集弹幕没加载上"，其实只是这一段没人发。
+		if len(rows) > 0 {
+			return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
+		}
+		next = start + danmakuWindowMS
+		if next > duration {
+			next = duration
+		}
+		if next <= start {
+			return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
+		}
 	}
 	page := hongguoDanmakuPage{EpisodeID: videoID, Items: []hongguoDanmakuItem{}, StartMS: start, NextMS: min(next, duration)}
 	var cursor struct {

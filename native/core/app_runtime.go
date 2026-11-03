@@ -452,10 +452,24 @@ func nativeDispatch(input nativeInput) (any, error) {
 	} else if input.Action == "precache" {
 		// 整集预缓存要下几十 MB，给足时间；用户切走时由 `cancelPrecache` 中断。
 		duration = 3 * time.Minute
+	} else if input.Action == "danmaku" {
+		// 弹幕是"当下就要"的数据：一个 30 秒窗口的弹幕晚到 20 秒已经没有意义，
+		// 与其让它拖满 60 秒、期间一直占着请求名额，不如早点失败让前端重试。
+		duration = 20 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
-	if input.Action == "preload" || input.Action == "precache" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
+	// 0.8.21：弹幕也登记成"可取消的读请求"。
+	//
+	// 以前 `danmaku` 不在这里，前端 `cancelDanmaku()` 到原生侧找不到对应会话，
+	// 取消是空操作 —— 用户拖动进度条 / 连切几集之后，旧窗口的请求还在跑，
+	// 新的窗口请求只能排队等同一把站源闸门，表现出来就是"弹幕半天不出来"。
+	// 登记之后：同一会话来了更大的 sequence 会先取消上一发，用户退出时也能
+	// 真正停下来。
+	// 弹幕只在**带了请求标记**时才登记（老调用方 / 单测不传 session，
+	// 直接走不可取消的路径，行为与以前一致）。
+	cancelableDanmaku := input.Action == "danmaku" && input.Session != "" && input.Sequence > 0
+	if input.Action == "preload" || input.Action == "precache" || input.Action == "prepareHandoff" || cancelableDanmaku || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
 		work, finish, err := engine.beginRead(ctx, input)
 		if err != nil {
 			return nil, err

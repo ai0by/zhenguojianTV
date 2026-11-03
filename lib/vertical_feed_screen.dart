@@ -4655,6 +4655,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           aspectRatio: _aspectRatio > 0 ? _aspectRatio : 9 / 16,
         ),
       ),
+      // 加载失败时给一条可点的提示（0.8.21）：以前弹幕失败是静默的。
+      DanmakuRetryHint(controller: _danmaku),
     ],
   );
 
