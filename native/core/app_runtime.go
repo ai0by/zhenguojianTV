@@ -387,6 +387,15 @@ func NativeRequest(raw string) (result string) {
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
+		// 0.8.22：把"这次没取到片源"单列出来。
+		//
+		// 这类失败绝大多数是瞬时的（服务端某一发降级，用户点重试立刻就好），
+		// 前端据此**自己静默重来一次**，而不是先把错误亮给用户、再让他点。
+		// 判据只看哨兵值 —— 真的下架 / 设备注册失败不会命中这里，
+		// 那两种照旧直接报错。
+		if errors.Is(err, errNativeMediaTransient) {
+			envelope["code"] = "media_transient"
+		}
 		var backoff *requestBackoff
 		if errors.As(err, &backoff) {
 			envelope["code"] = "source_blocked"

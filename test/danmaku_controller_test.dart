@@ -77,7 +77,7 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('失败后即使没有位置 tick 也会自己重试', (tester) async {
+  testWidgets('首次失败不打扰用户，自己重试后直接出弹幕', (tester) async {
     final repository = _DanmakuRepository(failuresBeforeSuccess: 1);
     final clock = _Clock();
     final controller = DanmakuController(repository, now: clock.call)
@@ -86,11 +86,13 @@ void main() {
     await tester.pump();
     expect(repository.calls, 1);
     expect(controller.items, isEmpty);
-    expect(controller.canRetry, isTrue);
+    // 0.8.22：第一次失败只是瞬时的，不该立刻亮"加载失败"。
+    expect(controller.canRetry, isFalse);
+    expect(controller.status, '正在加载弹幕');
 
     // 关键点：这里**不再喂任何 update**，完全靠退避定时器自己醒来。
-    clock.advance(const Duration(seconds: 3));
-    await tester.pump(const Duration(seconds: 3));
+    clock.advance(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 1500));
     await tester.pump();
     expect(repository.calls, 2);
     expect(controller.items, hasLength(1));
@@ -98,18 +100,39 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('连续失败两次才提示可重试', (tester) async {
+    final repository = _DanmakuRepository(failuresBeforeSuccess: 2);
+    final clock = _Clock();
+    final controller = DanmakuController(repository, now: clock.call)
+      ..setPlan(_plan());
+    _feed(controller);
+    await tester.pump();
+    expect(controller.canRetry, isFalse);
+    clock.advance(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump();
+    expect(repository.calls, 2);
+    expect(controller.canRetry, isTrue);
+    expect(controller.status, '弹幕加载失败，可重试');
+    controller.dispose();
+  });
+
   testWidgets('手动重试清掉退避立即再取', (tester) async {
-    final repository = _DanmakuRepository(failuresBeforeSuccess: 1);
+    final repository = _DanmakuRepository(failuresBeforeSuccess: 2);
     final clock = _Clock();
     final controller = DanmakuController(repository, now: clock.call)
       ..setPlan(_plan());
     _feed(controller, playing: false);
     await tester.pump();
+    clock.advance(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump();
     expect(controller.canRetry, isTrue);
     controller.retry();
     await tester.pump();
-    expect(repository.calls, 2);
+    expect(repository.calls, 3);
     expect(controller.items, hasLength(1));
+    expect(controller.canRetry, isFalse);
     controller.dispose();
   });
 

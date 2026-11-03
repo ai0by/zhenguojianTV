@@ -15,8 +15,14 @@ class DanmakuController extends ChangeNotifier {
   final _pages = <int, DanmakuPage>{};
   final _failures = <int, DateTime>{};
 
-  /// 每个时间窗连续失败了几次（0.8.19），决定退避时长：2 → 4 → 8 → 15 秒。
+  /// 每个时间窗连续失败了几次（0.8.19），决定退避时长。
   final _failureCounts = <int, int>{};
+
+  /// 连续失败几次才把"弹幕加载失败"提示亮出来（0.8.22）。
+  ///
+  /// 取 2：第一次失败几乎全是瞬时的，静默重试通常就成功；让用户先看到
+  /// "失败"再点一下又好了，等于白打扰一次。
+  static const _retryHintThreshold = 2;
 
   /// 失败后自己排的那一次重试（0.8.21）。
   ///
@@ -62,25 +68,30 @@ class DanmakuController extends ChangeNotifier {
   bool get moving => visible && _playing && !_buffering;
   bool get loading => _pendingStart != null;
 
-  /// 当前这一窗是否刚失败过（0.8.21）。
+  /// 当前这一窗连续失败到值得打扰用户（0.8.22）。
   ///
-  /// 以前这个判断是"任何一窗失败过"，失败记录又不清空，于是上一窗的偶发
-  /// 失败会让重试入口一直亮着；而同一次失败本身**没有任何提示** ——
-  /// 用户看到的就是"弹幕有时候就是没加载上"，也没法手动救。
-  /// 现在只看当前正在看（或正要取）的那一窗。
+  /// 0.8.21 是"失败一次就亮提示"，真机上反馈很吵：这类失败绝大多数是瞬时
+  /// 的（服务端某一发没给数据、签名没中），后台一两秒后就自己好了，用户点的
+  /// 那一刻往往是"点了就好"——说明本来就不用点。现在要求同一窗**连续失败
+  /// 两次**才亮，第一次只在内部静默重试。
+  ///
+  /// 上半段仍保留 0.8.21 修正过的口径：只看当前这一窗，不看历史失败。
   bool get canRetry {
     if (!visible) return false;
     final page = _covering(positionMs);
     final start =
         page?.startMs ?? positionMs ~/ danmakuWindowMs * danmakuWindowMs;
-    return _failures.containsKey(start);
+    return (_failureCounts[start] ?? 0) >= _retryHintThreshold;
   }
   String get status {
     if (!_enabled) return '弹幕已关闭';
     if (_plan?.local == true) return '本地播放不加载弹幕';
     if (_plan != null && !supported) return '本集暂不支持弹幕';
-    if (canRetry) return '弹幕暂不可用，可重试';
-    if (loading && _pages.isEmpty) return '正在加载弹幕';
+    if (canRetry) return '弹幕加载失败，可重试';
+    // 第一次失败仍在内部重试，对外还是"正在加载"，不制造焦虑。
+    if (loading || _failureCounts.isNotEmpty && _pages.isEmpty) {
+      return '正在加载弹幕';
+    }
     if (_pages.isNotEmpty) {
       return items.isEmpty ? '这段暂无弹幕' : '已载入 ${items.length} 条弹幕';
     }
@@ -307,15 +318,17 @@ class DanmakuController extends ChangeNotifier {
       _rebuildItems();
     } catch (_) {
       if (_closed || ticket != _generation) return;
-      // 0.8.19：失败退避从"固定 15 秒"改成"2 → 4 → 8 → 15 秒"。
+      // 0.8.22：退避改成 1.2 → 2.4 → 4.8 → 9.6 → 15 秒。
       //
-      // 以前第一次失败就静默 15 秒，用户看到的就是"这一集没弹幕"，
-      // 而失败原因常常只是一次偶发超时。现在首次 2 秒后就再试，
-      // 连续失败才逐步拉长，最多仍只等 15 秒。
+      // 0.8.19 是 2 → 4 → 8 → 15。首次 2 秒偏长：这类失败基本是瞬时抖动，
+      // 早 0.8 秒重试，用户几乎看不到空窗；后续仍逐步拉长，最多还是 15 秒。
       final failures = (_failureCounts[start] ?? 0) + 1;
       _failureCounts[start] = failures;
       final delay = Duration(
-        seconds: (2 << (failures - 1).clamp(0, 3)).clamp(2, 15),
+        milliseconds: (1200 * (1 << (failures - 1).clamp(0, 4))).clamp(
+          1200,
+          15000,
+        ),
       );
       _failures[start] = _now().add(delay);
       // 0.8.21：自己排一次重试，不再只靠播放位置 tick 驱动。

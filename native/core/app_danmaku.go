@@ -126,5 +126,7 @@ func (engine *nativeEngine) prefetchDanmaku(ctx context.Context, seriesID, video
 	// 独立的短超时：预载本身有时限，不能把时间耗在弹幕上。
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
+	// 标记成预取（0.8.22）：失败不写缓存，避免刚切过去就吃到一次瞬时失败。
+	ctx = context.WithValue(ctx, danmakuPrefetchKey{}, true)
 	_, _ = engine.downloader.hongguoDanmaku(ctx, seriesID, videoID, 0, window)
 }

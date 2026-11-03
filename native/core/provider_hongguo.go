@@ -219,7 +219,11 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	// 只有预告 —— 再试这两条路必然是"多等两三个网络往返，然后报一个更长
 	// 的错误"。实测网页侧没有隐藏的取流接口，所以这里没有损失可捡。
 	if errors.Is(nativeErr, errHongguoAppEmptyModel) {
-		return providerMedia{}, fmt.Errorf("红果暂时取不到这一集的片源（%v），请稍后重试或换一集", nativeErr)
+		// 0.8.22：包一层 `errNativeMediaTransient`，让前端知道"这次值得再试
+		// 一遍"。用户实测点重试立刻就好，说明它本来就是瞬时的 —— 与其把
+		// 错误亮出来让用户点，不如让前端自己静默重来一次。
+		return providerMedia{}, fmt.Errorf("%w：红果暂时取不到这一集的片源（%v）",
+			errNativeMediaTransient, nativeErr)
 	}
 	media, publicErr := d.resolveHongguoPublicMedia(ctx, videoID)
 	if publicErr == nil {

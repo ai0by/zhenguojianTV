@@ -212,14 +212,18 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		attempts = 8
 	}
 	var lastErr error
-	// 空正文的重试预算（0.8.16 第四批）。
+	// 空正文的重试预算（0.8.16 第四批 / 0.8.22 调整）。
 	//
 	// 空正文有两种成因：签名随机失配（多试几次能中），以及**服务端不认这个
-	// device_id**（试多少次都是空）。设备已经注册过时，第二种占绝大多数 ——
-	// 这时继续重试只是在拖时间，不如早点返回，让上层换设备重注册再试一次。
+	// device_id**（试多少次都是空）。设备已经注册过时，第二种占多数 ——
+	// 这时继续重试只是在拖时间。
+	//
+	// 但 3 次太紧：按单次签名约 60% 命中算，连续 3 次空正文仍有约 6% 概率，
+	// 用户遇到的就是"偶尔这一集就是打不开，点重试又好了"。空正文响应很快
+	// （<200ms），提到 5 次后降到约 1%，代价不到半秒。
 	emptyBudget := attempts
 	if registered {
-		emptyBudget = 3
+		emptyBudget = 5
 	}
 	emptyCount := 0
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -320,6 +324,10 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode"))
 		if code != "" && code != "0" {
+			// 非 0 的 code 是**真的业务结果**（会话失效、内容下架、被限流），
+			// 不是签名失配 —— 签名那一发失败时服务端回的是 403 或空正文，
+			// 那两条已经在上面重试过了。所以这里不重试：重试既救不回来，又会
+			// 让目录侧"丢掉失效会话再重来"这条恢复路径多绕两圈。
 			return nil, fmt.Errorf("红果 App 接口暂不可用（%s）", truncate(code, 20))
 		}
 		return result, nil

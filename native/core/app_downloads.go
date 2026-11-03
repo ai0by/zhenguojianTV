@@ -17,6 +17,16 @@ import (
 
 var errNativeLocalFile = errors.New("本地文件缺失或不完整，请重新下载或选择在线播放")
 
+// errNativeMediaTransient 表示"这次没取到片源，但过一会儿多半就有了"（0.8.22）。
+//
+// 典型场景是红果的取流接口偶发降级：服务端回了一份没有 `video_model` 的
+// JSON，隔几百毫秒再问就有。用户侧的表现就是"提示取不到片源，点一下重试
+// 立刻就好"—— 既然是瞬时的，就不该由用户去点。
+//
+// 前端收到 `code == "media_transient"` 时先自己静默重来一次（每集一次），
+// 仍失败才亮错误。**只包这类瞬时失败**：剧集下架、设备注册失败这些都不命中。
+var errNativeMediaTransient = errors.New("片源暂时取不到，可重试")
+
 type nativeDownloadEpisode struct {
 	Chapter Chapter `json:"chapter"`
 	Index   int     `json:"index"`

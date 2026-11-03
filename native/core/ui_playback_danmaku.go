@@ -41,6 +41,14 @@ type hongguoDanmakuCall struct {
 	entry hongguoDanmakuCacheEntry
 }
 
+// danmakuPrefetchKey 标记"这一发是预取，不是用户当下要的数据"（0.8.22）。
+//
+// 预取发生在切到这一集**之前**，那时服务端就算偶发降级也没人在等。如果把
+// 预取的失败也写进失败缓存（1.5 秒），用户紧接着切到这一集就会直接吃到那份
+// 失败 —— 明明重新问一次就有数据，却先给了一个错误。所以预取只在成功时
+// 写缓存，失败时静默丢弃。
+type danmakuPrefetchKey struct{}
+
 func hongguoPlaybackIDs(task Task) (string, string, bool) {
 	source, seriesID, valid := splitProviderDramaID(task.DramaID)
 	if !valid || source != sourceHongguo || task.Chapter.Source != sourceHongguo || !strings.HasPrefix(task.Chapter.VideoURL, "hongguo-cenc://") {
@@ -163,12 +171,17 @@ func (d *Downloader) hongguoDanmakuFetch(ctx context.Context, seriesID, videoID 
 	}
 	client.mu.Lock()
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		// 0.8.19：128 → 256 条。弹幕按"集 + 时间窗"缓存，一集 24 分钟
-		// 就是 48 个窗口；预载预热 + 来回切集很容易把 128 挤爆。
-		if client.danmaku == nil || len(client.danmaku) >= 256 {
-			client.danmaku = map[string]hongguoDanmakuCacheEntry{}
+		// 预取失败不写缓存（0.8.22）：用户马上就要切过来，让正式请求重新问
+		// 一次比把这份瞬时失败递给他更有用。
+		prefetch, _ := ctx.Value(danmakuPrefetchKey{}).(bool)
+		if !prefetch || err == nil {
+			// 0.8.19：128 → 256 条。弹幕按"集 + 时间窗"缓存，一集 24 分钟
+			// 就是 48 个窗口；预载预热 + 来回切集很容易把 128 挤爆。
+			if client.danmaku == nil || len(client.danmaku) >= 256 {
+				client.danmaku = map[string]hongguoDanmakuCacheEntry{}
+			}
+			client.danmaku[key] = entry
 		}
-		client.danmaku[key] = entry
 	}
 	pending.entry = entry
 	delete(client.danmakuPending, key)
@@ -182,10 +195,38 @@ func cloneDanmakuPage(page hongguoDanmakuPage) hongguoDanmakuPage {
 	return page
 }
 
+// emptyDanmakuWindow 造一个"这一窗确实没有弹幕"的合法结果（0.8.22）。
+//
+// 服务端对"这一段没人发弹幕"有好几种表达：空数组、缺字段、干脆整块 `data`
+// 都不给。它们都不该被当成失败 —— 一旦判成失败，前端会标红并反复退避重试
+// 一个永远不会成功的请求，用户看到的正是"这一集弹幕加载失败"。
+func emptyDanmakuWindow(videoID string, start, duration int64) (hongguoDanmakuPage, error) {
+	next := start + danmakuWindowMS
+	if next > duration {
+		next = duration
+	}
+	if next <= start {
+		return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
+	}
+	return hongguoDanmakuPage{
+		EpisodeID: videoID,
+		Items:     []hongguoDanmakuItem{},
+		StartMS:   start,
+		NextMS:    next,
+	}, nil
+}
+
 func parseHongguoDanmaku(result map[string]any, videoID string, start, duration int64) (hongguoDanmakuPage, error) {
 	data := nestedMap(result, "data")
-	rows, valid := data["data_list"].([]any)
-	if !valid {
+	rows, hasRows := data["data_list"].([]any)
+	if !hasRows {
+		// 0.8.22：整集都没有弹幕数据时，接口可能连 `data` / `data_list`
+		// 都不下发（实测冷门剧就是这样）。这种"根本没有这个字段"的情况
+		// 与"这一段没人发"是同一件事，按空窗口处理；只有**字段在、内容
+		// 不是数组**才是真的格式异常。
+		if _, present := data["data_list"]; !present {
+			return emptyDanmakuWindow(videoID, start, duration)
+		}
 		return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
 	}
 	next, err := strconv.ParseInt(mapString(nestedMap(data, "extra"), "next_query_danmaku_list_time"), 10, 64)
@@ -199,13 +240,7 @@ func parseHongguoDanmaku(result map[string]any, videoID string, start, duration 
 		if len(rows) > 0 {
 			return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
 		}
-		next = start + danmakuWindowMS
-		if next > duration {
-			next = duration
-		}
-		if next <= start {
-			return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
-		}
+		return emptyDanmakuWindow(videoID, start, duration)
 	}
 	page := hongguoDanmakuPage{EpisodeID: videoID, Items: []hongguoDanmakuItem{}, StartMS: start, NextMS: min(next, duration)}
 	var cursor struct {

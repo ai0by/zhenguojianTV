@@ -65,6 +65,23 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		return providerMedia{}, ctx.Err()
 	}
 	if errors.Is(err, errHongguoAppEmptyModel) && deviceErr == nil {
+		// 0.8.22：**先原地再取一次，再考虑换设备**。
+		//
+		// 用户反馈"提示红果暂时取不到这一集的片源，点重试立刻就好" —— 说明
+		// 失败是瞬时的：服务端某一刻对该 videoId 返回了 JSON 但没有
+		// `video_model`（降级 / 签名那一发没中），隔几百毫秒再问就有了。
+		// 旧逻辑这里直接去重注册设备，等于把一次偶发降级当成"设备不认了"：
+		// 重注册要额外一个网络往返，还换掉了一个本来能用的设备号，而且重注册
+		// 之后紧接着那一发仍然可能撞在同一段降级窗口里，于是报错给用户 ——
+		// 用户点重试（几百毫秒后）自然就好了。
+		//
+		// 现在先短退避原地重取一次，成本只有一个请求；仍失败才走
+		// "作废设备号 + 重新注册"那条更重的路。
+		if retried, retryErr := downloader.retryHongguoAppMediaOnce(ctx, videoID); retryErr == nil {
+			return retried, nil
+		} else if ctx.Err() != nil {
+			return providerMedia{}, ctx.Err()
+		}
 		// 0.8.16 第四批：**注册过 ≠ 服务端还认**。
 		//
 		// 设备号是首次启动时注册、然后落盘复用的。用户换网络、隔几天不打开、
@@ -90,6 +107,23 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
 	}
 	return providerMedia{}, err
+}
+
+// retryHongguoAppMediaOnce 短退避后原地重取一次（0.8.22）。
+//
+// 用于 `errHongguoAppEmptyModel` 这种"多半是瞬时降级"的失败：先别动设备号，
+// 隔几百毫秒再问一次往往就有了。失败时原样返回错误，交给上层继续排障。
+//
+// 退避取 `providerRetryDelay(1)`（约 0.8 秒 ±25%）：用户反馈的"点重试就好"
+// 中间通常隔了 1~3 秒，150ms 的快速重试太浅，容易同一段降级窗口里连撞两次；
+// 0.8 秒能明显提高命中率，又不会让正常的取流多等太久。
+func (downloader *Downloader) retryHongguoAppMediaOnce(ctx context.Context, videoID string) (providerMedia, error) {
+	select {
+	case <-time.After(providerRetryDelay(1)):
+	case <-ctx.Done():
+		return providerMedia{}, ctx.Err()
+	}
+	return downloader.hongguoAppMediaOnce(ctx, videoID)
 }
 
 // hongguoAppMediaOnce 是"取一次流"的完整过程，不碰设备注册。

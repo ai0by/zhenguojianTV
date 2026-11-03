@@ -1731,6 +1731,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   bool _bufferingHint = false;
   Timer? _bufferingTimer;
 
+  /// "这一集这次没取到片源"的自动重试（0.8.22）。
+  ///
+  /// 这类失败基本都是瞬时的（用户反馈"点重试立刻就好"），所以由页面自己
+  /// 静默重来一次，不把错误亮给用户。每集只重试一次，真正的硬失败照常报错。
+  Timer? _mediaRetryTimer;
+  bool _autoMediaRetried = false;
+
   /// 缓冲多久算"卡住了"。500ms 是抖音的量级：低于它多半是切片间隙，
   /// 高于它用户已经能感觉到停顿。
   static const Duration _bufferingHintDelay = Duration(milliseconds: 500);
@@ -3238,6 +3245,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _loadingOverlayTimer = null;
     _bufferingTimer?.cancel();
     _bufferingTimer = null;
+    _mediaRetryTimer?.cancel();
+    _mediaRetryTimer = null;
     _clearPlanCache();
     // 0.7.5：进度预览与亮度通知器释放（两者都由本页 State 持有）。
     _seekPreview.dispose();
@@ -3436,6 +3445,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   void _retryPlayback() {
     if (_closed || _loading) return;
     _ready = false;
+    // 0.8.22：手动重试同样给"瞬时失败自动再试一次"一个全新的名额 ——
+    // 用户点是他的选择，但点多一次不该让本集彻底失去静默自愈的机会。
+    _autoMediaRetried = false;
     unawaited(_playerReleased ? _resumeAfterRelease() : _prepare(force: true));
   }
 
@@ -3917,6 +3929,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     final detail = _detail;
     if (_closed || detail == null) return;
     if (index < 0 || index >= detail.episodes.length) return;
+    // 0.8.22：换集（或同集手动重进）重置"自动重试片源"的次数，
+    // 每集各有一次机会。
+    _autoMediaRetried = false;
+    _mediaRetryTimer?.cancel();
+    _mediaRetryTimer = null;
     // 0.7.2（XQ-0104）：auto = 自动连播切来的，本次换集不弹整套控件。
     // 0.8.10 第一版把手动换集也做成了静默，用户复核后明确"只要求自动切集无感"，
     // 手动点"下一集"本来就是用户主动操作，控件留在屏幕上反而是反馈，故收窄回 auto。
@@ -4173,6 +4190,34 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       // 用户连"重试"以外的操作都摸不到。
       _autoAdvancing = false;
       _silentSwitch = false;
+      // 0.8.22：**"这次没取到片源"先自己再试一次**，不把错误推给用户。
+      //
+      // 用户反馈"提示红果暂时取不到这一集的片源，点重试立刻就好" —— 这类
+      // 失败本来就是瞬时的（原生侧已经在内部原地重取过一次）。既然点一下
+      // 就好，那就别让用户点：这里静默等 0.7 秒再整轮重来一次，期间保持
+      // 加载态，用户看到的只是"这一集切得慢一点"。
+      //
+      // 每集只自动重试一次（`_autoMediaRetried`），真正的硬失败（剧集下架、
+      // 设备注册失败）第二次仍会正常亮错误，不会被无限重试拖住。
+      if (error is AppFailure &&
+          error.code == 'media_transient' &&
+          !_autoMediaRetried) {
+        _autoMediaRetried = true;
+        setState(() {
+          _loading = true;
+          _awaitingFirstFrame = false;
+          _firstFrameTicks = 0;
+          _error = null;
+        });
+        _refreshLoadingOverlay();
+        _mediaRetryTimer?.cancel();
+        _mediaRetryTimer = Timer(const Duration(milliseconds: 700), () {
+          _mediaRetryTimer = null;
+          if (_closed || generation != _generation) return;
+          unawaited(_prepare(force: true));
+        });
+        return;
+      }
       setState(() {
         _loading = false;
         // 0.6.9：进入错误态后不再"等待第一帧"，否则加载提示会盖住"点击重试"。
