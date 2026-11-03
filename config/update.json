@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.21",
-    "build": 102,
-    "tag": "v0.8.21",
-    "notes": "0.8.21 · 红果请求失败自愈 + 弹幕不再静默丢失",
+    "version": "0.8.22",
+    "build": 103,
+    "tag": "v0.8.22",
+    "notes": "0.8.22 · 「取不到片源」和「弹幕加载失败」都不该让用户点",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.21+102-all.apk",
-        "size": 72904966,
-        "sha256": "b1106e9d7ae2f4037619ac67113db5dbbf849df2a1c4c42a1f47734cdc2a78ee"
+        "name": "zhenguojianTV-0.8.22+103-all.apk",
+        "size": 72907501,
+        "sha256": "6457e4e88f9191f21a66350a0c59a20b4fa35b6ac592ec7da7eda2c9a4600cf5"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.21+102-arm64-v8a.apk",
-        "size": 33069720,
-        "sha256": "ecd18d0185ae06e2548444a292f1dc2c03204f65011f90b0a66b1f2039e9ee98"
+        "name": "zhenguojianTV-0.8.22+103-arm64-v8a.apk",
+        "size": 33070847,
+        "sha256": "e5b26b565fd47202ea7fa8c302358a8c90bd1ea78ff990b94f3a927c86f6090e"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.21+102-armeabi-v7a.apk",
-        "size": 41615740,
-        "sha256": "c0d33a56c48fd0e524fce48e8532858ab97dbf6c7cde7663efe4b6da65f752bc"
+        "name": "zhenguojianTV-0.8.22+103-armeabi-v7a.apk",
+        "size": 41617138,
+        "sha256": "bccbbb335104b88c413fad809f4116aad8eefee96e4fac14b6fcd05dddf60b11"
       }
     ]
   },
