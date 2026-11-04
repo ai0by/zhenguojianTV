@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 设备注册的 header 必须带齐服务端认的字段，缺了会返回 device_id: 0。
@@ -212,6 +213,11 @@ func TestEnsureHongguoDeviceCooldownSkipsRetry(t *testing.T) {
 // 设备没注册成功时，取流必然空正文；公开片源与网页只会给 10 秒预告，
 // 所以主链路要直接短路，不浪费两个网络往返、也不把根因埋在别的错误后面。
 func TestResolveHongguoMediaShortCircuitsWhenDeviceUnregistered(t *testing.T) {
+	// 未注册设备的空正文重试会跑满 attempts 次（秒级跨窗退避），
+	// 缩到毫秒级避免测试干等。
+	original := append([]time.Duration(nil), hongguoAppRetryDelays...)
+	t.Cleanup(func() { hongguoAppRetryDelays = original })
+	hongguoAppRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
 	var paths []string
 	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
 		paths = append(paths, request.URL.Path)

@@ -237,10 +237,29 @@ func parseHongguoDanmaku(result map[string]any, videoID string, start, duration 
 		// next_query_danmaku_list_time。以前直接判"格式无效"，前端就会把
 		// 这一窗标成"弹幕暂不可用"并按失败退避反复重试 —— 用户看到的是
 		// "这一集弹幕没加载上"，其实只是这一段没人发。
-		if len(rows) > 0 {
-			return hongguoDanmakuPage{}, errors.New("红果弹幕时间段格式无效")
+		if len(rows) == 0 {
+			return emptyDanmakuWindow(videoID, start, duration)
 		}
-		return emptyDanmakuWindow(videoID, start, duration)
+		// 0.8.23：有弹幕但 next 缺失 / 无效时，用**弹幕的最大时间戳**推窗口
+		// 边界，而不是报错。
+		//
+		// 探针实测冷门剧整集无弹幕时连 data_list 都不下发（那已按空窗口
+		// 处理）；而**有弹幕的剧**才走得到这条路径 —— 报错会让前端标红并
+		// 反复退避重试一个结构上就缺 next 的响应，重试永远不可能成功。
+		// 用最后一条弹幕的位置 + 1ms 收边，窗口能推进、弹幕能上屏，只是
+		// 下一个窗口会从 next 开始重新问一次服务端（多数情况下就拿到了）。
+		next = 0
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if position, parseErr := strconv.ParseInt(mapString(nestedMap(nestedMap(row, "comment"), "expand"), "offset_time"), 10, 64); parseErr == nil && position > next {
+				next = position
+			}
+		}
+		if next <= start {
+			// 连一条有效时间戳都没有，只能按空窗口推进。
+			return emptyDanmakuWindow(videoID, start, duration)
+		}
+		next++
 	}
 	page := hongguoDanmakuPage{EpisodeID: videoID, Items: []hongguoDanmakuItem{}, StartMS: start, NextMS: min(next, duration)}
 	var cursor struct {

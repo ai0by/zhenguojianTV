@@ -344,6 +344,11 @@ func TestHongguoAppMediaSkipsShortDefinitionByMetadata(t *testing.T) {
 // 设备号"注册过"但服务端已经不认时，要换设备重注册再取，而不是直接掉到
 // 只给 10 秒预告的公开片源上。
 func TestHongguoAppMediaReregistersWhenDeviceForgotten(t *testing.T) {
+	// 空正文重试的退避是秒级跨窗节奏（hongguoAppRetryDelays），夹具里会
+	// 真跑满 5 次；缩到毫秒级避免测试干等十几秒。
+	original := append([]time.Duration(nil), hongguoAppRetryDelays...)
+	t.Cleanup(func() { hongguoAppRetryDelays = original })
+	hongguoAppRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
 	const videoID = "7694655440692448281"
 	body := hongguoModelBody(t, videoID, map[string]any{
 		"status":         10,

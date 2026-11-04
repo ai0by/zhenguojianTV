@@ -212,28 +212,44 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		attempts = 8
 	}
 	var lastErr error
-	// 空正文的重试预算（0.8.16 第四批 / 0.8.22 调整）。
+	// 空正文的重试预算（0.8.16 第四批 / 0.8.22 / 0.8.23 调整）。
 	//
 	// 空正文有两种成因：签名随机失配（多试几次能中），以及**服务端不认这个
 	// device_id**（试多少次都是空）。设备已经注册过时，第二种占多数 ——
 	// 这时继续重试只是在拖时间。
 	//
-	// 但 3 次太紧：按单次签名约 60% 命中算，连续 3 次空正文仍有约 6% 概率，
-	// 用户遇到的就是"偶尔这一集就是打不开，点重试又好了"。空正文响应很快
-	// （<200ms），提到 5 次后降到约 1%，代价不到半秒。
+	// 另外空正文的失败**不是独立事件**（0.8.23 探针实测）：并发 2 份对冲
+	// 成功率反而低于单发，说明同一时间片内的请求共享命运、失败窗约
+	// 0.5~1.5 秒。所以空正文的重试必须跨出失败窗 —— 退避节奏见
+	// hongguoAppRetryDelay，而不是以前的 150~400ms 快速连发。
 	emptyBudget := attempts
 	if registered {
 		emptyBudget = 5
+	} else {
+		// 未注册设备的空正文 = "服务端根本不认这台设备"，重试救不回来
+		// （注册这条路由 ensureHongguoDevice 管，失败有 2 分钟冷却）。
+		// 旧代码也重试满 6~8 次，配上跨窗退避就是白等十秒；收到 3 次
+		// 就停，错误尽早交给上层去走换设备 / 短路路径。
+		emptyBudget = 3
 	}
 	emptyCount := 0
+	// emptyRetry 标记上一次失败是否为空正文：空正文用跨窗递增退避；
+	// 403 / 网络错误保持短抖动（0.8.21 实测 403 换一套签名立即重试通常就过，
+	// 它不落在失败窗里）。
+	emptyRetry := false
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
+			wait := providerQuickRetryDelay()
+			if emptyRetry {
+				wait = hongguoAppRetryDelay(emptyCount)
+			}
 			select {
-			case <-time.After(providerQuickRetryDelay()):
+			case <-time.After(wait):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
 		}
+		emptyRetry = false
 		request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -257,15 +273,16 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
-		// 最后两次退回裸请求（单次约 60% 命中），避免签名失配时整源不可用。
-		signed := attempt < attempts-2
+		// 0.8.23：不再有"最后两次退回裸请求"。探针实测（n=20）裸请求
+		// **全部**返回空正文 —— 签名头是服务端的准入条件，去掉它不是
+		// "换个方式试试"，而是把两次预算白白扔进必然失败。
 		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
 			now := time.Now()
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()
 			if comment {
 				signHongguoCommentRequest(prepared, commentNonce, now)
-			} else if signed {
+			} else {
 				signHongguoAppRequest(prepared, body, prepared.URL.RawQuery, deviceID, now)
 			}
 		})
@@ -307,6 +324,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			// 最常见的原因就是服务端不认当前 device_id）。
 			lastErr = errHongguoAppEmptyResponse
 			emptyCount++
+			emptyRetry = true
 			if emptyCount >= emptyBudget {
 				return nil, lastErr
 			}

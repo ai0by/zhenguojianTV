@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // hongguoDanmakuBody 造一份评论接口的响应。
@@ -55,19 +56,49 @@ func TestParseHongguoDanmakuEmptyWindow(t *testing.T) {
 	}
 }
 
-// 有数据但没有 next 字段才是真的异常（无法确定窗口边界）。
+// 有数据但没有 next 字段：按最后一条弹幕的时间戳推窗口边界（0.8.23）。
+//
+// 以前这里直接报"格式无效"，前端会把这一窗标红并反复退避重试 —— 但缺 next
+// 是响应的**结构**问题，重试永远拿不到 next，用户看到的就是"这一集弹幕
+// 加载失败"。探针实测：冷门剧整集无弹幕时连 data_list 都不下发，能走到
+// "有数据但缺 next"这一步的都是**有弹幕的剧**，报错牺牲的恰恰是正常剧。
 func TestParseHongguoDanmakuMissingNextWithRows(t *testing.T) {
-	_, err := parseHongguoDanmaku(map[string]any{
+	page, err := parseHongguoDanmaku(map[string]any{
 		"data": map[string]any{"data_list": []any{
 			map[string]any{"comment": map[string]any{
 				"comment_id": "c1",
 				"common":     map[string]any{"group_id": "7001", "status": "1", "content": map[string]any{"text": "来了"}},
 				"expand":     map[string]any{"offset_time": "61000"},
 			}},
+			map[string]any{"comment": map[string]any{
+				"comment_id": "c2",
+				"common":     map[string]any{"group_id": "7001", "status": "1", "content": map[string]any{"text": "第二条"}},
+				"expand":     map[string]any{"offset_time": "65000"},
+			}},
 		}},
 	}, "7001", 60_000, 120_000)
-	if err == nil {
-		t.Fatal("有数据但缺 next 时应当报错")
+	if err != nil {
+		t.Fatalf("有数据但缺 next 不应报错：%v", err)
+	}
+	// 窗口边界 = 最后一条弹幕位置 + 1ms，两条都应保留。
+	if len(page.Items) != 2 {
+		t.Fatalf("两条弹幕都应保留，实际 %d 条", len(page.Items))
+	}
+	if page.NextMS != 65_001 {
+		t.Fatalf("窗口应收在最后一条弹幕 +1ms，实际 %d", page.NextMS)
+	}
+	// 弹幕时间戳全部无效时按空窗口推进。
+	_, err = parseHongguoDanmaku(map[string]any{
+		"data": map[string]any{"data_list": []any{
+			map[string]any{"comment": map[string]any{
+				"comment_id": "c1",
+				"common":     map[string]any{"group_id": "7001", "status": "1", "content": map[string]any{"text": "来了"}},
+				"expand":     map[string]any{"offset_time": "not-a-number"},
+			}},
+		}},
+	}, "7001", 60_000, 120_000)
+	if err != nil {
+		t.Fatalf("时间戳无效应按空窗口推进：%v", err)
 	}
 }
 
@@ -158,5 +189,82 @@ func TestHongguoAppRequestDoesNotSetHostBackoff(t *testing.T) {
 	d.limiter.mu.Unlock()
 	if backoffs != 0 {
 		t.Fatalf("红果 App 接口不应留下 host 退避，实际 %d 条", backoffs)
+	}
+}
+
+// 0.8.23：空正文之后的退避必须跨出服务端失败窗（约 0.5~1.5 秒）。
+//
+// 探针实测：空正文失败不是独立事件，同一时间片内的请求共享命运（并发 2 份
+// 对冲成功率反而低于单发）。150~400ms 的快速连发全落在同一个失败窗里，
+// 救不回来还可能加重风控。这里验证退避序列的下界不小于 0.5 秒。
+func TestHongguoAppRetryDelayEscapesFailureWindow(t *testing.T) {
+	for step := 1; step <= 6; step++ {
+		for i := 0; i < 20; i++ {
+			if got := hongguoAppRetryDelay(step); got < 500*time.Millisecond {
+				t.Fatalf("第 %d 档退避 %s 仍在失败窗内（<0.5s）", step, got)
+			}
+		}
+	}
+	// 序列应递增到封顶：前几档的平均值要低于后几档（抖动 ±20% 下成立）。
+	first := hongguoAppRetryDelay(1)
+	last := hongguoAppRetryDelay(6)
+	if first > last {
+		t.Fatalf("退避序列应递增：第 1 档 %s > 第 6 档 %s", first, last)
+	}
+}
+
+// 0.8.23：请求始终签名。探针实测裸请求（n=20）全部返回空正文——
+// 签名头是服务端的准入条件，"最后两次退回裸请求"只是把预算扔进必然失败。
+func TestHongguoAppRequestAlwaysSigns(t *testing.T) {
+	original := append([]time.Duration(nil), hongguoAppRetryDelays...)
+	t.Cleanup(func() { hongguoAppRetryDelays = original })
+	hongguoAppRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+	var signed, total int32
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&total, 1)
+		if request.Header.Get("X-Gorgon") != "" {
+			atomic.AddInt32(&signed, 1)
+		}
+		// 全程空正文 → 跑满注册设备的 5 次 emptyBudget。
+		return sourceFixtureResponse(request, http.StatusOK, ""), nil
+	})
+	if _, err := d.hongguoAppRequest(context.Background(), http.MethodPost, "/novel/x/v1/", nil, map[string]any{"a": 1}); err == nil {
+		t.Fatal("一直空正文时应当返回错误")
+	}
+	got := atomic.LoadInt32(&total)
+	if got != 5 {
+		t.Fatalf("注册设备应跑满 5 次 emptyBudget，实际 %d 次", got)
+	}
+	if signedCount := atomic.LoadInt32(&signed); signedCount != got {
+		t.Fatalf("全部 %d 次请求都应带签名，实际 %d 次", got, signedCount)
+	}
+}
+
+// 空正文的整轮重试要在预算内跑完（跨窗退避 0.8+1.4+2.0+2.5s ≈ 6.7s，
+// 外层普通预算 25s），不能因为退避变长而把预算吃穿。这里把退避表换成
+// 真实序列、但把抖动算进去做**算术校验**，不真等。
+func TestHongguoAppRequestEmptyRetryWithinBudget(t *testing.T) {
+	original := append([]time.Duration(nil), hongguoAppRetryDelays...)
+	t.Cleanup(func() { hongguoAppRetryDelays = original })
+	var total time.Duration
+	for step := 1; step <= 5; step++ {
+		// 抖动 ±20%：取 +20% 上界。
+		total += hongguoAppRetryDelay(step) * 6 / 5
+	}
+	if total > 15*time.Second {
+		t.Fatalf("5 次空正文重试的累计退避上界 %s 超预算", total)
+	}
+	// 用毫秒级退避真跑一遍整轮，验证计数与错误路径。
+	hongguoAppRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+	var calls int32
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return sourceFixtureResponse(request, http.StatusOK, ""), nil
+	})
+	if _, err := d.hongguoAppRequest(context.Background(), http.MethodPost, "/novel/x/v1/", nil, map[string]any{"a": 1}); err == nil {
+		t.Fatal("一直空正文时应当返回错误")
+	}
+	if got := atomic.LoadInt32(&calls); got != 5 {
+		t.Fatalf("注册设备应跑满 5 次 emptyBudget，实际 %d 次", got)
 	}
 }
