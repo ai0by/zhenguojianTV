@@ -65,11 +65,32 @@ func validNativeCategory(source, category string) bool {
 		return validSoraniCategory(category)
 	case sourceHema:
 		return validHemaCategory(category)
+	case sourceHuangdou:
+		// 黄豆 UI 没有分类，但目录抓取用 `order:<v>` 切换排序维度
+		// （单排序被站点卡在 3000 部，三种排序并集才是 5000）。
+		if !strings.HasPrefix(category, huangdouOrderCategoryPrefix) {
+			return false
+		}
+		order := strings.TrimPrefix(category, huangdouOrderCategoryPrefix)
+		for _, known := range huangdouOrderCategories() {
+			if order == known {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
 
 func (engine *nativeEngine) nativeCategories(ctx context.Context, source string, force bool) ([]nativeCategory, error) {
+	return engine.nativeCategoriesFull(ctx, source, force, false)
+}
+
+// nativeCategoriesFull 是 nativeCategories 的完整版，多一个 allCategories 开关。
+//
+// `allCategories=true` 时河马会返回**未截断**的完整分类表（126 项而不是 UI 用
+// 的 40 项）。catalogdump 需要它来按分类补全整个剧库，见 hemaWantsAllCategories。
+func (engine *nativeEngine) nativeCategoriesFull(ctx context.Context, source string, force, allCategories bool) ([]nativeCategory, error) {
 	source = canonicalProviderSource(source)
 	all := []nativeCategory{{Name: "全部"}}
 	switch source {
@@ -81,6 +102,21 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	case sourceHuangguoAI:
 		return append(all, nativeAICategories...), nil
 	case sourceHuangdou:
+		// UI 侧黄豆没有分类（上游 = 一个混排列表）。
+		if !allCategories {
+			return all, nil
+		}
+		// 但目录抓取必须按**排序维度**遍历：单排序被服务端卡在 3000 部，
+		// 三种排序的并集才是 5000。传 `order:<v>` 给 catalog 就能切换排序。
+		for _, order := range huangdouOrderCategories() {
+			if order == huangdouOrderCategoryAll {
+				continue
+			}
+			all = append(all, nativeCategory{
+				ID:   huangdouOrderCategoryPrefix + order,
+				Name: "排序:" + order,
+			})
+		}
 		return all, nil
 	case sourceDuanju51:
 		return append(all, duanju51Categories...), nil
@@ -93,7 +129,8 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	engine.mu.Lock()
 	cached := append([]nativeCategory{}, engine.categoryOptions[source]...)
 	engine.mu.Unlock()
-	if len(cached) > 1 && !force {
+	// 全量模式不能吃缓存：缓存里存的是 UI 那 40 项，用它抓目录会漏分类。
+	if len(cached) > 1 && !force && !allCategories {
 		return cached, nil
 	}
 	d := engine.downloader
@@ -122,9 +159,14 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		}
 	// 河马剧场（0.8.17）：分类表在 /browse 的页面数据里，上游有 126 项，
 	// fetchHemaCategories 会按「热门优先 + 站点原序」截到 hemaMaxCategories。
+	// 抓目录时（allCategories）不截断 —— 否则只抓 40 个分类，其余分类下的剧
+	// 永远进不了快照，用户在手机上点那些分类反而让本机比远端多。
 	case sourceHema:
+		previous := hemaWantsAllCategories
+		hemaWantsAllCategories = allCategories
 		var categories []nativeCategory
 		categories, err = d.fetchHemaCategories(ctx)
+		hemaWantsAllCategories = previous
 		if err == nil {
 			all = append(all, categories...)
 		}

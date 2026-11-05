@@ -117,19 +117,30 @@ func (d *Downloader) fetchHuangjuCategories(ctx context.Context) ([]nativeCatego
 		return nil, err
 	}
 	rows, valid := huangjuPayload(response.value).([]any)
-	if !valid || len(rows) > 300 {
+	// 0.8.24：上限 300 → 2000。
+	//
+	// 站点分类会一直长（2026-11-05 实测已有 **377** 个）。原来那道
+	// `len(rows) > 300` 一触发就整份判"格式无效"，结果**黄剧的分类列表
+	// 全空** —— App 端看不到分类，catalogdump 也没法按分类补全目录
+	// （这两个后果都是用户能直接感知的）。上限只是防滥用，给足即可。
+	if !valid || len(rows) > 2000 {
 		return nil, errors.New("黄剧分类数据格式无效")
 	}
 	categories := []nativeCategory{{ID: huangjuNewestCategory, Name: "最新"}}
 	seen := map[string]bool{huangjuNewestCategory: true}
+	// 0.8.24：单条无效改为**跳过**，不再整份失败。
+	//
+	// 分类是站点内容运营配置的，随时可能冒出空名称、超长名、重复 slug。
+	// 以前任一条不合格就 `return nil, error`，等于让一条脏数据废掉整个
+	// 分类功能；跳过之后最坏只是少一个分类入口。
 	for _, entry := range rows {
 		row, _ := entry.(map[string]any)
 		id, name := mapString(row, "slug"), mapString(row, "name")
-		if id == "hot" {
+		if id == "hot" || id == "" || name == "" || len([]rune(name)) > 48 || seen[id] {
 			continue
 		}
-		if !validNativeCategory(sourceHuangju, id) || id == "" || name == "" || len([]rune(name)) > 48 || seen[id] {
-			return nil, errors.New("黄剧分类数据包含无效或重复条目")
+		if !validNativeCategory(sourceHuangju, id) {
+			continue
 		}
 		seen[id] = true
 		categories = append(categories, nativeCategory{ID: id, Name: name})

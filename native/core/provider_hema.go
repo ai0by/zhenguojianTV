@@ -45,6 +45,13 @@ const (
 	hemaMaxCategories = 40
 )
 
+// hemaWantsAllCategories 让目录抓取（catalogdump）拿到**未截断**的完整分类表。
+//
+// UI 那条 chip 条只需要 40 个，但抓目录要按分类补全整个剧库：只抓 40 个分类，
+// 其余分类下的剧就永远进不了快照，而用户在手机上点那些分类时会把结果并进
+// 本机目录 —— 于是"本机比远端多"。两者需求相反，用一个显式开关区分。
+var hemaWantsAllCategories bool
+
 // 两个基址用变量而不是常量：单测要把它指到 httptest 服务器上。
 var (
 	hemaSiteBaseURL   = "https://www.kuaikaw.cn"
@@ -232,8 +239,16 @@ func hemaCategoriesFromList(rows []any) []nativeCategory {
 		}
 		ordered = append(ordered, entry)
 	}
-	if len(ordered) > hemaMaxCategories {
-		ordered = ordered[:hemaMaxCategories]
+	// 0.8.24：**目录抓取不能截断**。
+	//
+	// 40 个上限是给 UI 的横向 chip 条用的（上游 126 项全塞进去没法点）。
+	// 但 catalogdump 要按分类补全整个剧库 —— 只抓 40 个分类会漏掉其余几十个
+	// 分类下的剧，表现就是"手机端浏览过的分类比远端快照多"。
+	// 由调用方显式声明"我要全量"，避免 UI 侧行为被改变。
+	if !hemaWantsAllCategories {
+		if len(ordered) > hemaMaxCategories {
+			ordered = ordered[:hemaMaxCategories]
+		}
 	}
 	return ordered
 }

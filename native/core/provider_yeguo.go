@@ -329,6 +329,14 @@ func (d *Downloader) fetchYeguoCatalogPage(ctx context.Context, page int, query 
 	}
 	// 搜索接口失败时如果静默返回空列表，UI 会显示"没有找到"，把站点故障
 	// 伪装成"没有这部剧"。这里把真实错误抛上去。
+	//
+	// 但**翻页翻到空**是另一回事（0.8.24）：目录只有 52 页，第 53 页起
+	// 服务端回空列表，那是正常收尾。以前这里也抛错，catalogdump 于是把
+	// 「野果 1033 条」整站判成失败 → 快照只能沿用上一轮，永远停在旧数据。
+	// 分清"搜索没结果"（要报错）与"翻页到底"（要正常收尾）。
+	if strings.TrimSpace(query) == "" {
+		return nil, false, nil
+	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("野果暂未返回剧集")
 	}

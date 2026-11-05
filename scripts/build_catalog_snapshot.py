@@ -115,6 +115,9 @@ def previous_entries(output_dir: Path) -> dict:
                 "file": file,
                 "sha256": str(entry.get("sha256") or ""),
                 "count": int(entry.get("count") or 0),
+                # 完整性标记也要继承：网果这类站源从来抓不全，标记必须一直
+                # 挂着，否则下一轮它没产出时标记就凭空消失了。
+                "truncated": bool(entry.get("truncated")),
             }
     return kept
 
@@ -251,6 +254,9 @@ def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
         if not source or not isinstance(items, list) or not items:
             print(f"[warn] 跳过 {path.name}: 没有有效剧集", file=sys.stderr)
             continue
+        # 这一份 dump 是不是**自己就翻不动了**（撞到 -pages 上限）。0.8.24 起
+        # catalogdump 会把这件事写进产物，以前只有 stderr 日志。
+        dump_truncated = bool(payload.get("truncated"))
         # 只留 App 需要的字段，顺手把 id 为空的脏数据剔掉；再按 id 去重一次
         # （导出工具本该去过重，这里是发布前兜底，见 dedupe_items）。
         cleaned = dedupe_items(source, [item for item in items if isinstance(item, dict)])
@@ -285,6 +291,23 @@ def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
                         file=sys.stderr,
                     )
                     candidates.insert(0, merged)
+            # 0.8.24：**截断的 dump 不许覆盖更全的旧快照**。
+            #
+            # 这是"手机端比远端全"的主因。网果 / 无果这类站源在境外 runner
+            # 恒 403，只能靠国内机器手工 dump 一次；那次如果用 `-pages 1600`
+            # 而站点实际有 2116 页，写进快照的就是一份 38349 条的残缺数据
+            # （真实 50767 条）。之后每轮境外都抓不到 → `previous_entries`
+            # 永久沿用这份残缺结果 → 永远缺 24%，而且**没有任何自愈路径**。
+            #
+            # 旧快照如果条数更多，说明它至少比这一份全，先留着；等哪天真的
+            # 抓到更全的再换。条数相同时仍按本轮写（否则永远刷不动字段）。
+            if dump_truncated and previous_count > fresh_count:
+                print(
+                    f"[keep] {source}: 本轮 dump 已在第 {payload.get('pages')} 页截断"
+                    f"（{fresh_count} 条 < 上一轮 {previous_count} 条），保留上一轮",
+                    file=sys.stderr,
+                )
+                candidates = [load_previous_items(output_dir, source, key) or cleaned]
         # **不写时间戳**：写进去就等于每轮内容都不同，确定性 nonce 也救不回来。
         body = None
         for candidate in candidates:
@@ -304,11 +327,18 @@ def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
         blob = encrypt(body, key)
         name = f"sources/{source}.json.enc"
         (output_dir / name).write_bytes(blob)
+        # 这一份最终**仍然不完整**吗？两种情形都算：
+        #   a) 本轮 dump 自己撞了上限（dump_truncated）；
+        #   b) 本轮没产出（走不到这里），标记由 previous_entries 继承。
+        # 标记写进 index 有两个用处：运维一眼能看出哪个站源从来没抓全；
+        # 下一轮沿用这份文件时标记不会丢。
         entries[source] = {
             "file": name,
             "sha256": hashlib.sha256(blob).hexdigest(),
             "count": len(cleaned),
         }
+        if dump_truncated:
+            entries[source]["truncated"] = True
         produced.add(source)
         print(f"[ok] {source}: {len(cleaned)} 条 -> {name} ({len(blob)} 字节)")
 

@@ -111,6 +111,27 @@ const maccmsWuguoDetailHTML = `<html><head><title>绝世天医-短剧绝世天�
 	`<a title='第01集' class="pcDrama_catalogItem" href="/index.php/vod/play/id/9500/sid/1/nid/1.html" target="_self">第01集</a>` +
 	`</div></body></html>`
 
+// 网果详情页的真实结构（2026-11-04 抓自 /vod/15269.html，此处截取播放区）。
+//
+// 关键特征：「立即播放」按钮在选集区**之前**，指向 sid=1 的整片线路
+// （`/play/15269-1-1.html`），锚文本里没有集号；真正的分集在 sid=2 / sid=3
+// 两条线路上，各 70 集。这正是 Key 冲突的现场。
+const maccmsWangguoDetailHTML = `<html><head><title>带崽闪婚后被顾先生宠疯啦_高清完整版在线观看_短剧网</title></head><body>` +
+	`<h1 class="entry-title">带崽闪婚后被顾先生宠疯啦</h1>` +
+	`<img class="lazyload" data-src="https://pic.youkupic.com/upload/vod/20241220-1/e05b8cf1042c5e136f7078125ab23134.png" alt="带崽闪婚后被顾先生宠疯啦">` +
+	`<a href="/play/15269-1-1.html">立即播放</a>` +
+	`<div class="playlist">` +
+	`<a href="/play/15269-1-1.html" title="全集">全集</a>` +
+	`<a href="/play/15269-2-1.html" title="第01集">第01集</a>` +
+	`<a href="/play/15269-2-2.html" title="第02集">第02集</a>` +
+	`<a href="/play/15269-2-3.html" title="第03集">第03集</a>` +
+	`</div>` +
+	`<div class="playlist line-3">` +
+	`<a href="/play/15269-3-1.html" title="第01集">第01集</a>` +
+	`<a href="/play/15269-3-2.html" title="第02集">第02集</a>` +
+	`<a href="/play/15269-3-3.html" title="第03集">第03集</a>` +
+	`</div></body></html>`
+
 const maccmsWuguoPlayHTML = `<html><body><script type="text/javascript">` +
 	`var player_aaaa={"flag":"play","encrypt":0,"trysee":0,"points":0,"link":"\/index.php\/vod\/play\/id\/9500\/sid\/1\/nid\/1.html",` +
 	`"url":"https:\/\/tyyszywvod2.com\/videos\/202606\/30\/6a3de64ab4f36433b91d78d9\/66323e\/index.m3u8","from":"tym3u8","id":"9500","sid":1,"nid":1}` +
@@ -220,6 +241,71 @@ func TestMaccmsEpisodesKeepsSingleFullSet(t *testing.T) {
 		if strings.Contains(episode.URL, "heji") {
 			t.Fatalf("APP 推广链接混进了分集：%+v", episode)
 		}
+	}
+}
+
+// 网果的详情页在选集区前面有一个「立即播放」按钮，指向 sid=1 的"全集"线路
+// （`/play/15269-1-1.html`），锚文本里没有任何集号。旧逻辑给它兜底成 1 号，
+// 紧接着真正的「第01集」（sid=2, nid=1）也解析成 1 —— 两集同一个 Key，
+// `providerChapterID` 给出同一个章节 ID，客户端按 ID 去重后**第 1 集消失**。
+//
+// 真实页面实测：sid=2 / sid=3 各 70 集（双线路），sid=1 是全集。
+// 修复后应得到 70 条，Key 唯一、从 1 连续到 70。
+func TestMaccmsEpisodesDropsFullSetWhenNumberedEpisodesExist(t *testing.T) {
+	profile, _ := maccmsProfileFor(sourceWangguo)
+	episodes := maccmsEpisodes(maccmsWangguoDetailHTML, profile, "https://www.duanju2.com/vod/15269.html")
+	// 夹具是 3 集 × 2 条线路 + 全集 + 立即播放：应去重成 3 集。
+	if len(episodes) != 3 {
+		t.Fatalf("双线路各 3 集应去重成 3 集，实际 %d：%+v", len(episodes), episodes)
+	}
+	seen := map[string]bool{}
+	for index, episode := range episodes {
+		if seen[episode.Key] {
+			t.Fatalf("第 %d 条的 Key=%q 重复了：%+v", index, episode.Key, episodes)
+		}
+		seen[episode.Key] = true
+		// 集号必须连续：1..3，由链接里的 nid 决定，不能靠锚文本。
+		if episode.Index != index+1 {
+			t.Fatalf("第 %d 条集号应为 %d，实际 %d（%q）", index, index+1, episode.Index, episode.Title)
+		}
+		// 「立即播放 / 全集」那条不能被留下。
+		if strings.Contains(episode.URL, "-1-1.html") {
+			t.Fatalf("全集入口不该出现在分集列表里：%+v", episode)
+		}
+	}
+	// 第 1 集必须真的指向第 1 集，而不是被"全集"顶掉。
+	if !strings.HasSuffix(episodes[0].URL, "/play/15269-2-1.html") {
+		t.Fatalf("首条应指向第 1 集，实际 %q", episodes[0].URL)
+	}
+}
+
+// 角标上的集数必须是合理值（0.8.24）。
+//
+// 实测出现过 `全110109集` —— 角标文本跨卡片串了。这种值一旦写进目录，
+// 详情页会显示「共 110109 集」，比不显示更糟。
+func TestMaccmsCardsRejectsAbsurdEpisodeCounts(t *testing.T) {
+	profile, _ := maccmsProfileFor(sourceWangguo)
+	body := `<div class="row"><article>` +
+		`<a href="/vod/1.html" title="正常剧"><img data-src="https://img.lzipic.com/a.jpg" alt="正常剧"></a>` +
+		`<span class="meta-post-type2">全80集</span>` +
+		`</article><article>` +
+		`<a href="/vod/2.html" title="脏数据剧"><img data-src="https://img.lzipic.com/b.jpg" alt="脏数据剧"></a>` +
+		`<span class="meta-post-type2">全110109集</span>` +
+		`</article></div>`
+	items := maccmsCards(body, profile, "https://www.duanju2.com")
+	if len(items) != 2 {
+		t.Fatalf("应解析出 2 张卡片，实际 %d", len(items))
+	}
+	byID := map[string]Drama{}
+	for _, item := range items {
+		byID[item.SourceID] = item
+	}
+	if got := byID["1"].Episodes; got != 80 {
+		t.Fatalf("正常的「全80集」应保留，实际 %v", got)
+	}
+	// Episodes 是 any，没赋值时是 nil（不是 0）。
+	if got := byID["2"].Episodes; got != nil {
+		t.Fatalf("110109 这种荒唐值必须丢弃，实际 %v", got)
 	}
 }
 

@@ -28,6 +28,29 @@ const (
 	huangdouPlatformKey = "7961beb44246e3012ce228d6b5ced05a"
 )
 
+// 黄豆目录的多排序采集（0.8.24）。
+//
+// `/drama/list` 单排序硬性只服务到第 100 页（30 条/页 ⇒ 3000 部），而且
+// `category` 参数被服务端忽略 —— 唯一能改变结果集的是 `order`。实测：
+//
+//	order 缺省  3000 条
+//	order=new   3000 条，其中 1528 条是缺省拿不到的
+//	order=hot   再补 472 条
+//	────────────── 并集 5000 条
+//
+// 快照原来只有 3000（缺 40%）。这里把排序编码成 `order:<value>` 当作
+// category 传下去，catalogdump 就能像遍历分类那样遍历排序取并集。
+const (
+	huangdouOrderCategoryPrefix = "order:"
+	// huangdouOrderCategoryAll 是"主排序"（不带 order），放第一位。
+	huangdouOrderCategoryAll = ""
+)
+
+// huangdouOrderCategories 返回要遍历的排序维度，供目录抓取用。
+func huangdouOrderCategories() []string {
+	return []string{"", "new", "hot"}
+}
+
 type huangdouAPIClient struct {
 	d         *Downloader
 	host      string

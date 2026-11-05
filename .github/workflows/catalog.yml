@@ -11,8 +11,17 @@ name: Build Catalog Snapshot
 #
 #   增量  每 6 小时（:20）  `-pages 3` + `--merge`，只翻前几页拿新剧，
 #                          剩下的由上一轮快照按 id 补齐。**这是唯一的定时任务。**
-#   全量  只能手动触发      `-pages 2000` + 3 轮取并集，整站重抓。既清理增量
-#                          模式下会残留的下架剧，也是站点改版后重新对齐的兜底。
+#                          2026-11-05 起带**自动补漏**：跑完后若发现某站上一版
+#                          被标 `truncated`、或本轮产出比上一版少 10% 以上，就
+#                          单独对那几个站做一次全量重抓（带分类枚举）。
+#                          增量本身永远不自愈 —— 它只翻 3 页、其余全靠沿用，
+#                          残血一旦写进去就会一直沿用（网果缺 24%、河马只有
+#                          652 条都是这么来的），所以必须有这个兜底。
+#   全量  只能手动触发      `-pages 2000` + 3 轮取并集 + **逐分类枚举**，整站重抓。
+#                          既清理增量模式下会残留的下架剧，也是站点改版后重新
+#                          对齐的兜底。分类枚举只在全量开：它能把黄剧从 2000
+#                          补到 3105、河马从 652 补到 10908，但请求量会放大几十倍
+#                          （黄剧 378 个分类），放进每 6 小时的增量等于自找风控。
 #
 # **全量不再进 cron**（2026-11-02 用户要求）：14 个站源整站翻到底一天一轮，
 # 请求量和规律性都太显眼，容易触发对端风控。需要时在 Actions 页面手动跑
@@ -126,7 +135,16 @@ jobs:
           echo "MODE=$mode" >> "$GITHUB_ENV"
           echo "PAGES=$pages" >> "$GITHUB_ENV"
           echo "PASSES=$passes" >> "$GITHUB_ENV"
-          echo "本轮模式：$mode，每个站源最多 $pages 页，跑 $passes 轮取并集"
+          # 0.8.24：**只有全量才逐分类枚举**。
+          #
+          # 分类枚举是全量补全的关键（黄剧 2000→3105、河马 652→10908、
+          # 黄豆 3004→4524），但它会把请求量放大几十倍：黄剧 378 个分类、
+          # 河马 125 个、黄豆 3 个排序。增量模式每 6 小时跑一次、只翻 3 页，
+          # 目的是"捡最新几部剧"（新剧都在主排序前几页），逐分类枚举既拿不到
+          # 新东西，又会让每轮从 42 个请求涨到 2000+，等于自找风控。
+          if [ "$mode" = full ]; then categories=true; else categories=false; fi
+          echo "CATEGORIES=$categories" >> "$GITHUB_ENV"
+          echo "本轮模式：$mode，每个站源最多 $pages 页，跑 $passes 轮取并集，分类枚举=$categories"
 
       - name: Dump catalogs
         working-directory: native
@@ -149,6 +167,7 @@ jobs:
               -dir "/tmp/catalog-work-$pass" \
               -out "$out" \
               -pages "$PAGES" \
+              -categories="$CATEGORIES" \
               -sources '${{ inputs.sources || '' }}' 2>&1 | tee "$log"
             status=${PIPESTATUS[0]}
             # 撞到翻页上限的站源在日志里是 [warn] 行，转成 Actions 注解，
@@ -174,6 +193,75 @@ jobs:
             fi
             previous_total=$total
           done
+
+      # 0.8.24：增量模式的**自动补漏**。
+      #
+      # 增量每 6 小时只翻 3 页，靠 `--merge` 沿用上一轮把后面的剧补齐 ——
+      # 这意味着它**永远不会自愈**：只要某站曾经被抓成残血（截断 / 整站失败 /
+      # 站点改版后分类漏抓），之后每一轮都沿用那份残血，用户在本机反而更多。
+      # 网果缺 24%、河马只有 652 条（真实 10908）就是这么来的。
+      #
+      # 所以增量跑完后检查一遍：哪些站在上一版快照里标记了 `truncated`，
+      # 或者这一轮它的产出明显少于上一版（说明站点只吐了一部分），就单独
+      # 对这些站做一次**全量重抓**（带分类枚举），把残血补回来。
+      # 只补受影响的站，不做整站全量，避免请求量回到"永不休息的爬虫"。
+      - name: Auto-heal short sources
+        working-directory: native
+        shell: bash
+        run: |
+          set -uo pipefail
+          # 只在增量模式跑：全量本来就整站重抓，不需要补。
+          if [ "${MODE:-}" != "incremental" ]; then
+            echo "本轮是 $MODE 模式，跳过自动补漏"
+            exit 0
+          fi
+          need=$(python3 - <<'PY'
+          import json, pathlib
+          out = pathlib.Path('/tmp/catalog-out')
+          dump = pathlib.Path('/tmp/catalog-dump')
+          prev = {}
+          index_path = out / 'index.json'
+          if index_path.is_file():
+              try:
+                  prev = json.loads(index_path.read_text(encoding='utf-8')).get('sources') or {}
+              except Exception:
+                  prev = {}
+          short = []
+          for path in sorted(dump.glob('*.json')):
+              try:
+                  payload = json.loads(path.read_text(encoding='utf-8'))
+              except Exception:
+                  continue
+              source = str(payload.get('source') or path.stem)
+              fresh = len(payload.get('items') or [])
+              entry = prev.get(source) or {}
+              old = int(entry.get('count') or 0)
+              # 上一版自标残缺，或者这一轮比上一版少了一截（<90%）。
+              if entry.get('truncated') or (old and fresh < old * 0.9):
+                  short.append(source)
+          print(','.join(short))
+          PY
+          )
+          if [ -z "$need" ]; then
+            echo "没有需要补漏的站源，增量结束"
+            exit 0
+          fi
+          echo "::warning::增量发现这些站源数据偏少，自动全量重抓：$need"
+          rm -rf /tmp/heal /tmp/healout && mkdir -p /tmp/heal /tmp/healout
+          /tmp/catalogdump -dir /tmp/heal -out /tmp/healout -pages 2400 -categories=true \
+            -sources "$need" 2>&1 | grep -E '^\[ok\]|^\[warn\]|^\[info\]' | tail -20 || true
+          # 把补抓结果覆盖进本轮 dump（同站源同名文件，直接替换）。
+          healed=0
+          for f in /tmp/healout/*.json; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            if [ -f "/tmp/catalog-dump/$name" ]; then
+              echo "  以补抓结果替换 /tmp/catalog-dump/$name"
+            fi
+            cp "$f" "/tmp/catalog-dump/$name"
+            healed=$((healed + 1))
+          done
+          echo "补漏完成，替换 $healed 个站源"
 
       - name: Encrypt and index
         shell: bash

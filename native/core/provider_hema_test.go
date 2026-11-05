@@ -428,6 +428,34 @@ func TestHemaCategoriesCapped(t *testing.T) {
 	}
 }
 
+// 抓目录时必须拿到**全部分类**（0.8.24）。
+//
+// 40 个上限是给 UI 横向 chip 条用的。catalogdump 按分类补全剧库时如果也被截到
+// 40 个，其余几十个分类下的剧永远进不了快照 —— 而用户在手机上点那些分类会让
+// 本机目录并进这些剧，于是"手机端比远端更全"。两个场景的需求相反，必须分开。
+func TestHemaCategoriesFullWhenRequested(t *testing.T) {
+	rows := make([]any, 0, 200)
+	for index := 0; index < 200; index++ {
+		rows = append(rows, map[string]any{
+			"name":         fmt.Sprintf("分类%d", index),
+			"typeThreeIds": []any{json.Number(fmt.Sprint(index + 1))},
+		})
+	}
+	previous := hemaWantsAllCategories
+	hemaWantsAllCategories = true
+	t.Cleanup(func() { hemaWantsAllCategories = previous })
+
+	categories := hemaCategoriesFromList(rows)
+	if len(categories) != 200 {
+		t.Fatalf("全量模式下不该截断，实际 %d 个", len(categories))
+	}
+	// 收尾必须把开关还原，否则进程内后续的 UI 调用会拿到 200 个分类。
+	hemaWantsAllCategories = false
+	if got := len(hemaCategoriesFromList(rows)); got != hemaMaxCategories {
+		t.Fatalf("开关关闭后应恢复截断，实际 %d 个", got)
+	}
+}
+
 func TestHemaCategoriesFromLiveShape(t *testing.T) {
 	// 真实站点的 typeThreeList 片段（2026-10-30 实测）。
 	fixture := `{"props":{"pageProps":{"bookList":[],"typeThreeList":[

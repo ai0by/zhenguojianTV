@@ -47,6 +47,19 @@ var (
 
 	maccmsNumericID = regexp.MustCompile(`^[0-9]{1,12}$`)
 
+	// maccmsSaneEpisodeCeiling 是"角标上写的集数"能接受的上限。
+	//
+	// 短剧单集 60~120 秒，几百集已经是长剧；超过这个数基本都是角标文本
+	// 跨卡片串了（实测出现过 `全110109集`）。宁可显示"集数未知"，也不能让
+	// 详情页顶着「共 110109 集」这种明显荒唐的数字。
+	maccmsSaneEpisodeCeiling = 999
+
+	// 播放链接里的线路 / 集号（0.8.24）。两种模板各一条：
+	//   /play/15269-2-70.html              → sid=2 nid=70
+	//   /index.php/vod/play/id/50001/sid/1/nid/1.html → sid=1 nid=1
+	maccmsPlayRouteDash  = regexp.MustCompile(`(?i)/play/[0-9]+-([0-9]+)-([0-9]+)\.html$`)
+	maccmsPlayRouteNamed = regexp.MustCompile(`(?i)/vod/play/id/[0-9]+/sid/([0-9]+)/nid/([0-9]+)\.html$`)
+
 	// 播放页里播放器配置的 JSON：`<script>var player_aaaa={...}</script>`。
 	maccmsPlayerJSON  = regexp.MustCompile(`(?s)player_aaaa\s*=\s*(\{.*?\})\s*</script>`)
 	maccmsPlayerField = regexp.MustCompile(`(?i)"url"\s*:\s*"([^"]+)"`)
@@ -467,7 +480,13 @@ func maccmsCards(body string, profile maccmsProfile, base string) []Drama {
 			ReleaseStatus: maccmsReleaseStatus(remark),
 		}
 		item.CoverURL = item.Cover
-		if count := episodeIndex(remark, 0); count > 0 {
+		// 集数只在角标里能解析出来时才填，而且必须落在**合理区间**内。
+		//
+		// 上限 999 的理由：短剧单集 60~120 秒，整部剧再长也就几百集；
+		// 实测脏数据是 `全110109集`（角标文本跨卡片串了）和 880 / 801 / 1100
+		// 这类明显不是集数的数字。这类值一旦写进目录，详情页会显示
+		// 「共 110109 集」，比不显示更糟 —— 用户会以为这剧有十几万集。
+		if count := episodeIndex(remark, 0); count > 0 && count <= maccmsSaneEpisodeCeiling {
 			item.Episodes, item.TotalEpisode, item.EpisodeCount = count, count, count
 		}
 		items = append(items, item)
@@ -735,12 +754,37 @@ func maccmsDetailCover(document *html.Node, detailURL string) string {
 // 苹果CMS 的多线路模板会把同一集在 n1 / n2 / n3 三条线路上各列一遍
 // （发果实测 9 集 × 3 条线 = 27 个播放链接），只按链接去重会得到 3 倍分集，
 // 所以集号能解析出来时按**集号**去重，保留第一条线路。
+//
+// 集号来源有两个，优先级不同（0.8.24 修正）：
+//
+//  1. **播放链接里的 nid**（`/play/<id>-<sid>-<nid>.html`、
+//     `/index.php/vod/play/id/<id>/sid/<sid>/nid/<nid>.html`）—— 权威。
+//  2. 锚文本 / title 里的「第N集」—— 兜底。
+//
+// 为什么必须先看链接：网果的详情页在选集区**前面**还有一个「立即播放」按钮，
+// 它指向 `/play/<id>-1-1.html`（sid=1 是"全集"线路），锚文本是「立即播放」，
+// 里面没有任何集号。按旧逻辑它会落到 `index = len(episodes)+1 = 1`，紧接着
+// 真正的「第01集」也解析出 1 —— 两集拿到同一个 Key="1"，`providerChapterID`
+// 于是给出同一个章节 ID。客户端按 ID 去重，第 1 集被"全集"顶掉；更糟的是
+// 章节 ID 重复会让选集列表错位。改用 nid 之后「立即播放」在自己那套 sid 里
+// 是 nid=1，与第 1 集（sid=2, nid=1）仍然同号，所以还要按 sid 分组处理。
 func maccmsEpisodes(body string, profile maccmsProfile, pageURL string) []providerEpisode {
 	document := maccmsDocument(body)
 	if document == nil {
 		return nil
 	}
-	var episodes []providerEpisode
+	// 先收两拨：有确定集号的，和"全集 / 立即播放"这类没有集号的。
+	//
+	// 分成两拨是因为要**在有真实分集时丢掉无集号的那条**。旧逻辑把它们混在
+	// 一起，无集号的走 `index = len+1` 兜底，恰好落在 1 号位，与紧随其后的
+	// 「第01集」撞成同一个 Key —— 章节 ID 重复，第 1 集被"全集"顶掉。
+	type pending struct {
+		title string
+		link  string
+		index int
+	}
+	var numbered []pending
+	var unnamed []pending
 	seenLinks := map[string]bool{}
 	seenNumbers := map[int]bool{}
 	for _, anchor := range maccmsNodes(document, func(current *html.Node) bool { return maccmsTag(current, "a") }) {
@@ -760,26 +804,83 @@ func maccmsEpisodes(body string, profile maccmsProfile, pageURL string) []provid
 		if strings.Contains(title, "APP") || strings.Contains(title, "下载") || strings.Contains(title, "客户端") {
 			continue
 		}
-		number := episodeIndex(title, 0)
-		if number > 0 {
-			if seenNumbers[number] {
-				continue
-			}
-			seenNumbers[number] = true
-		}
 		seenLinks[link] = true
-		index := number
-		if index <= 0 {
-			index = len(episodes) + 1
+		number := maccmsEpisodeNumber(path, title)
+		if number <= 0 {
+			unnamed = append(unnamed, pending{title: title, link: link})
+			continue
 		}
+		if seenNumbers[number] {
+			continue
+		}
+		seenNumbers[number] = true
+		numbered = append(numbered, pending{title: title, link: link, index: number})
+	}
+	// 有真实分集时，没有集号的那条一定是「全集 / 立即播放」这类整片入口 ——
+	// 留着它既占号又和第一集撞 ID，直接丢掉。
+	// 只有全站确实拿不到任何集号（伍果这种"整部一个视频"的站源）时才保留，
+	// 否则会变成"这部剧一集都没有"。
+	if len(numbered) > 0 {
+		unnamed = nil
+	}
+	episodes := make([]providerEpisode, 0, len(numbered)+len(unnamed))
+	for _, item := range numbered {
 		episodes = append(episodes, providerEpisode{
-			Key:   strconv.Itoa(index),
-			Title: title,
-			URL:   link,
-			Index: index,
+			Key:   strconv.Itoa(item.index),
+			Title: item.title,
+			URL:   item.link,
+			Index: item.index,
+		})
+	}
+	for _, item := range unnamed {
+		episodes = append(episodes, providerEpisode{
+			Key:   strconv.Itoa(len(episodes) + 1),
+			Title: item.title,
+			URL:   item.link,
+			Index: len(episodes) + 1,
 		})
 	}
 	return episodes
+}
+
+// maccmsPlayRoute 拆出播放链接里的 sid / nid。
+//
+// 兼容两种模板：
+//
+//	网果 / 花果  /play/<id>-<sid>-<nid>.html、/zywplay/<id>-<sid>-<nid>.html
+//	伍果 / 发果  /index.php/vod/play/id/<id>/sid/<sid>/nid/<nid>.html
+//
+// 拆不出来就返回 0，调用方退回用锚文本解析。
+func maccmsPlayRoute(path string) (sid, nid int) {
+	if m := maccmsPlayRouteDash.FindStringSubmatch(path); len(m) > 2 {
+		sid, _ = strconv.Atoi(m[1])
+		nid, _ = strconv.Atoi(m[2])
+		return sid, nid
+	}
+	if m := maccmsPlayRouteNamed.FindStringSubmatch(path); len(m) > 2 {
+		sid, _ = strconv.Atoi(m[1])
+		nid, _ = strconv.Atoi(m[2])
+		return sid, nid
+	}
+	return 0, 0
+}
+
+// maccmsEpisodeNumber 决定这一条播放链接算第几集。
+//
+// 顺序：先看链接里的 nid（权威），再用锚文本兜底。**链接里 sid=1 的单集
+// 线路要特殊对待** —— 那是「全集 / 立即播放」，nid 恒为 1，如果直接当第 1 集
+// 会把真正的第 1 集挤掉。判定方式：这一条是 sid=1 且锚文本里没有集号
+// （「立即播放」「全集」这类），就交给调用方按"无集号"处理。
+func maccmsEpisodeNumber(path, title string) int {
+	sid, nid := maccmsPlayRoute(path)
+	if nid > 0 {
+		if sid == 1 && episodeIndex(title, 0) <= 0 {
+			// 「全集 / 立即播放」：不是分集，别占号。
+			return 0
+		}
+		return nid
+	}
+	return episodeIndex(title, 0)
 }
 
 // ---------------------------------------------------------------- 播放地址

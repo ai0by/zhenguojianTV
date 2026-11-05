@@ -115,6 +115,12 @@ type nativeInput struct {
 	Session          string                  `json:"session"`
 	Sequence         int64                   `json:"sequence"`
 	Force            bool                    `json:"force"`
+	// AllCategories 让 categories 返回**未截断**的完整分类表（0.8.24）。
+	//
+	// UI 的横向 chip 条只放得下 40 个分类（河马上游有 126 项），但抓目录时
+	// 必须按全部分类各翻一遍才能补全剧库 —— 只抓 UI 暴露的那几十个，其余
+	// 分类下的剧永远进不了快照，用户在本机点那些分类后反而比远端多。
+	AllCategories bool `json:"allCategories"`
 	// 弹幕（0.8.11）：按播放会话 + 时间窗拉取，见 app_danmaku.go。
 	PlaybackSession string `json:"playbackSession"`
 	StartMS         int64  `json:"startMs"`
@@ -571,7 +577,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 		}
 		return engine.nativeCached(nativeCatalogKey(input.Source, input.Category)), nil
 	case "categories":
-		items, err := engine.nativeCategories(ctx, input.Source, input.Force)
+		items, err := engine.nativeCategoriesFull(ctx, input.Source, input.Force, input.AllCategories)
 		return map[string]any{"items": items}, err
 	case "sourceStatus":
 		return engine.sourceStatus(input.Source), nil
@@ -841,8 +847,24 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 		}
 	case sourceHuangdou:
 		client := newHuangdouAPIClient(d)
+		// 黄豆的 `/drama/list` 有**硬性流量上限**：单排序最多服务到第 100 页
+		// （要第 101 页它把 page 夹回 100，返回的还是那 30 条），30 条/页
+		// ⇒ 3000 部。而 `category` 参数会被服务端**忽略**（传任何值都回同一批），
+		// 只有 `order` 真的改排序：实测三种排序各自 3000 条、两两不同，
+		// 并集 5000 条 —— 快照原来只有 3000，缺 40%。
+		//
+		// 所以用 `order:` 前缀把排序编码进 category，让 catalogdump 能像
+		// 分类那样遍历多个排序取并集（它与分类走同一条 `source|category` 路径）。
+		order := ""
+		if strings.HasPrefix(category, huangdouOrderCategoryPrefix) {
+			order = strings.TrimPrefix(category, huangdouOrderCategoryPrefix)
+		}
+		params := map[string]any{"page": strconv.Itoa(page), "page_size": "30"}
+		if order != "" {
+			params["order"] = order
+		}
 		var decoded any
-		err = client.call(ctx, "/drama/list", map[string]any{"page": strconv.Itoa(page), "page_size": "30"}, &decoded)
+		err = client.call(ctx, "/drama/list", params, &decoded)
 		if err == nil {
 			rows := huangdouList(decoded)
 			for _, row := range rows {

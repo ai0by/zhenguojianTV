@@ -56,12 +56,13 @@ class CatalogSnapshotCryptoTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_CRYPTO, '缺少 cryptography')
 class CatalogSnapshotBuildTests(unittest.TestCase):
-    def _dump(self, directory: Path, source: str, items: list[dict]) -> None:
+    def _dump(self, directory: Path, source: str, items: list[dict], truncated: bool = False, pages: int = 0) -> None:
+        payload = {'source': source, 'generatedAt': '2026-11-02T02:00:00Z', 'items': items}
+        if truncated:
+            payload['truncated'] = True
+            payload['pages'] = pages
         (directory / f'{source}.json').write_text(
-            json.dumps(
-                {'source': source, 'generatedAt': '2026-11-02T02:00:00Z', 'items': items},
-                ensure_ascii=False,
-            ),
+            json.dumps(payload, ensure_ascii=False),
             encoding='utf-8',
         )
 
@@ -401,6 +402,86 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             self.assertEqual(index['sources']['hongguo']['count'], 1)
             payload = json.loads(decrypt((output / index['sources']['hongguo']['file']).read_bytes()))
             self.assertEqual([item['id'] for item in payload['items']], ['hongguo:2'])
+
+    def test_truncated_dump_does_not_shrink_snapshot(self):
+        """截断的 dump 不许覆盖更全的旧快照（0.8.24）。
+
+        这是"手机端比远端全"的主因：网果在境外 runner 恒 403，快照只能靠
+        国内手工 dump；那次用了 `-pages 1600` 而站点有 2116 页，写进快照的
+        是 38349 条（真实 50767 条）。旧逻辑只看"有没有新剧"，截断的 dump
+        一旦带上没见过的 id 就会被当成完整结果写进去。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            # 上一轮：全量 5 条。
+            self._dump(first, 'wangguo', [{'id': f'wangguo:{n}', 'title': f'剧{n}'} for n in range(1, 6)])
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            # 本轮：撞到翻页上限，只有 2 条（且带一个新 id 7，旧逻辑会当成"有新增"）。
+            self._dump(second, 'wangguo', [{'id': 'wangguo:1', 'title': '剧1'}, {'id': 'wangguo:7', 'title': '剧7'}],
+                       truncated=True, pages=1600)
+            index = build(second, output, merge=False)
+            # 必须保留上一轮的 5 条，而不是缩成 2 条。
+            self.assertEqual(index['sources']['wangguo']['count'], 5)
+            payload = json.loads(decrypt((output / index['sources']['wangguo']['file']).read_bytes()))
+            self.assertEqual(len(payload['items']), 5)
+
+    def test_truncated_dump_replaces_when_it_is_larger(self):
+        """截断但条数更多时仍按本轮写 —— 只要比旧的更全就换。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(first, 'wangguo', [{'id': 'wangguo:1', 'title': '剧1'}])
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'wangguo', [{'id': f'wangguo:{n}', 'title': f'剧{n}'} for n in range(1, 4)],
+                       truncated=True, pages=1600)
+            index = build(second, output, merge=False)
+            self.assertEqual(index['sources']['wangguo']['count'], 3)
+
+    def test_truncated_flag_is_persisted_and_inherited(self):
+        """截断标记要写进 index，并在本轮没产出时继续挂着。
+
+        网果这类站源永远抓不全：标记丢了，运维就再也看不出哪个站源残缺，
+        下一轮沿用这份文件时也丢了"它不完整"这个事实。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(first, 'wangguo', [{'id': 'wangguo:1', 'title': '剧1'}], truncated=True, pages=1600)
+            index = build(first, output)
+            self.assertTrue(index['sources']['wangguo'].get('truncated'))
+
+            # 第二轮完全没产出（境外 403），标记必须继承下来。
+            empty = root / 'empty'
+            empty.mkdir()
+            index = build(empty, output, merge=True)
+            self.assertTrue(index['sources']['wangguo'].get('truncated'))
+            self.assertEqual(index['sources']['wangguo']['count'], 1)
+
+    def test_complete_dump_clears_truncated_flag(self):
+        """真的抓全了就该把标记摘掉，否则它会永远挂着误导人。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(first, 'wangguo', [{'id': 'wangguo:1', 'title': '剧1'}], truncated=True, pages=1600)
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'wangguo', [{'id': 'wangguo:1', 'title': '剧1'}, {'id': 'wangguo:2', 'title': '剧2'}])
+            index = build(second, output, merge=False)
+            self.assertFalse(index['sources']['wangguo'].get('truncated'))
 
 
 if __name__ == '__main__':

@@ -68,6 +68,31 @@ func TestYeguoEpisodeRowsUseIDAndSort(t *testing.T) {
 
 // 站点把 content_access_type 分 free/coin/vip，但播放接口并不拦付费，
 // 所以列表与详情都不该把剧标成 VIP（否则详情页会弹"这是一集 VIP 内容"）。
+// 0.8.24：翻页翻到空是**正常收尾**，不是错误。
+//
+// 目录只有 52 页，第 53 页起服务端回空列表。以前这里也抛"野果暂未返回剧集"，
+// catalogdump 于是把整站（1033 条）判成失败 → 快照只能沿用上一轮，永远停在
+// 旧数据。搜索场景仍然要报错，否则 UI 会把站点故障显示成"没有这部剧"。
+func TestYeguoCatalogEmptyPageIsNotAnError(t *testing.T) {
+	downloader := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == providerMirrorConfigURL {
+			return sourceFixtureResponse(request, http.StatusOK, `{"version":1,"ttl_seconds":3600,"sources":{}}`), nil
+		}
+		// 任何路径都回空列表，模拟"翻到最后一页之后"。
+		return sourceFixtureResponse(request, http.StatusOK, `{"items":[]}`), nil
+	})
+	items, more, err := downloader.fetchYeguoCatalogPage(context.Background(), 53, "")
+	if err != nil {
+		t.Fatalf("翻到空页不该报错：%v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("空页不该有数据，实际 %d 条", len(items))
+	}
+	if more {
+		t.Fatal("空页之后不该还有更多")
+	}
+}
+
 func TestYeguoCatalogDoesNotMarkPaidDramasAsVip(t *testing.T) {
 	root := map[string]any{
 		"items": []any{
