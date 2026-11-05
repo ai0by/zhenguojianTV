@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.23",
-    "build": 104,
-    "tag": "v0.8.23",
-    "notes": "0.8.23 · 用实测数据重调红果的重试节奏",
+    "version": "0.8.24",
+    "build": 105,
+    "tag": "v0.8.24",
+    "notes": "0.8.24 · 红果取流不再「卡 20 秒」：换维度优先，等待兜底",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.23+104-all.apk",
-        "size": 72909163,
-        "sha256": "5c12632d93f441dc7a1dfd274a5f022a5de65cbebac6ced88722a28a01e64687"
+        "name": "zhenguojianTV-0.8.24+105-all.apk",
+        "size": 72913774,
+        "sha256": "1cb14eb57738071896e2aa37c885a89b333e12902c5c1079140e98f1d23df2b6"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.23+104-arm64-v8a.apk",
-        "size": 33072307,
-        "sha256": "72b1d60047ca6ae6717ee5a5563ebb3c37a470285d1be7c9e6833df800c6978b"
+        "name": "zhenguojianTV-0.8.24+105-arm64-v8a.apk",
+        "size": 33073978,
+        "sha256": "258b79662e2bf96907dbdc3100830694dd776e98fefa620c9145acd45770c17e"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.23+104-armeabi-v7a.apk",
-        "size": 41617334,
-        "sha256": "d87f0b45c9f7364ce511cefb7a63882f8c2cc18998be1c6cdc832fe60ddbb9b5"
+        "name": "zhenguojianTV-0.8.24+105-armeabi-v7a.apk",
+        "size": 41620300,
+        "sha256": "55fa4232a947ef56456bb25298c4beb80a458a7a84827b6ee789b500b2dd3a2c"
       }
     ]
   },
