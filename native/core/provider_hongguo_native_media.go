@@ -310,12 +310,12 @@ func hongguoPlayerQuery() url.Values {
 	return url.Values{
 		"channel":  {"oppo_8662_64"},
 		"host_abi": {"arm64-v8a"},
-		// 0.8.24：`dragon_device_type` 必须是 phone。
+		// 0.8.24：`dragon_device_type` 保持 pad 不动。
 		//
-		// 以前写的是 "pad"，同时 is_android_pad_screen=0 —— 两者互相矛盾，
-		// 服务端按 pad 归组后对取流接口一律回空正文。改成 phone 与 UA 里的
-		// SM-N9860（手机）、resolution 1280*2772 一致，实测能拿到 video_model。
-		"dragon_device_type":      {"phone"},
+		// 曾怀疑它与 is_android_pad_screen=0 矛盾导致取流被拒，实测切到
+		// phone 与保持 pad **都是 5/5**，所以它不是根因。别为它去改 UA 和
+		// resolution —— 这几个字段必须配套，单改一个反而更容易被识别。
+		"dragon_device_type":      {"pad"},
 		"pv_player":               {hongguoAppVersionCode},
 		"compliance_status":       {"0"},
 		"need_personal_recommend": {"1"},

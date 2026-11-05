@@ -19,32 +19,41 @@ const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
 
 // hongguoAppFallbackHost 是备用入口域名（0.8.24 新增）。
 //
-// 上游会按域名做灰度和分区限流：主域某一刻对某台设备返回空正文时，备用域
-// 往往还是通的。实测同一次取流请求，主域空、备域拿到完整 video_model。
+// 上游按域名做灰度：主域对某台设备持续回空正文时，备用域往往还是通的。
+// 单独看它不是根因（实测把备用域设成主域仍有 5/5），但它能在主域抖动时
+// 少等一个跨窗退避周期，属于「换维度」里最便宜的一档。
 const hongguoAppFallbackHost = "api5-normal-hl.fqnovel.com"
 
-// hongguoAppUserAgent 必须与下面的 versionCode 一致（UA 里也带着版本号）。
+// hongguoAppUserAgent / versionCode 保持 73532 / 7.3.5.32 不动。
 //
-// **0.8.24 关键修正**：这是「红果取不到片源」的真正根因。
+// **0.8.24 排查结论（做过完整对照，别再改这两项）**：
 //
-// 之前用的是 73532/7.3.5.32 配 Cronet/TTNet 尾巴的 UA，取流接口对它的回复
-// 是「200 + 空正文」——实测 30 次 0 中。换成 71532/7.1.3.32 配 `tt-ok` 尾巴
-// 之后，同样的签名、同样的设备，立刻拿到完整 video_model（含 5 档清晰度）。
+// 现象是「红果点开一集特别慢，有时 20 秒才报错」。一开始怀疑是 UA 过期，
+// 因为用参考项目（kuoluoss/zhenguojian）的 71332 + tt-ok UA 手搓请求能
+// 拿到 video_model，而当时的 73532 手搓是 0/30。
 //
-// 用户侧表现就是"红果越来越卡"：旧 UA 拿不到片源，代码于是重试 5 次
-// （跨窗退避 0.8/1.4/2.0/2.5s）→ 再取一次 → 再换设备注册 → 再取一次，
-// 最坏纯等 20 秒才报错。换 UA 之后第一次就中，0.6 秒出片。
-const hongguoAppUserAgent = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
+// 但**用真实生产链路**（resolveHongguoAppMedia，含 doPreparedCatalogRequest
+// 的 prepare 回调）把 UA / versionCode / dragon_device_type 全部切回旧值
+// 之后，仍然是 **5/5、平均 0.47~0.74 秒**。所以：
+//
+//   73532 UA      ≠ 根因
+//   7.3.5.32 版本 ≠ 根因
+//   dragon=pad    ≠ 根因
+//   备用域名      ≠ 根因（设成主域仍 5/5）
+//
+// 手搓请求之所以失败，是因为 prepare 回调会重设 `_rticket`，手签的那份签名
+// 和最终发出的 URL 对不上 —— 那是探针写法的坑，不是线上行为。
+//
+// 真正让"慢"的是**重试策略**：空正文原本一律 0.8/1.4/2.0/2.5 秒跨窗退避，
+// 叠上「一次取流 → 再取一次 → 重注册设备 → 再取一次」三层，最坏纯等 20 秒。
+// 见下面 hongguoAppRequest 里的 emptyBudget 注释。
+const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
 // 客户端版本号：query 里的 version_code / version_name、UA、以及 medusa
 // 签名指纹三者必须一致，所以只在这里写一次。
-//
-// 7.1.3.32 是实测能通过取流接口准入的版本（见上面的 UA 注释）。
-// **不要单独调高它**：version_code 参与 sign6 的 medusa 签名和 _rticket 的
-// 分支计算，实测更高版本会被打回空正文。
 const (
-	hongguoAppVersionCode = "71332"
-	hongguoAppVersionName = "7.1.3.32"
+	hongguoAppVersionCode = "73532"
+	hongguoAppVersionName = "7.3.5.32"
 )
 
 type hongguoCatalogCursor struct {
@@ -233,22 +242,24 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		attempts = 8
 	}
 	var lastErr error
-	// 空正文的重试预算（0.8.16 第四批 / 0.8.22 / 0.8.23 调整）。
+	// 空正文的重试预算与节奏（0.8.16 起多次调整，0.8.24 定稿）。
 	//
 	// 空正文有两种成因：签名随机失配（多试几次能中），以及**服务端不认这个
-	// device_id**（试多少次都是空）。设备已经注册过时，第二种占多数 ——
-	// 这时继续重试只是在拖时间。
+	// device_id / 这个域名**（试多少次都是空）。
 	//
-	// 空正文的重试节奏（0.8.24 重排）。
+	// **0.8.24 修正了 0.8.23 的一个错误前提**。0.8.23 认为空正文是"服务端按
+	// 0.5~1.5 秒时间片周期性丢弃"，于是把所有空正文重试改成 0.8/1.4/2.0/2.5
+	// 秒跨窗退避。实测（同一设备连取 12 次、旧 UA、旧版本）证明：真正的
+	// 单发成功率就接近 100%，"失败窗"多数是「这台设备/这个域名被临时拒」，
+	// 换掉维度立刻就好，等待毫无意义。盲目跨窗退避的代价是最坏纯等 6.7 秒，
+	// 叠上外层三层重试就是用户感受到的"点开一集卡 20 秒"。
 	//
-	// 历史教训：0.8.23 认为空正文是"服务端按 0.5~1.5 秒时间片周期性丢弃"，
-	// 于是把重试改成 0.8/1.4/2.0/2.5 秒跨窗退避。那个结论建立在**UA 已经
-	// 失效**的前提下 —— 当时成功率只有 68%，看起来像随机失败窗，其实是
-	// 准入被拒。换了正确的 UA/版本后单发成功率接近 100%。
-	//
-	// 但**不能改成快速连发**：实测同一 device_id 连续快速重试反而把
-	// 成功率打到 2/5，服务端会按身份限流。正确做法是参考项验证过的
-	// 「换维度」：先换域名，再换身份，每次都留 250ms 以上间隔。
+	// 现在的节奏（换维度优先，等待兜底）：
+	//   第 1 次空 → 换备用域名（最便宜的维度）
+	//   第 2 次空 → 换 device_id（本请求内，不改落盘状态）
+	//   第 3 次起 → 才用跨窗退避，给"真的是失败窗"的情况兜底
+	// **保持 ≥250ms 间隔**：实测改成 150~400ms 快速连发会把成功率打到 2/5，
+	// 同一身份高频重试会被服务端限流。
 	emptyBudget := attempts
 	if registered {
 		emptyBudget = 5
