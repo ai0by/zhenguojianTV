@@ -308,9 +308,14 @@ func hongguoRejectPreview(media providerMedia) error {
 // 保留这组参数是为了尽量贴近真实客户端，不是解决问题的关键。
 func hongguoPlayerQuery() url.Values {
 	return url.Values{
-		"channel":                 {"oppo_8662_64"},
-		"host_abi":                {"arm64-v8a"},
-		"dragon_device_type":      {"pad"},
+		"channel":  {"oppo_8662_64"},
+		"host_abi": {"arm64-v8a"},
+		// 0.8.24：`dragon_device_type` 必须是 phone。
+		//
+		// 以前写的是 "pad"，同时 is_android_pad_screen=0 —— 两者互相矛盾，
+		// 服务端按 pad 归组后对取流接口一律回空正文。改成 phone 与 UA 里的
+		// SM-N9860（手机）、resolution 1280*2772 一致，实测能拿到 video_model。
+		"dragon_device_type":      {"phone"},
 		"pv_player":               {hongguoAppVersionCode},
 		"compliance_status":       {"0"},
 		"need_personal_recommend": {"1"},

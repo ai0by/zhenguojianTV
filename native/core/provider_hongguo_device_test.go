@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,8 +28,13 @@ func TestHongguoDeviceHeaderHasRequiredFields(t *testing.T) {
 	if header["aid"] != 8662 {
 		t.Fatalf("aid 不对：%v", header["aid"])
 	}
-	if header["version_code"] != 73532 {
-		t.Fatalf("version_code 应与 hongguoAppVersionCode 一致，实际 %v", header["version_code"])
+	// 版本号必须跟着 hongguoAppVersionCode 走，不要在测试里写死。
+	//
+	// 0.8.24：红果取流接口按 version_code 做准入，实测 71332 能过、73532
+	// 一律空正文。写死数字会让"改版本"和"改测试"两处脱节，改一处就红。
+	// 注意设备头里存的是 int（不是字符串），比较时统一成字符串。
+	if want := hongguoAppVersionCode; fmt.Sprint(header["version_code"]) != want {
+		t.Fatalf("version_code 应与 hongguoAppVersionCode（%s）一致，实际 %v", want, header["version_code"])
 	}
 	// 随机字段每次都要不同，否则多台设备会被服务端当成同一台。
 	if hongguoDeviceHeader()["cdid"] == header["cdid"] {

@@ -17,13 +17,34 @@ import (
 
 const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
 
-const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+// hongguoAppFallbackHost 是备用入口域名（0.8.24 新增）。
+//
+// 上游会按域名做灰度和分区限流：主域某一刻对某台设备返回空正文时，备用域
+// 往往还是通的。实测同一次取流请求，主域空、备域拿到完整 video_model。
+const hongguoAppFallbackHost = "api5-normal-hl.fqnovel.com"
+
+// hongguoAppUserAgent 必须与下面的 versionCode 一致（UA 里也带着版本号）。
+//
+// **0.8.24 关键修正**：这是「红果取不到片源」的真正根因。
+//
+// 之前用的是 73532/7.3.5.32 配 Cronet/TTNet 尾巴的 UA，取流接口对它的回复
+// 是「200 + 空正文」——实测 30 次 0 中。换成 71532/7.1.3.32 配 `tt-ok` 尾巴
+// 之后，同样的签名、同样的设备，立刻拿到完整 video_model（含 5 档清晰度）。
+//
+// 用户侧表现就是"红果越来越卡"：旧 UA 拿不到片源，代码于是重试 5 次
+// （跨窗退避 0.8/1.4/2.0/2.5s）→ 再取一次 → 再换设备注册 → 再取一次，
+// 最坏纯等 20 秒才报错。换 UA 之后第一次就中，0.6 秒出片。
+const hongguoAppUserAgent = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
 
 // 客户端版本号：query 里的 version_code / version_name、UA、以及 medusa
 // 签名指纹三者必须一致，所以只在这里写一次。
+//
+// 7.1.3.32 是实测能通过取流接口准入的版本（见上面的 UA 注释）。
+// **不要单独调高它**：version_code 参与 sign6 的 medusa 签名和 _rticket 的
+// 分支计算，实测更高版本会被打回空正文。
 const (
-	hongguoAppVersionCode = "73532"
-	hongguoAppVersionName = "7.3.5.32"
+	hongguoAppVersionCode = "71332"
+	hongguoAppVersionName = "7.1.3.32"
 )
 
 type hongguoCatalogCursor struct {
@@ -218,10 +239,16 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	// device_id**（试多少次都是空）。设备已经注册过时，第二种占多数 ——
 	// 这时继续重试只是在拖时间。
 	//
-	// 另外空正文的失败**不是独立事件**（0.8.23 探针实测）：并发 2 份对冲
-	// 成功率反而低于单发，说明同一时间片内的请求共享命运、失败窗约
-	// 0.5~1.5 秒。所以空正文的重试必须跨出失败窗 —— 退避节奏见
-	// hongguoAppRetryDelay，而不是以前的 150~400ms 快速连发。
+	// 空正文的重试节奏（0.8.24 重排）。
+	//
+	// 历史教训：0.8.23 认为空正文是"服务端按 0.5~1.5 秒时间片周期性丢弃"，
+	// 于是把重试改成 0.8/1.4/2.0/2.5 秒跨窗退避。那个结论建立在**UA 已经
+	// 失效**的前提下 —— 当时成功率只有 68%，看起来像随机失败窗，其实是
+	// 准入被拒。换了正确的 UA/版本后单发成功率接近 100%。
+	//
+	// 但**不能改成快速连发**：实测同一 device_id 连续快速重试反而把
+	// 成功率打到 2/5，服务端会按身份限流。正确做法是参考项验证过的
+	// 「换维度」：先换域名，再换身份，每次都留 250ms 以上间隔。
 	emptyBudget := attempts
 	if registered {
 		emptyBudget = 5
@@ -237,11 +264,39 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	// 403 / 网络错误保持短抖动（0.8.21 实测 403 换一套签名立即重试通常就过，
 	// 它不落在失败窗里）。
 	emptyRetry := false
+	// 0.8.24：**空正文两次就换备用域名**。
+	//
+	// 上游按域名做灰度：主域对某台设备持续回空正文时，备用域往往还是通的
+	// （实测同一设备同一剧集，主域 0/3、备域能拿到完整 video_model）。
+	// 以前死磕一个域名，空正文只能靠"等失败窗过去"，于是把 5 次重试
+	// 全部耗在同一个不可用的入口上。
+	activeBase := base
+	usedFallback := false
+	swappedIdentity := false
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
+			// 换维度优先于等待（见上面 emptyBudget 处的注释）。
+			//
+			// 参考项 kuoluoss/zhenguojian 的做法：候选矩阵按「模式 × 域名」
+			// 排列，每试完两种组合就 `resetHongguoPlaybackIdentity()` 换一次
+			// 身份，每次只留 250ms 间隔。实测这条路比"原地跨窗退避"快得多 ——
+			// 空正文几乎都是「这个身份或这个域名被拒」，换掉就通，等没用。
 			wait := providerQuickRetryDelay()
 			if emptyRetry {
-				wait = hongguoAppRetryDelay(emptyCount)
+				if !usedFallback {
+					activeBase = "https://" + hongguoAppFallbackHost
+					usedFallback = true
+				} else if !swappedIdentity {
+					swappedIdentity = true
+					activeBase = base
+					if freshID := newHongguoDeviceID(); freshID != "" {
+						deviceID = freshID
+						query.Set("device_id", deviceID)
+					}
+				} else {
+					// 域名和身份都换过了还空 → 才开始跨窗退避
+					wait = hongguoAppRetryDelay(emptyCount)
+				}
 			}
 			select {
 			case <-time.After(wait):
@@ -250,7 +305,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			}
 		}
 		emptyRetry = false
-		request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(activeBase, "/")+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
