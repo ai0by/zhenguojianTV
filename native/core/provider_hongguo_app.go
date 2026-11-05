@@ -19,9 +19,11 @@ const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
 
 // hongguoAppFallbackHost 是备用入口域名（0.8.24 新增）。
 //
-// 上游按域名做灰度：主域对某台设备持续回空正文时，备用域往往还是通的。
-// 单独看它不是根因（实测把备用域设成主域仍有 5/5），但它能在主域抖动时
-// 少等一个跨窗退避周期，属于「换维度」里最便宜的一档。
+// **实测两个域名完全等价**：主域 20/20、备域 20/20，平均 0.48s vs 0.49s。
+// 所以它**不是**解决慢的关键，别在这上面找原因。
+//
+// 保留它的理由只有一个：上游按域名做灰度，某个域名对某台设备临时失效时，
+// 换一条出口比干等一个退避周期便宜。属"换维度"里最便宜的一档兜底。
 const hongguoAppFallbackHost = "api5-normal-hl.fqnovel.com"
 
 // hongguoAppUserAgent / versionCode 保持 73532 / 7.3.5.32 不动。
