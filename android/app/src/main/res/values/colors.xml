@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#FFFFFF</color>
-    <!-- 开屏底色：与 assets/splash 里浅色开屏图顶部一致，原生冷启动到 Flutter
-         首帧之间不会出现颜色跳变。
-         0.8.11：取样自实际图片（手机图顶部 #FEF5F5、电视图 #FDF7F7），
-         取两者的交集值，两张图都能接上。 -->
-    <color name="splash_background">#FEF5F5</color>
+    <!-- 开屏底色：与 Flutter 开屏页的纸白底色一致，原生冷启动到首帧之间
+         不会出现颜色跳变。
+         0.8.26：开屏改成矢量（contain 不放大），顶部留白就是图形自身的纸白
+         `#FFFFFF`，所以这里跟着改成纯白；旧的 #FEF5F5 是位图时代的取样值，
+         和矢量图顶边会差出一点淡痕。 -->
+    <color name="splash_background">#FFFFFF</color>
 </resources>

@@ -42,7 +42,7 @@ class BrandPainter extends CustomPainter {
     final source = bounds ?? (Offset.zero & designSize);
     if (source.width <= 0 || source.height <= 0) return;
 
-    // 开屏要铺满（cover），图标要整幅可见（contain）。
+    // contain 保证整幅可见、绝不放大；cover 只在确实需要铺满时用。
     final scale = fit == BoxFit.cover
         ? math.max(size.width / source.width, size.height / source.height)
         : math.min(size.width / source.width, size.height / source.height);
@@ -149,7 +149,8 @@ class BrandPainter extends CustomPainter {
       old.shapes != shapes ||
       old.designSize != designSize ||
       old.fit != fit ||
-      old.bounds != bounds;
+      old.bounds != bounds ||
+      old.alignment != alignment;
 }
 
 /// 品牌矢量图组件。
@@ -174,19 +175,41 @@ class BrandArt extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final (design, bounds, fit) = switch (_kind) {
-      _BrandKind.mark => (brandMarkSize, brandMarkBounds, BoxFit.contain),
+    // 0.8.26：全部改成 contain + 贴底对齐。
+    //
+    // 原来开屏用 cover，18:9 / 19.5:9 的手机比设计稿（1080×1920，9:16）更高，
+    // cover 会先把整幅图放大约 25% 再左右裁掉一圈 —— 用户看到的是
+    // "logo 变大、两侧装饰点被切掉"，跟设计稿完全不是一回事。
+    //
+    // 现在改成「整幅可见、绝不放大」：多出来的高度全部留在上方（开屏图顶部
+    // 本来就是纸白留白，和底色无缝），底部的红色波形始终贴着屏幕下沿 ——
+    // 这是设计稿里它唯一成立的位置。电视版横图是 16:9，屏幕通常也是 16:9，
+    // contain 与 cover 等价，居中即可。
+    final (design, bounds, fit, alignment) = switch (_kind) {
+      _BrandKind.mark => (
+          brandMarkSize,
+          brandMarkBounds,
+          BoxFit.contain,
+          Alignment.center,
+        ),
       _BrandKind.splashPhone => (
           brandSplashPhoneSize,
           brandSplashPhoneBounds,
-          BoxFit.cover,
+          BoxFit.contain,
+          Alignment.bottomCenter,
         ),
       _BrandKind.splashTv => (
           brandSplashTvSize,
           brandSplashTvBounds,
-          BoxFit.cover,
+          BoxFit.contain,
+          Alignment.center,
         ),
-      _BrandKind.icon => (brandIconSize, brandIconBounds, BoxFit.cover),
+      _BrandKind.icon => (
+          brandIconSize,
+          brandIconBounds,
+          BoxFit.contain,
+          Alignment.center,
+        ),
     };
 
     final painter = BrandPainter(
@@ -194,6 +217,7 @@ class BrandArt extends StatelessWidget {
       designSize: design,
       bounds: bounds,
       fit: fit,
+      alignment: alignment,
     );
 
     if (size == null) {

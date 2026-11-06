@@ -183,11 +183,13 @@ class _SplashSurfaceState extends State<_SplashSurface>
     curve: Curves.easeOutCubic,
   ));
 
-  /// 与开屏图顶部主色一致（手机图取样 #FEF5F5，电视图 #FDF7F7）。
+  /// 开屏图的纸白底色。
   ///
-  /// 矢量图没有解码等待，这一层基本看不到，但它是 PNG 转矢量后
-  /// 唯一的兜底底色，不能让下层深色首页在首帧露出来。
-  static const _backdrop = Color(0xFFFEF5F5);
+  /// 0.8.26 起开屏图按 contain 缩放（整幅可见、不放大），比设计稿更长的屏幕
+  /// 上方会多出一条留白 —— 那条留白就是这个颜色，所以必须取**图形自身的**
+  /// 纸白（渐变起点 `#FFFFFF`），差一点就会在开屏图顶边露出一条淡痕。
+  /// 同时它也是唯一兜底底色，不能让下层深色首页在首帧露出来。
+  static const _backdrop = Color(0xFFFFFFFF);
 
   /// 开屏是浅色画面，状态栏/导航栏图标要翻成深色，
   /// 否则深色主题下白色图标压在白底上完全看不见。
@@ -215,10 +217,15 @@ class _SplashSurfaceState extends State<_SplashSurface>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // 矢量开屏图：铺满整屏，无解码等待。
+            // 矢量开屏图：整幅可见（contain），无解码等待。
             FadeTransition(
               opacity: _fade,
               child: ScaleTransition(
+                // 收束动画以**底边**为锚：手机图是贴底对齐的，锚在中心会让
+                // 底部红色波形在动画里上下滑一下，锚在底边就只是上沿轻微收拢。
+                alignment: television
+                    ? Alignment.center
+                    : Alignment.bottomCenter,
                 scale: _scale,
                 child: BrandArt.splash(television: television),
               ),
