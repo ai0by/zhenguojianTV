@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.25",
-    "build": 107,
-    "tag": "v0.8.25",
-    "notes": "0.8.25 · 品牌视觉全面矢量化 + 番剧双站接入 + 榜单从 3 源扩到 9 源",
+    "version": "0.8.26",
+    "build": 108,
+    "tag": "v0.8.26",
+    "notes": "0.8.26 · 图标与开屏按「真尺寸」重排：不再放大、不再被裁",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.25+107-all.apk",
-        "size": 72795732,
-        "sha256": "4dc9c6f01f1500f25395c72ed9b632f5cda4ff46ab3832de409375d194e2ecd4"
+        "name": "zhenguojianTV-0.8.26+108-all.apk",
+        "size": 72795625,
+        "sha256": "f2e3f85a6accc7c8865268c5de21b8ecc67eb5c9d0867eba054a6ab5bfb2fb3e"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.25+107-arm64-v8a.apk",
-        "size": 32902162,
-        "sha256": "3a9d91d694a910ed581ce3628a65d79660598f648adb60af63de524e43849143"
+        "name": "zhenguojianTV-0.8.26+108-arm64-v8a.apk",
+        "size": 32901925,
+        "sha256": "9922202bd819e815a98c6f745d1efe1b42229c37a76d5d6ff498063ca7565ea0"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.25+107-armeabi-v7a.apk",
-        "size": 41449076,
-        "sha256": "aeebc5c93d2fe2623b537fc946433706624d03d68e184c2ea9302cbc86b7f4e3"
+        "name": "zhenguojianTV-0.8.26+108-armeabi-v7a.apk",
+        "size": 41449025,
+        "sha256": "db06d92fa75f363a0892b38f5d319b663157745ac2b4bf4e9f6176ae8a625511"
       }
     ]
   },
