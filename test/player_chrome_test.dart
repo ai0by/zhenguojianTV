@@ -109,8 +109,9 @@ void main() {
     expect(find.byKey(const ValueKey('blackhole-password')), findsNothing);
     if (allSourcesEnabled) {
       // 打开后黑洞站源回到可展示列表（红果鉴只有红果，不参与这条断言）。
+      // 基准用 `displayValues`：青空已隐藏，不进可展示列表。
       expect(store.sources.map((site) => site.id), contains('huangdou'));
-      expect(store.sources.length, SourceSite.values.length);
+      expect(store.sources.length, SourceSite.displayValues.length);
     }
 
     // 关掉不需要口令：开关直接拨回去。

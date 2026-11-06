@@ -125,12 +125,12 @@ class LocalStore extends ChangeNotifier {
 
   /// 当前**可展示**的站源：权限放行 + 黑洞开关过滤 + 已隐藏站源过滤。
   ///
-  /// 0.8.25：青空（sorani）进了 [SourceSite.hiddenIds]，只是不出现在
-  /// 站源列表 / 首页弹窗 / 目录抓取里；[allowsSource] 保持原样，
-  /// 老存档里指向它的历史记录与已下载剧集照常能播。
-  List<SourceSite> get sources => SourceSite.values
+  /// 0.8.25：青空（sorani）进了 [SourceSite.hiddenIds]（见
+  /// [SourceSite.displayValues]），只是不出现在站源列表 / 首页弹窗 /
+  /// 目录抓取里；[allowsSource] 保持原样，老存档里指向它的历史记录与
+  /// 已下载剧集照常能播。
+  List<SourceSite> get sources => SourceSite.displayValues
       .where((site) => allowsSource(site.id))
-      .where((site) => !SourceSite.isHidden(site.id))
       .where((site) => blackholeEnabled || !SourceSite.isBlackhole(site.id))
       .toList();
 

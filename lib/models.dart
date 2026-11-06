@@ -68,7 +68,8 @@ class SourceSite {
   static const wangguo = SourceSite('wangguo', '网果', '短剧 · 短剧网');
   static const faguo = SourceSite('faguo', '发果', '短剧 · 168 影院');
   static const wuguo = SourceSite('wuguo', '伍果', '短剧 · 五五短剧');
-  // 番剧站（0.8.25）：按集拆分，MX动漫 / 囧次元都有独立排行榜。
+  // 番剧站（0.8.25）：按集拆分。MX动漫没有榜单入口（/label/top/、/top/、
+  // /rank/ 全 404），囧次元的 label/hot 页有日漫榜与动漫剧场榜两张 paper 榜。
   static const mxdm = SourceSite('mxdm', 'MX动漫', '日漫 · 国漫 · 剧场版');
   static const jcydm = SourceSite('jcydm', '囧次元', '日漫 · 剧场 · 热搜榜');
   static const huangguoVideo = SourceSite('huangguo-video', '剧场', '视频剧集');
@@ -164,6 +165,14 @@ class SourceSite {
   static const hiddenIds = {'sorani'};
 
   static bool isHidden(String id) => hiddenIds.contains(id);
+
+  /// 可展示的站源全集：从 [values] 里去掉 [hiddenIds]。
+  ///
+  /// 展示侧（站源列表 / 首页弹窗 / 分组 / 站源管理）统一用它，
+  /// 权限判定与存档解析仍用 [values] / [knownValues] —— 否则隐藏会把
+  /// 历史记录、收藏与已下载剧集一起吞掉。
+  static List<SourceSite> get displayValues =>
+      values.where((site) => !isHidden(site.id)).toList();
 
   /// 开启「黑洞」站源需要的口令（0.8.16）。
   ///
