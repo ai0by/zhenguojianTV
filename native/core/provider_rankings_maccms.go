@@ -96,41 +96,52 @@ func buildDuanju51Ranking(items []Drama, board rankingBoard, page int) (rankingP
 
 // ---------------------------------------------------------------- E站新番榜
 
-// ezdmwRankingEntry：`<a href="/Index/bangumi/81018.html"...>
-// <p><span>1</span><strong>标题</strong></em></p><img .../><strong>简介</strong></a>`
+// E站榜单条目：`<a href="/Index/bangumi/81018.html"...><p><span>1</span>
+// <strong>标题</strong></p><img src="封面"/><strong>简介</strong></a>`。
+// 按 <a> 整块切，块内再取序号 / 片名 / 封面 —— 只匹配前半段会丢封面。
 var (
-	ezdmwRankingBlock = regexp.MustCompile(`(?is)<a\s+href="(/Index/bangumi/[0-9]+\.html)"[^>]*>\s*<p>\s*<span>([0-9]{1,3})</span>\s*<strong[^>]*>([^<]{1,120})</strong>`)
+	ezdmwRankingAnchor = regexp.MustCompile(`(?is)<a\s+href="(/Index/bangumi/[0-9]+\.html)"[^>]*>(.*?)</a>`)
+	ezdmwRankingRank   = regexp.MustCompile(`(?is)<p>\s*<span>([0-9]{1,3})</span>\s*<strong[^>]*>([^<]{1,120})</strong>`)
+	ezdmwRankingImg    = regexp.MustCompile(`(?is)<img[^>]+src="([^"]+)"`)
 )
 
 // parseEZDMWRanking 解析 E站 fan_ranking 页。
 //
 // 页面顶部的月份链接（2026年10月 / 7月 / 1月）只做展示，不参与解析 ——
-// 不带 name 参数的 /Index/fan_ranking.html 默认返回当季，跟导航一致。
+// 不带 name 参数访问 /Index/fan_ranking.html 只会回「参数有误」（12 字节），
+// 所以抓取侧固定带 `?atype=hor`（站点默认编排的动漫总榜，实测 30 条）。
 func parseEZDMWRanking(body, base string) (rankingPage, error) {
 	failure := errors.New("E站新番榜格式或页面已变化，请稍后重试")
-	matches := ezdmwRankingBlock.FindAllStringSubmatch(body, -1)
-	if len(matches) == 0 {
-		return rankingPage{}, failure
-	}
-	result := rankingPage{Items: make([]rankingItem, 0, len(matches)), TotalPages: 1}
+	result := rankingPage{Items: make([]rankingItem, 0, 32), TotalPages: 1}
 	seen := map[string]bool{}
 	previous := 0
-	for _, match := range matches {
+	for _, match := range ezdmwRankingAnchor.FindAllStringSubmatch(body, -1) {
 		id := strings.TrimSuffix(strings.TrimPrefix(match[1], "/Index/bangumi/"), ".html")
-		rank, err := strconv.Atoi(strings.TrimSpace(match[2]))
-		title := strings.TrimSpace(match[3])
-		if err != nil || rank <= previous || title == "" || seen[id] {
+		inner := match[2]
+		head := ezdmwRankingRank.FindStringSubmatch(inner)
+		if len(head) < 3 || seen[id] {
+			continue
+		}
+		rank, err := strconv.Atoi(strings.TrimSpace(head[1]))
+		title := strings.TrimSpace(head[2])
+		if err != nil || rank <= previous || title == "" {
 			return rankingPage{}, failure
 		}
 		seen[id], previous = true, rank
-		result.Items = append(result.Items, rankingItem{Rank: rank, Drama: Drama{
+		drama := Drama{
 			ID:          providerDramaID(sourceEZDMW, id),
 			Source:      sourceEZDMW,
 			SourceID:    id,
 			Title:       title,
 			Name:        title,
 			ChannelName: "E站",
-		}})
+		}
+		if image := ezdmwRankingImg.FindStringSubmatch(inner); len(image) > 1 {
+			if cover := providerCoverAddress(image[1], base+"/"); cover != "" {
+				drama.Cover, drama.CoverURL = cover, cover
+			}
+		}
+		result.Items = append(result.Items, rankingItem{Rank: rank, Drama: drama})
 	}
 	if len(result.Items) == 0 {
 		return rankingPage{}, failure

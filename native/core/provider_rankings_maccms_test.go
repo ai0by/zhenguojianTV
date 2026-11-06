@@ -40,6 +40,10 @@ func TestParseEZDMWRankingExtractsOrderedEntries(t *testing.T) {
 	if page.Items[2].Rank != 3 || page.Items[2].Drama.Title != "JOJO的奇妙冒险 飙马野郎" {
 		t.Fatalf("third entry wrong: %+v", page.Items[2])
 	}
+	// 封面在同一条目的 <img> 上，必须一起带出来（没有封面的榜单页很难看）。
+	if nativeText(first.Drama.Cover) == "" {
+		t.Fatalf("first entry lost cover: %+v", first.Drama)
+	}
 	if page.HasMore || page.TotalPages != 1 {
 		t.Fatalf("single page board should not paginate: %+v", page)
 	}
@@ -50,12 +54,26 @@ func TestParseEZDMWRankingRejectsBrokenMarkup(t *testing.T) {
 		"empty":    "",
 		"no-block": "<html><body>没有条目</body></html>",
 		// 名次倒序（2 在 1 前）必须整份拒绝。
-		"reversed":  strings.Replace(ezdmwRankingFixture, "<span>1</span>", "<span>2</span>", 1),
-		"duplicate": strings.Replace(ezdmwRankingFixture, "/Index/bangumi/95049.html", "/Index/bangumi/81018.html", 1),
+		"reversed": strings.Replace(ezdmwRankingFixture, "<span>1</span>", "<span>2</span>", 1),
 	} {
 		if _, err := parseEZDMWRanking(body, "https://www.ezdmw.org"); err == nil {
 			t.Fatalf("%s markup was accepted", name)
 		}
+	}
+}
+
+func TestParseEZDMWRankingDeduplicatesRepeatedEntry(t *testing.T) {
+	// 真实页面侧栏会重复出现同一个条目，重复只跳过，不整榜作废。
+	body := strings.Replace(ezdmwRankingFixture, "/Index/bangumi/95049.html", "/Index/bangumi/81018.html", 1)
+	page, err := parseEZDMWRanking(body, "https://www.ezdmw.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("want 2 items after dedupe, got %d", len(page.Items))
+	}
+	if page.Items[1].Rank != 3 || page.Items[1].Drama.SourceID != "98494" {
+		t.Fatalf("second kept entry wrong: %+v", page.Items[1])
 	}
 }
 
