@@ -288,7 +288,8 @@ class _ProfileEditorState extends State<ProfileEditor> {
   late final _name = TextEditingController(text: widget.profile?.name ?? '');
   final _pin = TextEditingController(), _confirm = TextEditingController();
   late final _sources =
-      (widget.profile?.sources ?? SourceSite.values.map((s) => s.id).toList())
+      (widget.profile?.sources ??
+              SourceSite.displayValues.map((s) => s.id).toList())
           .toSet();
   late bool _download = widget.profile?.download ?? true;
   bool _clearPin = false, _busy = false;
@@ -398,9 +399,7 @@ class _ProfileEditorState extends State<ProfileEditor> {
               Text('允许访问的站源', style: Theme.of(context).textTheme.titleMedium),
               // 已隐藏的站源（0.8.25 青空）不出现在权限清单里；老配置里
               // 已有的授权项保持不动（`_sources` 从 profile 初始化，保存时原样回写）。
-              for (final source in SourceSite.values.where(
-                (source) => !SourceSite.isHidden(source.id),
-              ))
+              for (final source in SourceSite.displayValues)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   controlAffinity: ListTileControlAffinity.leading,

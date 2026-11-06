@@ -60,7 +60,8 @@ void main() {
 
   Future<LocalStore> makeStore() async {
     // 0.8.15 第二批：黄豆等属于「黑洞」站源，默认不展示；
-    // 这组用例按 `SourceSite.values` 的分组顺序驱动站源弹窗，先打开黑洞。
+    // 这组用例按 `SourceSite.displayValues` 的分组顺序驱动站源弹窗（青空已隐藏，
+    // 不在弹窗里），先打开黑洞。
     SharedPreferences.setMockInitialValues({'blackhole': true});
     final store = LocalStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
@@ -149,7 +150,7 @@ void main() {
           DuanjuApp(repository: repository, store: store, television: true),
         );
         await tester.pumpAndSettle();
-        if (SourceSite.values.length > 1) {
+        if (SourceSite.displayValues.length > 1) {
           // 0.8.2 起电视版站源入口是 RemoteTarget（可聚焦的胶囊），
           // 弹窗改成居中对话框 + 可聚焦勾选行，所以这里按真实遥控路径驱动：
           // 打开 → 清空 → 勾选第二个分组 → 确定。
@@ -162,7 +163,7 @@ void main() {
           focusRemote(tester, find.byKey(const ValueKey('source-sheet-clear')));
           await tester.pumpAndSettle();
           await press(tester, LogicalKeyboardKey.select);
-          final target = SourceGroup.fromSources(SourceSite.values)[1];
+          final target = SourceGroup.fromSources(SourceSite.displayValues)[1];
           focusRemote(
             tester,
             find.byKey(ValueKey('source-sheet-${target.id}')),
@@ -179,7 +180,9 @@ void main() {
         }
         expect(
           repository.requests.last,
-          SourceSite.values.length > 1 ? SourceSite.values[1].id : 'hongguo',
+          SourceSite.displayValues.length > 1
+              ? SourceSite.displayValues[1].id
+              : 'hongguo',
         );
         // 0.8.3：电视首页改成横向海报行，剧库网格在「发现」标签里。
         // 这里先按遥控器切到「发现」，再按剧卡片 id 找目标。

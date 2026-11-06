@@ -106,7 +106,7 @@ void main() {
     await tester.pumpWidget(catalogApp(repository, store));
     await tester.pumpAndSettle();
     Future<void> select(String name) async {
-      if (SourceGroup.fromSources(SourceSite.values).length <= 1) return;
+      if (SourceGroup.fromSources(SourceSite.displayValues).length <= 1) return;
       await tester.tap(find.byKey(const ValueKey('source-switch')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('source-sheet-clear')));
@@ -123,7 +123,7 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    for (final group in SourceGroup.fromSources(SourceSite.values)) {
+    for (final group in SourceGroup.fromSources(SourceSite.displayValues)) {
       await select(group.name);
       if (group.id == 'huangdou') {
         expect(find.text('会员合成剧'), findsNothing);
