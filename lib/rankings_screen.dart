@@ -65,8 +65,12 @@ class _RankingsScreenState extends State<RankingsScreen> {
       _error = null;
     });
     try {
+      // 按「可展示站源」过滤，而不是 `allowsSource`：黑洞站源（黄豆/黄剧/51…）
+      // 关闭时不该在榜单页冒出来，已隐藏的站源（0.8.25 青空）同理。
+      // `allowsSource` 只判权限，黑洞开关不在里面（见 LocalStore.sources）。
+      final visible = widget.store.sources.map((site) => site.id).toSet();
       final boards = (await widget.repository.rankingBoards())
-          .where((board) => widget.store.allowsSource(board.source))
+          .where((board) => visible.contains(board.source))
           .toList();
       if (!mounted || generation != _generation) return;
       setState(() {

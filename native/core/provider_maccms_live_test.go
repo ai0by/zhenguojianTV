@@ -11,9 +11,16 @@ import (
 // 苹果CMS 采集站的联网冒烟测试。
 //
 // 设 MACCMS_LIVE_TEST=1 才会跑，常规单测保持确定性（离线 fixture）。
-// 四个站（花果 / 网果 / 发果 / 伍果）的目录 → 详情 → 播放地址整条链路都验，
-// 加新站时把新站加进 maccmsLiveSources 就能一起验。
-var maccmsLiveSources = []string{sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo}
+// 六个站的目录 → 详情 → 播放地址整条链路都验，加新站时把新站加进
+// maccmsLiveSources 就能一起验。
+//
+// 0.8.25：加入 MX动漫 / 囧次元两个**番剧**站。它们与短剧站的差别是
+// 一部剧拆成 12~24 集，所以「有分集」这条断言对它们同样成立且在验证
+// 真实的分集解析路径（短剧站多为整部一个视频）。
+var maccmsLiveSources = []string{
+	sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo,
+	sourceMxdm, sourceJcydm,
+}
 
 func TestMaccmsLiveCatalogDetailPlayback(t *testing.T) {
 	if os.Getenv("MACCMS_LIVE_TEST") != "1" {

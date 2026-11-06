@@ -22,7 +22,10 @@ class SourceSite {
       // 只走本地缓存搜索，所以不在这个列表里。
       id == 'huaguo' ||
       id == 'faguo' ||
-      id == 'wuguo';
+      id == 'wuguo' ||
+      // 番剧站（0.8.25）：MX动漫搜索只有一页 12 条；囧次元搜索可翻页。
+      id == 'mxdm' ||
+      id == 'jcydm';
   bool get pagedSearch => switch (id) {
     // 花果的搜索页不认 page 参数（第 2 页返回空结果），只给第一页。
     'huangju' ||
@@ -32,7 +35,8 @@ class SourceSite {
     'sorani' ||
     'hema' ||
     'faguo' ||
-    'wuguo' => true,
+    'wuguo' ||
+    'jcydm' => true,
     _ => false,
   };
   bool get searchSuggestions => id == 'hongguo';
@@ -64,6 +68,9 @@ class SourceSite {
   static const wangguo = SourceSite('wangguo', '网果', '短剧 · 短剧网');
   static const faguo = SourceSite('faguo', '发果', '短剧 · 168 影院');
   static const wuguo = SourceSite('wuguo', '伍果', '短剧 · 五五短剧');
+  // 番剧站（0.8.25）：按集拆分，MX动漫 / 囧次元都有独立排行榜。
+  static const mxdm = SourceSite('mxdm', 'MX动漫', '日漫 · 国漫 · 剧场版');
+  static const jcydm = SourceSite('jcydm', '囧次元', '日漫 · 剧场 · 热搜榜');
   static const huangguoVideo = SourceSite('huangguo-video', '剧场', '视频剧集');
   static const huangguoAI = SourceSite('huangguoai', 'AI', 'AI 短剧');
   static const cloudfront = SourceSite('cloudfront', '旧版', '旧 API 剧库');
@@ -86,6 +93,8 @@ class SourceSite {
     wangguo,
     faguo,
     wuguo,
+    mxdm,
+    jcydm,
     huangguoVideo,
     huangguoAI,
     cloudfront,
@@ -112,6 +121,8 @@ class SourceSite {
           wangguo,
           faguo,
           wuguo,
+          mxdm,
+          jcydm,
           huangguoVideo,
           huangguoAI,
           cloudfront,
@@ -139,6 +150,20 @@ class SourceSite {
   };
 
   static bool isBlackhole(String id) => blackholeIds.contains(id);
+
+  /// 已隐藏的站源（0.8.25）：青空（[sorani]）。
+  ///
+  /// 上游强制登录 + 验证码，绕不过去，播放恒报「该分集暂无可用播放地址」，
+  /// 留着入口只会让人以为这个源坏了。用户要求**只隐藏不删除**：
+  /// 代码、native 侧、已下载与历史记录全部保留。
+  ///
+  /// 判定放在 `LocalStore.sources`（与黑洞同一处），**不要**塞进
+  /// `isAvailable` —— 否则 `allowsSource` 会连带把历史记录、收藏、
+  /// 已下载的 `sorani:` 剧集一起过滤掉，变成"点开就消失"。
+  /// 想恢复：从集合里删掉这一项即可，别的地方不用动。
+  static const hiddenIds = {'sorani'};
+
+  static bool isHidden(String id) => hiddenIds.contains(id);
 
   /// 开启「黑洞」站源需要的口令（0.8.16）。
   ///

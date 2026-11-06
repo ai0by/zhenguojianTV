@@ -123,9 +123,14 @@ class LocalStore extends ChangeNotifier {
   /// 已经下载好的、历史记录里的黑洞剧集照常能播。
   bool get blackholeEnabled => !locked && (_bool(_key('blackhole')) ?? false);
 
-  /// 当前**可展示**的站源：权限放行 + 黑洞开关过滤。
+  /// 当前**可展示**的站源：权限放行 + 黑洞开关过滤 + 已隐藏站源过滤。
+  ///
+  /// 0.8.25：青空（sorani）进了 [SourceSite.hiddenIds]，只是不出现在
+  /// 站源列表 / 首页弹窗 / 目录抓取里；[allowsSource] 保持原样，
+  /// 老存档里指向它的历史记录与已下载剧集照常能播。
   List<SourceSite> get sources => SourceSite.values
       .where((site) => allowsSource(site.id))
+      .where((site) => !SourceSite.isHidden(site.id))
       .where((site) => blackholeEnabled || !SourceSite.isBlackhole(site.id))
       .toList();
 

@@ -37,6 +37,14 @@ const (
 	sourceWangguo = "wangguo"
 	sourceFaguo   = "faguo"
 	sourceWuguo   = "wuguo"
+
+	// 0.8.25：两个动漫番剧站（用户要求接入，实测列表/详情/播放全通）。
+	//
+	// 与上面四个短剧站的关键差别：**它们是按集拆开的**（MK 动漫一部 12~24 集、
+	// 囧次元一部 12~19 集），而且清晰度普遍 720p~1080p —— 短剧站那种"整部剧
+	// 一个视频"的假设在这里不成立，所以 chapter 解析必须走通用路径。
+	sourceMxdm  = "mxdm"
+	sourceJcydm = "jcydm"
 )
 
 var (
@@ -44,6 +52,11 @@ var (
 	wangguoBaseURL = "https://www.duanju2.com"
 	faguoBaseURL   = "https://www.xzyx168.com"
 	wuguoBaseURL   = "https://www.duanju55.com"
+
+	// MX 动漫（Kazumi 规则库里的 MXdm）。h5.dcc3.com 是它的主域名。
+	mxdmBaseURL = "https://www.dcc3.com"
+	// 囧次元（Kazumi 规则库里的 9ciyuan）。域名会漂移，改这里即可。
+	jcydmBaseURL = "https://www.jcydm1.com"
 
 	maccmsNumericID = regexp.MustCompile(`^[0-9]{1,12}$`)
 
@@ -124,11 +137,10 @@ var maccmsProfiles = map[string]maccmsProfile{
 		},
 	},
 	sourceWangguo: {
-		Source:     sourceWangguo,
-		Name:       "网果",
-		Base:       wangguoBaseURL,
-		DetailPath: regexp.MustCompile(`(?i)^/vod/([0-9]+)\.html$`),
-		PlayPath:   regexp.MustCompile(`(?i)^/play/[0-9]+-[0-9]+-[0-9]+\.html$`),
+		Source: sourceWangguo,
+		Name:   "网果",
+		Base:   wangguoBaseURL, DetailPath: regexp.MustCompile(`(?i)^/vod/([0-9]+)\.html$`),
+		PlayPath: regexp.MustCompile(`(?i)^/play/[0-9]+-[0-9]+-[0-9]+\.html$`),
 		DetailURL: func(base, id string) string {
 			return base + "/vod/" + id + ".html"
 		},
@@ -185,6 +197,71 @@ var maccmsProfiles = map[string]maccmsProfile{
 				page = 1
 			}
 			return base + "/index.php/vod/search.html?wd=" + url.QueryEscape(query) + "&page=" + strconv.Itoa(page)
+		},
+	},
+	// MX 动漫（0.8.25 接入，逐项实测通过）：
+	//   列表 /type/riman/          日漫第 1 页 36 部，分页共 248 页
+	//   搜索 /search/?wd=<kw>      火影 12 部
+	//   详情 /detail/20162/        108 集
+	//   播放 /play/20162-1-1/      Artplayer 内嵌 m3u8，直链可拉（720p 多码率）
+	//
+	// 注意分页格式是 /type/riman/2/（**结尾带斜杠**），不是常见的
+	// /type/riman/page/2/ —— 后者直接 404，别按常规套路套。
+	sourceMxdm: {
+		Source:     sourceMxdm,
+		Name:       "MX动漫",
+		Base:       mxdmBaseURL,
+		DetailPath: regexp.MustCompile(`(?i)^/detail/([0-9]+)/?$`),
+		PlayPath:   regexp.MustCompile(`(?i)^/play/[0-9]+-[0-9]+-[0-9]+/?$`),
+		DetailURL: func(base, id string) string {
+			return base + "/detail/" + id + "/"
+		},
+		ListURL: func(base string, page int) string {
+			// 日漫分类（riman）。首页 / 是全部最新，作为第 1 页的入口。
+			if page <= 1 {
+				return base + "/type/riman/"
+			}
+			return base + "/type/riman/" + strconv.Itoa(page) + "/"
+		},
+		SearchURL: func(base, query string, page int) string {
+			// 搜索只有一页（实测 12 条上限），不认 page 参数。
+			_ = page
+			return base + "/search/?wd=" + url.QueryEscape(query)
+		},
+	},
+	// 囧次元（0.8.25 接入，逐项实测通过）：
+	//   列表 /index.php/vod/type/id/21.html   第 1 页 53 部
+	//   搜索 /index.php/vod/search/wd/<kw>.html  火影 16 部
+	//   详情 /index.php/vod/detail/id/7040.html  《我独自升级 第二季》
+	//   播放 /index.php/vod/play/id/7040/sid/1/nid/1.html
+	//        地址藏在 <script> 的 JSON 里（"url":"...m3u8"），1080x608 可拉
+	//
+	// 与伍果的路径结构一致（都是标准 MacCMS v10），但**分类 id 不同**：
+	// 伍果用 id=1，囧次元动漫在 id=21（21 日漫 / 23 国漫）。
+	sourceJcydm: {
+		Source:     sourceJcydm,
+		Name:       "囧次元",
+		Base:       jcydmBaseURL,
+		DetailPath: regexp.MustCompile(`(?i)^/index\.php/vod/detail/id/([0-9]+)\.html$`),
+		PlayPath:   regexp.MustCompile(`(?i)^/index\.php/vod/play/id/[0-9]+/sid/[0-9]+/nid/[0-9]+\.html$`),
+		DetailURL: func(base, id string) string {
+			return base + "/index.php/vod/detail/id/" + id + ".html"
+		},
+		ListURL: func(base string, page int) string {
+			if page <= 1 {
+				return base + "/index.php/vod/type/id/21.html"
+			}
+			return base + "/index.php/vod/type/id/21/page/" + strconv.Itoa(page) + ".html"
+		},
+		SearchURL: func(base, query string, page int) string {
+			if page < 1 {
+				page = 1
+			}
+			if page == 1 {
+				return base + "/index.php/vod/search/wd/" + url.PathEscape(query) + ".html"
+			}
+			return base + "/index.php/vod/search/wd/" + url.PathEscape(query) +
+				"/page/" + strconv.Itoa(page) + ".html"
 		},
 	},
 }

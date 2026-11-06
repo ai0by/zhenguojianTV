@@ -139,7 +139,8 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceDuanju51, sourceYeguo, sourceXiangjiao, sourceCloudFront, sourceEZDMW,
-		sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo, sourceSorani, sourceHema:
+		sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo, sourceSorani, sourceHema,
+		sourceMxdm, sourceJcydm:
 		return true
 	default:
 		return false
@@ -185,6 +186,12 @@ func canonicalProviderSource(source string) string {
 		return sourceFaguo
 	case "wuguo", "伍果", "五五", "www.duanju55.com", "duanju55.com":
 		return sourceWuguo
+	// 0.8.25：两个动漫番剧站。名字 / 域名都收进来，局域网同步与旧存档里的
+	// `mxdm:20162` / `jcydm:7040` 才能正确回落到对应站源。
+	case "mxdm", "mx", "mxdm.com", "mx动漫", "www.dcc3.com", "dcc3.com":
+		return sourceMxdm
+	case "jcydm", "jm", "囧次元", "囧漫", "囧次元动漫", "www.jcydm1.com", "jcydm1.com":
+		return sourceJcydm
 	case "cloudfront":
 		return sourceCloudFront
 	default:
@@ -297,7 +304,7 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return d.fetchLegacyChapters(ctx, sourceID)
 	case sourceEZDMW:
 		return d.fetchEZDMWChapters(ctx, sourceID)
-	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
+	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo, sourceMxdm, sourceJcydm:
 		return d.fetchMaccmsChapters(ctx, canonicalProviderSource(source), sourceID)
 	default:
 		return "", nil, fmt.Errorf("unsupported provider source: %s", source)

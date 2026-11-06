@@ -25,6 +25,16 @@ class RankingBoard {
     'huangguo-hot' ||
     'huangguo-recommend' ||
     'huangguo-potential' => 'huangguoai',
+    // 0.8.25 第三批：黄剧 / 51 / E站 / 网果 / 发果 / 囧次元的榜单。
+    // 必须与 native 侧 provider_rankings.go 的 board ID 一一对应 ——
+    // 榜单列表是 native 下发的，但 board 的 source 由这里反推，
+    // 漏一个该榜单就会被 store.allowsSource 过滤掉（表现为「榜单消失」）。
+    'huangju-hot' || 'huangju-new' => 'huangju',
+    '51duanju-total' || '51duanju-week' || '51duanju-month' => '51duanju',
+    'ezdmw-season' => 'ezdmw',
+    'wangguo-top' => 'wangguo',
+    'faguo-duanju' || 'faguo-anime' => 'faguo',
+    'jcydm-riman' || 'jcydm-juchang' => 'jcydm',
     _ => '',
   };
   factory RankingBoard.fromJson(Map<String, dynamic> json) => RankingBoard(

@@ -123,7 +123,8 @@ func (engine *nativeEngine) nativeCategoriesFull(ctx context.Context, source str
 	// 青空次元（0.8.15）：上游只有三个固定一级分类，不需要远端探测。
 	case sourceSorani:
 		return append(all, soraniCategories...), nil
-	case sourceYeguo, sourceXiangjiao, sourceEZDMW, sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
+	case sourceYeguo, sourceXiangjiao, sourceEZDMW, sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo,
+		sourceMxdm, sourceJcydm:
 		return all, nil
 	}
 	engine.mu.Lock()

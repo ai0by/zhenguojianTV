@@ -171,6 +171,8 @@ func CatalogSnapshotSources() []string {
 		sourceWangguo,
 		sourceFaguo,
 		sourceWuguo,
+		sourceMxdm,
+		sourceJcydm,
 	}
 	sources := make([]string, 0, len(candidates))
 	for _, source := range candidates {

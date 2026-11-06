@@ -890,7 +890,8 @@ func (engine *nativeEngine) nativeCatalogOnce(ctx context.Context, input nativeI
 		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
 	case sourceHema:
 		items, result.HasMore, err = d.fetchHemaCatalogPage(ctx, page, category, "")
-	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
+	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo,
+		sourceMxdm, sourceJcydm:
 		items, result.HasMore, err = d.fetchMaccmsCatalogPage(ctx, source, page, "")
 	case sourceHuangguoVideo:
 		address := fmt.Sprintf("%s/videos?page=%d", d.providerBaseURL(source), page)
@@ -957,7 +958,8 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
 	case sourceHema:
 		raw, chapters, err = engine.downloader.fetchHemaDetail(ctx, sourceID)
-	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo:
+	case sourceHuaguo, sourceWangguo, sourceFaguo, sourceWuguo,
+		sourceMxdm, sourceJcydm:
 		raw, chapters, err = engine.downloader.fetchMaccmsDetail(ctx, source, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/local_profiles.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
@@ -155,6 +156,41 @@ void main() {
     expect(hema.name, '河马');
     expect(hema.onlineSearch, isTrue);
     expect(hema.pagedSearch, isTrue);
+  });
+
+  // 0.8.25：接入两个番剧站（MX动漫 / 囧次元），并把青空隐藏。
+  //
+  // 青空的隐藏走 [SourceSite.hiddenIds]（与黑洞同一处过滤），**不能**塞进
+  // `isAvailable` —— 否则老存档里 `sorani:` 的历史记录与已下载剧集会被
+  // `allowsSource` 连带过滤掉，用户看到的是"收藏里的剧凭空消失"。
+  test('anime sources are selectable and sorani is hidden only', () {
+    // 本地默认构建只有红果，多站源断言按约定包一层。
+    if (!allSourcesEnabled) return;
+    for (final id in ['mxdm', 'jcydm']) {
+      expect(SourceSite.isAvailable(id), isTrue, reason: '$id 应可选');
+      expect(SourceSite.isBlackhole(id), isFalse);
+      expect(SourceSite.isHidden(id), isFalse);
+    }
+    expect(SourceSite.byId('mxdm').name, 'MX动漫');
+    expect(SourceSite.byId('jcydm').name, '囧次元');
+    // 囧次元搜索可翻页；MX动漫的搜索只有一页 12 条。
+    expect(SourceSite.byId('jcydm').onlineSearch, isTrue);
+    expect(SourceSite.byId('jcydm').pagedSearch, isTrue);
+    expect(SourceSite.byId('mxdm').onlineSearch, isTrue);
+    expect(SourceSite.byId('mxdm').pagedSearch, isFalse);
+
+    expect(SourceSite.isHidden('sorani'), isTrue);
+    // 隐藏不等于下线：`isAvailable` 必须仍为 true，历史 / 下载才能继续播。
+    expect(SourceSite.isAvailable('sorani'), isTrue);
+    expect(SourceSite.byId('sorani').name, '青空');
+  });
+
+  test('hidden source is filtered from store display but stays playable', () async {
+    if (!allSourcesEnabled) return;
+    SharedPreferences.setMockInitialValues({});
+    final store = LocalStore(await SharedPreferences.getInstance());
+    expect(store.sources.any((site) => site.id == 'sorani'), isFalse);
+    expect(store.allowsSource('sorani'), isTrue);
   });
 
   testWidgets(

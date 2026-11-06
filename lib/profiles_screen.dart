@@ -396,7 +396,11 @@ class _ProfileEditorState extends State<ProfileEditor> {
             const SizedBox(height: 20),
             if (widget.profile?.admin != true) ...[
               Text('允许访问的站源', style: Theme.of(context).textTheme.titleMedium),
-              for (final source in SourceSite.values)
+              // 已隐藏的站源（0.8.25 青空）不出现在权限清单里；老配置里
+              // 已有的授权项保持不动（`_sources` 从 profile 初始化，保存时原样回写）。
+              for (final source in SourceSite.values.where(
+                (source) => !SourceSite.isHidden(source.id),
+              ))
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   controlAffinity: ListTileControlAffinity.leading,

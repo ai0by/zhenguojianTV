@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 0.8.10：换成"真果鉴TV"品牌图。前景图自带白底卡片，四周留透明，
-     背景层用纯白兜底，这样圆形/方形/水滴各种启动器遮罩下都不会切到字。 -->
+<!-- 0.8.25：前景层改为**矢量**（drawable/ic_launcher_foreground.xml，
+     由 scripts/gen_android_icon.py 从 assets/brand/app_icon.svg 生成）。
+
+     旧做法是五档 mipmap PNG，换分辨率就得重新导出位图；矢量只有一份，
+     任意 dpi 都清晰。背景层仍是纯白，圆角/圆形/水滴遮罩由启动器自己裁。 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
-    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
 </adaptive-icon>
