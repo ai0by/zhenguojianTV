@@ -21,6 +21,23 @@ func (transport sourceFixtureTransport) RoundTrip(request *http.Request) (*http.
 	return transport(request)
 }
 
+// withHongguoPlaybackRegistration 给夹具补一条可用的 device_register 响应。
+//
+// 0.8.27 起播放取流每轮都会注册一个**播放专用**的新匿名身份，注册请求和
+// 取流请求走同一个 transport。只关心取流 / 探测行为的用例用它包一层，
+// 免得注册请求被误算成 CDN 探测，或让注册失败抢先短路成「设备注册失败」。
+// 需要单独验证注册失败的用例（provider_hongguo_device_test.go）与需要自定义
+// 身份的用例，仍然自己写 device_register 分支，不要用这个包装。
+func withHongguoPlaybackRegistration(inner sourceFixtureTransport) sourceFixtureTransport {
+	return func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "device_register") {
+			return sourceFixtureResponse(request, http.StatusOK,
+				`{"device_id_str":"76338817222425","install_id_str":"76338817226521"}`), nil
+		}
+		return inner(request)
+	}
+}
+
 func sourceFixtureResponse(request *http.Request, status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}
 }

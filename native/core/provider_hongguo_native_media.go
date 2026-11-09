@@ -15,20 +15,21 @@ import (
 	"time"
 )
 
-// 红果 App 取流分两步：
-//  1. POST /novel/player/multi_video_model/v1/ 拿到本集的 video_model
-//     （多数情况下它自己就带 video_list，只有缺失时才需要第 2 步）；
-//  2. GET fallback_api 拿到 video_info.data，内含 video_list（各清晰度）与 key_seed。
+// 红果 App 取流分两步（0.8.27 起第 1 步走播放专用链路）：
+//  1. 每轮注册新身份，首选 GET /reading/bookapi/video_tab/multi_video_model/v1/
+//     拿到本集的 video_model；失败才退回旧 POST 主/备域，见
+//     provider_hongguo_playback_routes.go。
+//  2. GET fallback_api 拿到 video_info.data，内含 video_list（各清晰度）与 key_seed
+//     —— 只在 video_model 自带清单是试看片段时才需要。
 //
 // video_list 里的 main_url / backup_url 是 spade 密文，需用 key_seed 解密；
-// 每个清晰度的 spade_a 是 CENC 内容密钥。签名由 hongguoAppRequest 统一处理
+// 每个清晰度的 spade_a 是 CENC 内容密钥。六头签名由播放侧单发请求自己处理
 // （x-gorgon/x-argus/x-ladon/x-helios/x-medusa），这里只负责业务参数。
 // errHongguoAppEmptyModel 表示取流接口没给出 video_model。
 //
-// 两种形态都归到这里：`200 + 空正文`（errHongguoAppEmptyResponse，最常见，
-// 服务端不认这个 device_id）和"有 JSON 但没有 video_model"。
-// 单列成哨兵值，是为了让上层能区分"设备问题（可重注册自愈）"和"这集真的
-// 没有地址（重注册也没用）"。
+// 两种形态都归到这里：`200 + 空正文`（最常见，上游按身份静默屏蔽）和
+// "有 JSON 但没有 video_model"。单列成哨兵值，是为了让上层统一标记成
+// media_transient，让前端静默再试一次。
 var errHongguoAppEmptyModel = errors.New("红果 App 未返回该集播放信息")
 
 // errHongguoAppEmptyResponse 表示接口回了 200 但正文是空的。
@@ -49,125 +50,107 @@ const hongguoAppProbeLimit = 3
 // 同时又不至于让"探测"本身变成用户等待的大头。
 const hongguoAppProbeTimeout = 4 * time.Second
 
+// resolveHongguoAppMedia 取一集的片源（0.8.27 整条重写）。
+//
+// 旧实现走共用的 hongguoAppRequest（25s 预算 / 5 次空正文 / 跨窗退避），
+// 外面还叠了「原地重取 → 重注册设备 → 再取」三层，实测 p50 12.49s、
+// p95 17.59s。根因不是接口慢，而是**一个注册身份只能成功取流一次**：
+// 旧链路能出片全靠重注册那一层碰巧撞到新身份，前面全是白等。
+//
+// 现在每轮主动注册新身份，按 GET tab → 旧 POST 主域 → 旧 POST 备域的顺序
+// 单发即换，全失败才换一个全新身份重试首选路径一次。取流阶段硬预算 6 秒
+// （只在全失败时才可能跑满）；拿到 model 之后的试看探测用父 ctx，不受这个
+// 预算影响。
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
-	// 0.8.14：取流接口只认服务端注册过的设备。本地随机生成的 device_id 会被
-	// 静默拒绝（200 + 空正文），所以先保证设备已注册（见 provider_hongguo_device.go）。
-	// 注册失败不阻断：退回旧设备继续试，让上层错误信息带上真实原因。
-	deviceErr := downloader.ensureHongguoDevice(ctx)
-	media, err := downloader.hongguoAppMediaOnce(ctx, videoID)
-	if err == nil {
+	// 命中短缓存就不发任何请求、也不注册新身份（少一次注册 RTT）。
+	if media, ok := downloader.hongguoMediaCacheGet(videoID); ok {
 		return media, nil
 	}
-	if ctx.Err() != nil {
-		return providerMedia{}, ctx.Err()
-	}
-	if errors.Is(err, errHongguoAppEmptyModel) && deviceErr == nil {
-		// 0.8.22：**先原地再取一次，再考虑换设备**。
-		//
-		// 用户反馈"提示红果暂时取不到这一集的片源，点重试立刻就好" —— 说明
-		// 失败是瞬时的：服务端某一刻对该 videoId 返回了 JSON 但没有
-		// `video_model`（降级 / 签名那一发没中），隔几百毫秒再问就有了。
-		// 旧逻辑这里直接去重注册设备，等于把一次偶发降级当成"设备不认了"：
-		// 重注册要额外一个网络往返，还换掉了一个本来能用的设备号，而且重注册
-		// 之后紧接着那一发仍然可能撞在同一段降级窗口里，于是报错给用户 ——
-		// 用户点重试（几百毫秒后）自然就好了。
-		//
-		// 现在先短退避原地重取一次，成本只有一个请求；仍失败才走
-		// "作废设备号 + 重新注册"那条更重的路。
-		if retried, retryErr := downloader.retryHongguoAppMediaOnce(ctx, videoID); retryErr == nil {
-			return retried, nil
-		} else if ctx.Err() != nil {
-			return providerMedia{}, ctx.Err()
+	// 红果 App 接口的 4xx 基本是签名随机失配，不是站点封禁，不参与 host 封禁统计。
+	ctx = context.WithValue(ctx, skipCatalogObserveKey{}, true)
+	fetchCtx, cancel := context.WithTimeout(ctx, hongguoPlaybackFetchBudget)
+	defer cancel()
+
+	routes := hongguoPlaybackRoutes(videoID)
+	var model map[string]any
+	var lastErr error
+	var registerErr error
+	for round := 0; round < 2 && model == nil && fetchCtx.Err() == nil; round++ {
+		identity := downloader.hongguoFallbackPlaybackIdentity()
+		// 每一轮都必须注册一个全新身份。0.8.27 构建前复测的 11/12 里，唯一
+		// 那次失败是注册抖动超时：旧逻辑在第二轮因为「第一轮没注册成功」就
+		// 跳过重注册，拿目录侧旧身份单发（按身份单次有效的机制必然空正文），
+		// 最后硬报设备注册失败。注册抖动本身是暂态，给它第二次机会就能自愈。
+		if fresh, err := downloader.hongguoFreshPlaybackIdentity(fetchCtx); err == nil {
+			identity = fresh
+			registerErr = nil
+		} else {
+			registerErr = err
 		}
-		// 0.8.16 第四批：**注册过 ≠ 服务端还认**。
-		//
-		// 设备号是首次启动时注册、然后落盘复用的。用户换网络、隔几天不打开、
-		// 或者被风控降级之后，同一个 device_id 会重新变成"陌生设备"，取流
-		// 又回到 200 + 空正文。旧代码这时把 Registered 当成"一定有效"，
-		// 于是直接掉到公开片源 —— 而公开片源只给 10 秒预告，用户看到的就是
-		// "这台手机每集只能播 10 秒"。
-		//
-		// 这里作废设备号、重新注册一次再取。成功就正常播；失败才往下走
-		// 公开片源兜底（那条路现在会严格验时长，不会再把预告当正片）。
-		if resetErr := downloader.resetHongguoDevice(ctx); resetErr == nil {
-			if retried, retryErr := downloader.hongguoAppMediaOnce(ctx, videoID); retryErr == nil {
-				return retried, nil
-			} else if ctx.Err() != nil {
-				return providerMedia{}, ctx.Err()
+		roundRoutes := routes
+		if round > 0 {
+			roundRoutes = routes[:1]
+		}
+		for _, route := range roundRoutes {
+			if fetchCtx.Err() != nil {
+				break
+			}
+			candidate, err := downloader.hongguoPlaybackModelOnce(fetchCtx, route, videoID, identity)
+			if err == nil {
+				model = candidate
+				break
+			}
+			lastErr = err
+		}
+		if model == nil && round == 0 {
+			// 一档短等待后换全新身份再试，不拉长退避、不叠加秒级等待。
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-fetchCtx.Done():
 			}
 		}
-		return providerMedia{}, errHongguoAppEmptyModel
 	}
-	if deviceErr != nil {
-		// 注册失败时取流必然失败（空正文），把根因放在最前面，
-		// 别让用户看到"接口返回空响应"这种没有指向性的说法。
-		return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, deviceErr)
-	}
-	return providerMedia{}, err
-}
-
-// retryHongguoAppMediaOnce 短退避后原地重取一次（0.8.22）。
-//
-// 用于 `errHongguoAppEmptyModel` 这种"多半是瞬时降级"的失败：先别动设备号，
-// 隔几百毫秒再问一次往往就有了。失败时原样返回错误，交给上层继续排障。
-//
-// 退避取 `providerRetryDelay(1)`（约 0.8 秒 ±25%）：用户反馈的"点重试就好"
-// 中间通常隔了 1~3 秒，150ms 的快速重试太浅，容易同一段降级窗口里连撞两次；
-// 0.8 秒能明显提高命中率，又不会让正常的取流多等太久。
-func (downloader *Downloader) retryHongguoAppMediaOnce(ctx context.Context, videoID string) (providerMedia, error) {
-	select {
-	case <-time.After(providerRetryDelay(1)):
-	case <-ctx.Done():
-		return providerMedia{}, ctx.Err()
-	}
-	return downloader.hongguoAppMediaOnce(ctx, videoID)
-}
-
-// hongguoAppMediaOnce 是"取一次流"的完整过程，不碰设备注册。
-//
-// 拆出来是为了让上层能在空正文时换设备重试一次（见 resolveHongguoAppMedia）。
-func (downloader *Downloader) hongguoAppMediaOnce(ctx context.Context, videoID string) (providerMedia, error) {
-	payload := map[string]any{
-		"biz_param": map[string]any{
-			"detail_page_version":       0,
-			"device_level":              3,
-			"disable_digg_stat":         false,
-			"need_all_video_definition": true,
-			"need_mp4_align":            false,
-			"use_os_player":             false,
-			"use_server_dns":            false,
-			"video_platform":            1024,
-		},
-		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
-	}
-	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/multi_video_model/v1/", hongguoPlayerQuery(), payload)
-	if err != nil {
-		if errors.Is(err, errHongguoAppEmptyResponse) {
-			// 空正文 = 服务端不认这台设备，交给上层换设备重试一次。
-			return providerMedia{}, fmt.Errorf("%w（%v）", errHongguoAppEmptyModel, err)
+	if model == nil {
+		if ctx.Err() != nil {
+			return providerMedia{}, ctx.Err()
 		}
+		// 取流预算跑完是网络抖动，不该硬判成「设备注册失败」：收敛成
+		// transient，让前端静默再试一次，用户点一下重试通常就跨出失败窗。
+		if fetchCtx.Err() != nil {
+			return providerMedia{}, errHongguoAppEmptyModel
+		}
+		// 新身份是这次修复的前提。两轮注册都没成功时，继续走公开片源只会白等
+		// 两个往返还把真正的根因埋掉 —— 直接把注册失败抛给上层短路。
+		if registerErr != nil {
+			return providerMedia{}, fmt.Errorf("%w：%v", errHongguoDeviceUnregistered, registerErr)
+		}
+		if lastErr == nil {
+			return providerMedia{}, errHongguoAppEmptyModel
+		}
+		// 空正文 / 无 model 统一收敛成哨兵，上层据此标记 media_transient。
+		if errors.Is(lastErr, errHongguoAppEmptyModel) {
+			return providerMedia{}, errHongguoAppEmptyModel
+		}
+		return providerMedia{}, lastErr
+	}
+	media, err := downloader.hongguoMediaFromModel(ctx, model)
+	if err != nil {
 		return providerMedia{}, err
 	}
-	entry, _ := nestedMap(result, "data")[videoID].(map[string]any)
-	model, _ := entry["video_model"].(map[string]any)
-	if encoded, ok := entry["video_model"].(string); ok && len(model) == 0 {
-		decoder := json.NewDecoder(strings.NewReader(encoded))
-		decoder.UseNumber()
-		if err := decoder.Decode(&model); err != nil {
-			return providerMedia{}, errors.New("红果 App 播放信息格式异常")
-		}
-	}
-	if len(model) == 0 {
-		return providerMedia{}, errHongguoAppEmptyModel
-	}
-	// 0.8.14：`video_model` 自己就带了 video_list 与 video_duration，
-	// 先用它，省掉 fallback_api 那一跳网络请求（也少一处失败可能）。
-	//
-	// 0.8.16 第四批：`video_model` 里只给试看片段时，别急着报错 ——
-	// 再走一次 fallback_api，两处数据不一定同时降级。
+	downloader.hongguoMediaCachePut(videoID, media)
+	return media, nil
+}
+
+// hongguoMediaFromModel 把接口给的 video_model 变成可播地址（不再发取流请求）。
+//
+// 0.8.14：`video_model` 自己就带了 video_list 与 video_duration，先用它，
+// 省掉 fallback_api 那一跳网络请求（也少一处失败可能）。
+// 0.8.16 第四批：`video_model` 里只给试看片段时，别急着报错 ——
+// 再走一次 fallback_api，两处数据不一定同时降级。
+func (downloader *Downloader) hongguoMediaFromModel(ctx context.Context, model map[string]any) (providerMedia, error) {
 	var previewErr error
 	if media, err := selectHongguoAppVideoList(model); err == nil {
 		if rejectErr := hongguoRejectPreview(media); rejectErr == nil {

@@ -1,7 +1,7 @@
 name: duanju_app
 description: 独立运行的多端短剧应用
 publish_to: none
-version: 0.8.26+108
+version: 0.8.27+109
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
@@ -40,5 +40,7 @@ flutter:
   uses-material-design: true
   # 0.8.10：开屏图。手机竖版 1080x1920、电视横版 1920x1080，
   # 由 lib/app_splash.dart 按当前布局二选一。
+  # 0.8.27：品牌图回滚成位图，关于对话框直接用成品 logo.jpg。
   assets:
     - assets/splash/
+    - assets/logo.jpg

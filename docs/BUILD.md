@@ -92,6 +92,15 @@ sources/<站源>.json.enc       [12 字节 nonce][AES-256-GCM 密文]
   - 发果从国内也拿不到（Cloudflare 直接 403），`index.json` 里没有它。
   - `dumpSource` 有一条硬规矩：**翻页中途出错就算整站失败**，不能把「第 1 页成功、第 2 页 403」的几十条当成完整目录去覆盖上一轮（花果真实目录 2000+，早期就踩过 36 条顶掉全量的坑）。唯一例外是站点把页码夹住（黄剧只服务到第 100 页，请求 101 会回 100），那属于正常收尾。
 
+### 红果播放取流（0.8.27）
+
+播放取流是**独立链路**，不在共用的 `hongguoAppRequest` 里：入口 `native/core/provider_hongguo_native_media.go` 的 `resolveHongguoAppMedia`，路由与身份在 `native/core/provider_hongguo_playback_routes.go`。目录 / 详情 / 弹幕继续用原来的共用请求，改播放取流时别顺手改动它。
+
+- 上游的机制是「一个注册身份只能成功取流一次，之后按身份屏蔽」，所以**每一轮都必须注册新身份**，且不写回 `hongguoCatalogState`。换 UA、调签名分支、拉长退避、加间隔都无效 —— 这几条都在 2026-11 的实网对照里逐一排除过。
+- 路由顺序：`GET /reading/bookapi/video_tab/multi_video_model/v1/` → 旧 POST 主域 → 旧 POST 备域，每条**单发即换**；全失败才换全新身份重试首选一次。预算常量在 `provider_hongguo_playback_routes.go`（取流 6s / 注册 2.5s / 单发 3s），放宽预算只能治抖动，不要拿它替代「每轮新身份」。
+- 成功结果按 `videoID` 缓存在 `hongguoAppClient.mediaCache`（10 分钟 / 64 条），失败绝不缓存。
+- 本地验证：`cd native && go build ./... && go vet ./... && gofmt -l . && go test ./core`。要跑真实片源探针，参考 `native/core/provider_hongguo_live_probe_test.go` 的 `HONGGUO_LIVE_PROBE=1` 写法，探针文件用 `zz_` 前缀临时放进 `native/core/`，**跑完必须删除**（默认关闭，绝不能随版本提交）。
+
 ## 源码结构
 
 | 目录 | 内容 |

@@ -13,9 +13,10 @@ import (
 
 // 0.8.22：取流接口偶尔会返回"有 JSON 但没有 video_model"（服务端降级 /
 // 那一发签名没中）。用户点一次重试就好了 —— 说明它本来就是瞬时的。
-// 这里验证第一次空 model 之后会**原地**再取一次，而不是直接报错或急着
-// 换设备号。
-func TestHongguoAppMediaRetriesEmptyModelInPlace(t *testing.T) {
+// 0.8.27：这里不再「原地重发同一条路径」，而是按
+// GET video_tab → 旧 POST 主域 → 旧 POST 备域**单发即换**。断言的仍是
+// 「一次空 model 之后还能出片，且不作废目录侧设备号」。
+func TestHongguoAppMediaFallsBackToNextRouteOnEmptyModel(t *testing.T) {
 	const videoID = "7694655440692448281"
 	good := hongguoModelBody(t, videoID, map[string]any{
 		"status":         10,
@@ -26,9 +27,9 @@ func TestHongguoAppMediaRetriesEmptyModelInPlace(t *testing.T) {
 		}},
 	})
 	var modelCalls, probeCalls int32
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
-			// 第一次：降级，给了 JSON 但 data 里没有 video_model。
+			// 第一条路由（GET video_tab）：降级，给了 JSON 但 data 里没有 video_model。
 			if atomic.AddInt32(&modelCalls, 1) == 1 {
 				return sourceFixtureResponse(request, http.StatusOK, `{"code":0,"data":{}}`), nil
 			}
@@ -36,7 +37,7 @@ func TestHongguoAppMediaRetriesEmptyModelInPlace(t *testing.T) {
 		}
 		atomic.AddInt32(&probeCalls, 1)
 		return hongguoProbeResponse(request, 79*time.Second+534*time.Millisecond), nil
-	})
+	}))
 	media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
 	if err != nil {
 		t.Fatalf("空 model 后应原地重试成功：%v", err)
@@ -47,8 +48,8 @@ func TestHongguoAppMediaRetriesEmptyModelInPlace(t *testing.T) {
 	if got := atomic.LoadInt32(&modelCalls); got != 2 {
 		t.Fatalf("应请求两次 multi_video_model，实际 %d", got)
 	}
-	// 设备号不能被换掉：换设备意味着多一次注册往返，而且会把本来能用的
-	// 设备号作废。原地重试不应动它。
+	// 目录侧设备号不能被换掉：0.8.27 的播放身份是**单轮专用**的，刻不写回
+	// hongguoCatalogState，否则每播一集都会打断目录 / 详情 / 弹幕的会话。
 	client := d.hongguoClient()
 	client.mu.Lock()
 	registered := client.state.Registered
@@ -63,17 +64,18 @@ func TestHongguoAppMediaRetriesEmptyModelInPlace(t *testing.T) {
 func TestHongguoAppMediaGivesUpAfterRepeatedEmptyModel(t *testing.T) {
 	const videoID = "7694655440692448281"
 	var calls int32
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			atomic.AddInt32(&calls, 1)
 			return sourceFixtureResponse(request, http.StatusOK, `{"code":0,"data":{}}`), nil
 		}
 		return hongguoProbeResponse(request, 79*time.Second), nil
-	})
+	}))
 	if _, err := d.resolveHongguoAppMedia(context.Background(), videoID); err == nil {
 		t.Fatal("连续空 model 应当报错")
 	}
-	// 原地重试 + 换设备重注册各一次，总共 3 次取流；再多就是在空转。
+	// 三条路由单发 + 换一个全新身份只重试首选路径一次，最多 4 发；
+	// 旧链路的 5 次空正文 + 跨窗退避已经删掉，再多就是在空转。
 	if got := atomic.LoadInt32(&calls); got > 4 {
 		t.Fatalf("空 model 的重试次数过多：%d", got)
 	}
@@ -150,12 +152,14 @@ func TestParseHongguoDanmakuMissingDataBlock(t *testing.T) {
 // 取流拿不到片源时要带上 media_transient 标记，前端才知道"值得自己再试"。
 func TestHongguoMediaEmptyModelIsTransient(t *testing.T) {
 	const videoID = "7694655440692448281"
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	// 注册要成功：这条用例验证的是「注册没问题、但上游就是不给 model」时
+	// 上层仍标记瞬时失败；注册失败是另一条用例的短路分支。
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			return sourceFixtureResponse(request, http.StatusOK, `{"code":0,"data":{}}`), nil
 		}
 		return sourceFixtureResponse(request, http.StatusNotFound, ""), nil
-	})
+	}))
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		return d.client.Transport.RoundTrip(request)
 	})

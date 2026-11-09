@@ -137,14 +137,14 @@ func TestHongguoAppMediaUsesVideoListFromModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := 0
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			requests++
 			return sourceFixtureResponse(request, http.StatusOK, string(body)), nil
 		}
 		// 0.8.16 第四批：取到地址后还要读一次头部，确认不是试看片段。
 		return hongguoProbeResponse(request, 79*time.Second+534*time.Millisecond), nil
-	})
+	}))
 	media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
 	if err != nil {
 		t.Fatalf("取流失败：%v", err)
@@ -177,9 +177,9 @@ func TestHongguoAppMediaRejectsPreviewModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		return sourceFixtureResponse(request, http.StatusOK, string(body)), nil
-	})
+	}))
 	if _, err := d.resolveHongguoAppMedia(context.Background(), videoID); err == nil || !strings.Contains(err.Error(), "预告") {
 		t.Fatalf("10 秒模型应被拒，实际 err=%v", err)
 	}
@@ -245,13 +245,13 @@ func TestHongguoAppMediaRejectsPreviewByProbe(t *testing.T) {
 			"video_meta": map[string]any{"codec_type": "h264", "vheight": 1920},
 		}},
 	})
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			return sourceFixtureResponse(request, http.StatusOK, body), nil
 		}
 		// 地址是"正片"名字，内容只有 10 秒。
 		return hongguoProbeResponse(request, 10*time.Second), nil
-	})
+	}))
 	_, err := d.resolveHongguoAppMedia(context.Background(), videoID)
 	if err == nil {
 		t.Fatal("10 秒试看片段被当成正片返回了")
@@ -278,7 +278,7 @@ func TestHongguoAppMediaSkipsPreviewDefinition(t *testing.T) {
 			},
 		},
 	})
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			return sourceFixtureResponse(request, http.StatusOK, body), nil
 		}
@@ -286,7 +286,7 @@ func TestHongguoAppMediaSkipsPreviewDefinition(t *testing.T) {
 			return hongguoProbeResponse(request, 10*time.Second), nil
 		}
 		return hongguoProbeResponse(request, 79*time.Second+534*time.Millisecond), nil
-	})
+	}))
 	media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
 	if err != nil {
 		t.Fatalf("应退到 360p 正常档位，实际报错：%v", err)
@@ -319,7 +319,7 @@ func TestHongguoAppMediaSkipsShortDefinitionByMetadata(t *testing.T) {
 		},
 	})
 	probes := 0
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			return sourceFixtureResponse(request, http.StatusOK, body), nil
 		}
@@ -328,7 +328,7 @@ func TestHongguoAppMediaSkipsShortDefinitionByMetadata(t *testing.T) {
 			t.Fatal("标称 10 秒的档位不该再被探测")
 		}
 		return hongguoProbeResponse(request, 79*time.Second), nil
-	})
+	}))
 	media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
 	if err != nil {
 		t.Fatalf("应选 360p，实际报错：%v", err)
@@ -341,15 +341,17 @@ func TestHongguoAppMediaSkipsShortDefinitionByMetadata(t *testing.T) {
 	}
 }
 
-// 设备号"注册过"但服务端已经不认时，要换设备重注册再取，而不是直接掉到
-// 只给 10 秒预告的公开片源上。
-func TestHongguoAppMediaReregistersWhenDeviceForgotten(t *testing.T) {
-	// 空正文重试的退避是秒级跨窗节奏（hongguoAppRetryDelays），夹具里会
-	// 真跑满 5 次；缩到毫秒级避免测试干等十几秒。
-	original := append([]time.Duration(nil), hongguoAppRetryDelays...)
-	t.Cleanup(func() { hongguoAppRetryDelays = original })
-	hongguoAppRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+// 0.8.27：一个注册身份只能成功取流一次，之后上游按身份静默屏蔽。
+//
+// 所以播放侧每轮取流都注册一个**全新的匿名身份**，并且刻意不写回
+// hongguoCatalogState —— 目录 / 详情 / 弹幕有各自的会话与分页游标，每播一集
+// 就换掉它们的 device_id 反而会把那些链路打断。旧用例断言的「把目录侧
+// 设备号换成新注册的」正好是现在要避免的行为。
+//
+// 另外验证短缓存：重复打开同一集直接返回，连注册都不再发。
+func TestHongguoAppMediaUsesFreshPlaybackIdentity(t *testing.T) {
 	const videoID = "7694655440692448281"
+	const freshDevice = "76338817222425"
 	body := hongguoModelBody(t, videoID, map[string]any{
 		"status":         10,
 		"video_duration": 79.534,
@@ -359,7 +361,7 @@ func TestHongguoAppMediaReregistersWhenDeviceForgotten(t *testing.T) {
 		}},
 	})
 	registrations := 0
-	models := 0
+	var modelDeviceIDs []string
 	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "device_register") {
 			registrations++
@@ -367,11 +369,7 @@ func TestHongguoAppMediaReregistersWhenDeviceForgotten(t *testing.T) {
 				`{"device_id_str":"76338817222425","install_id_str":"76338817226521"}`), nil
 		}
 		if strings.Contains(request.URL.Path, "multi_video_model") {
-			models++
-			if registrations == 0 {
-				// 旧设备号被服务端遗忘 → 200 + 空正文
-				return sourceFixtureResponse(request, http.StatusOK, ""), nil
-			}
+			modelDeviceIDs = append(modelDeviceIDs, request.URL.Query().Get("device_id"))
 			return sourceFixtureResponse(request, http.StatusOK, body), nil
 		}
 		return hongguoProbeResponse(request, 79*time.Second+534*time.Millisecond), nil
@@ -385,22 +383,29 @@ func TestHongguoAppMediaReregistersWhenDeviceForgotten(t *testing.T) {
 
 	media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
 	if err != nil {
-		t.Fatalf("换设备重试后应能取到正片，实际报错：%v", err)
+		t.Fatalf("用新身份取流应能拿到正片，实际报错：%v", err)
 	}
 	if !strings.HasSuffix(media.URL, "1080p.mp4") {
 		t.Fatalf("取到的地址不对：%s", media.URL)
 	}
 	if registrations != 1 {
-		t.Fatalf("应重新注册一次，实际 %d 次", registrations)
+		t.Fatalf("每轮取流应注册一次新身份，实际 %d 次", registrations)
+	}
+	if len(modelDeviceIDs) != 1 || modelDeviceIDs[0] != freshDevice {
+		t.Fatalf("取流必须用本轮新注册的身份而不是落盘的旧身份，实际 %v", modelDeviceIDs)
 	}
 	client.mu.Lock()
 	deviceID := client.state.DeviceID
 	client.mu.Unlock()
-	if deviceID != "76338817222425" {
-		t.Fatalf("设备号应换成新注册的，实际 %s", deviceID)
+	if deviceID != "1111111111111111" {
+		t.Fatalf("播放身份不该写回目录侧状态，实际 %s", deviceID)
 	}
-	if models < 2 {
-		t.Fatalf("空正文后应再取一次，实际取流 %d 次", models)
+	// 重复打开同一集：短缓存命中，不再注册、不再取流、不再探测。
+	if _, err := d.resolveHongguoAppMedia(context.Background(), videoID); err != nil {
+		t.Fatalf("缓存命中时不应报错：%v", err)
+	}
+	if registrations != 1 || len(modelDeviceIDs) != 1 {
+		t.Fatalf("缓存命中不该再发请求：注册 %d 次、取流 %d 次", registrations, len(modelDeviceIDs))
 	}
 }
 

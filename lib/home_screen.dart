@@ -37,7 +37,6 @@ import 'batch_download_screen.dart';
 import 'batch_downloads.dart';
 import 'drama_actions.dart';
 import 'library_updater.dart';
-import 'brand_art_painter.dart';
 import 'saved_library.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -1524,7 +1523,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               context: context,
               applicationName: appName,
               applicationVersion: AppLayout.versionOf(context),
-              applicationIcon: const BrandArt.mark(size: 48),
+              // 0.8.27：品牌图回滚成位图。SVG 直译的 Path 在渐变/遮罩上
+              // 还原不准，直接用美术给的成品 logo，小尺寸下也更稳。
+              applicationIcon: Image.asset(
+                'assets/logo.jpg',
+                width: 48,
+                height: 48,
+              ),
               children: [
                 const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
                 const SizedBox(height: 12),

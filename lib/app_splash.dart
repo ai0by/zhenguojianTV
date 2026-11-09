@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_layout.dart';
-import 'brand_art_painter.dart';
 
 /// 开屏页（启动画面）。
 ///
@@ -136,60 +135,59 @@ class _AppSplashState extends State<AppSplash> {
   }
 }
 
-/// 把开屏素材提前就绪。
+/// 把开屏图提前解进图片缓存。
 ///
-/// 0.8.25：开屏从位图换成矢量图（用户提供的品牌 SVG 直译成 Path 指令）。
-/// 位图要靠 `precacheImage` 解码才不会"闪一下出现"；矢量图没有解码这一步，
-/// 但把几百段贝塞尔拼成 Path 也要几毫秒，所以同样在 `runApp` 之前预热。
+/// 这是"开屏不闪"的关键一步：`Image.asset` 的解码是异步的，不预加载的话
+/// Flutter 首帧画出来时图片还没就绪，用户看到的是"一层纯色 → 突然出现整张图"
+/// 的硬切，也就是反馈里的"闪了一下"。
 ///
-/// 保留这个函数名与签名，`main.dart` 不用改。
+/// 在 `runApp` 之前调用，期间原生启动窗口显示的是同色底（`splash_background`），
+/// 所以多等的这一百来毫秒观感上就是"开屏图慢慢显出来"，不会跳。
+///
+/// 0.8.27：把 0.8.25 的矢量开屏整体**回滚成原来的位图**（用户提供的成品
+/// JPG）。SVG 直译成 Path 之后渐变、遮罩、镂空都和原稿对不上，与其反复猜
+/// 哪一段路径画歪了，不如直接用原图 —— 位图不需要"还原"，它就是原稿。
+/// 三处防闪措施（这里预解码、`_SplashSurface` 垫色、Android 12+ 的
+/// values-v31 纯色启动画面）继续保留。
 Future<void> precacheSplashImage(bool television) async {
-  // 同步完成，包一层 Future 是为了不破坏原有调用点的 await 写法。
-  warmUpBrandArt(television: television);
+  final provider = AssetImage(
+    television ? 'assets/splash/splash_tv.jpg' : 'assets/splash/splash_phone.jpg',
+  );
+  final completer = Completer<void>();
+  void finish() {
+    if (!completer.isCompleted) completer.complete();
+  }
+
+  final stream = provider.resolve(ImageConfiguration.empty);
+  stream.addListener(
+    ImageStreamListener(
+      (image, synchronous) => finish(),
+      onError: (error, stack) => finish(),
+    ),
+  );
+  // 资源缺失 / 解码失败时不能卡住启动，最多等 2 秒就放行。
+  await completer.future.timeout(const Duration(seconds: 2), onTimeout: () {});
 }
 
 /// 开屏页视觉。
 ///
-/// 0.8.25：位图换成矢量（用户提供的品牌 SVG），并加入克制的一段入场动画：
-/// 主体从 0.94 倍轻微放大到 1.0、同时淡入，底部品牌线随后稳定滑动。
+/// 0.8.11 起只留美术给的成品开屏图（手机 1080×1920 / 电视 1920×1080），
+/// 外加一条极细的加载线 —— 用户要求"只有图和加载信息"。
+/// 0.8.27 回滚掉 0.8.25/0.8.26 的矢量方案，重新用这两张位图。
 ///
-/// 动画刻意做得"几乎察觉不到"：开屏总共只停留 0.4~2.2 秒，任何明显动效
-/// 都会在还没看清时就被切断，反而显得卡。这里只做「从略小一点到位」的
-/// 收束感，替代原来"图片突然出现"的硬切。
-class _SplashSurface extends StatefulWidget {
+/// 图上不再有任何品牌块 / 文字 / 花哨动效，避免和图片本身打架。
+class _SplashSurface extends StatelessWidget {
   const _SplashSurface({required this.television});
 
   final bool television;
 
-  @override
-  State<_SplashSurface> createState() => _SplashSurfaceState();
-}
-
-class _SplashSurfaceState extends State<_SplashSurface>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 620),
-  )..forward();
-
-  late final Animation<double> _fade = CurvedAnimation(
-    parent: _controller,
-    curve: const Interval(0, .62, curve: Curves.easeOut),
-  );
-
-  late final Animation<double> _scale = Tween<double>(begin: .94, end: 1)
-      .animate(CurvedAnimation(
-    parent: _controller,
-    curve: Curves.easeOutCubic,
-  ));
-
-  /// 开屏图的纸白底色。
+  /// 与开屏图顶部主色一致（手机图取样 #FEF5F5，电视图 #FDF7F7）。
   ///
-  /// 0.8.26 起开屏图按 contain 缩放（整幅可见、不放大），比设计稿更长的屏幕
-  /// 上方会多出一条留白 —— 那条留白就是这个颜色，所以必须取**图形自身的**
-  /// 纸白（渐变起点 `#FFFFFF`），差一点就会在开屏图顶边露出一条淡痕。
-  /// 同时它也是唯一兜底底色，不能让下层深色首页在首帧露出来。
-  static const _backdrop = Color(0xFFFFFFFF);
+  /// 预加载之后这一层基本看不到，但资源缺失 / 解码异常时它是最后的兜底，
+  /// 不能让下层深色首页露出来。这个颜色必须与
+  /// `android/app/src/main/res/values/colors.xml` 的 `splash_background`
+  /// 保持一致，否则原生冷启动到 Flutter 首帧之间会跳一下色。
+  static const _backdrop = Color(0xFFFEF5F5);
 
   /// 开屏是浅色画面，状态栏/导航栏图标要翻成深色，
   /// 否则深色主题下白色图标压在白底上完全看不见。
@@ -202,14 +200,7 @@ class _SplashSurfaceState extends State<_SplashSurface>
   );
 
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final television = widget.television;
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: _overlay,
       child: ColoredBox(
@@ -217,18 +208,15 @@ class _SplashSurfaceState extends State<_SplashSurface>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // 矢量开屏图：整幅可见（contain），无解码等待。
-            FadeTransition(
-              opacity: _fade,
-              child: ScaleTransition(
-                // 收束动画以**底边**为锚：手机图是贴底对齐的，锚在中心会让
-                // 底部红色波形在动画里上下滑一下，锚在底边就只是上沿轻微收拢。
-                alignment: television
-                    ? Alignment.center
-                    : Alignment.bottomCenter,
-                scale: _scale,
-                child: BrandArt.splash(television: television),
-              ),
+            Image.asset(
+              television
+                  ? 'assets/splash/splash_tv.jpg'
+                  : 'assets/splash/splash_phone.jpg',
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.medium,
+              // 测试环境没有真实资源包，这里兜底成纯色底，不让异常冒到上层。
+              errorBuilder: (context, error, stack) =>
+                  const ColoredBox(color: _backdrop),
             ),
             Align(
               // 竖版图从高度 0.5 往下是红色胶片带，白线放 0.90 的深红区才看得见；

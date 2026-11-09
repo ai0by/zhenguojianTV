@@ -38,10 +38,10 @@ const hongguoAppFallbackHost = "api5-normal-hl.fqnovel.com"
 // 的 prepare 回调）把 UA / versionCode / dragon_device_type 全部切回旧值
 // 之后，仍然是 **5/5、平均 0.47~0.74 秒**。所以：
 //
-//   73532 UA      ≠ 根因
-//   7.3.5.32 版本 ≠ 根因
-//   dragon=pad    ≠ 根因
-//   备用域名      ≠ 根因（设成主域仍 5/5）
+//	73532 UA      ≠ 根因
+//	7.3.5.32 版本 ≠ 根因
+//	dragon=pad    ≠ 根因
+//	备用域名      ≠ 根因（设成主域仍 5/5）
 //
 // 手搓请求之所以失败，是因为 prepare 回调会重设 `_rticket`，手签的那份签名
 // 和最终发出的 URL 对不上 —— 那是探针写法的坑，不是线上行为。
@@ -107,6 +107,9 @@ type hongguoAppClient struct {
 	// 避免同一段反复拖动时把请求打爆。
 	danmaku        map[string]hongguoDanmakuCacheEntry
 	danmakuPending map[string]*hongguoDanmakuCall
+	// 播放取流结果缓存（0.8.27）：见 provider_hongguo_playback_routes.go。
+	// 挂在客户端实例上而不是包级变量，单测之间不会互相污染。
+	mediaCache map[string]hongguoMediaCacheEntry
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
@@ -118,6 +121,7 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
 			danmaku: map[string]hongguoDanmakuCacheEntry{}, danmakuPending: map[string]*hongguoDanmakuCall{},
+			mediaCache: map[string]hongguoMediaCacheEntry{},
 		}
 	})
 	return downloader.hongguo
@@ -214,13 +218,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
 	registered := client.state.Registered
 	client.mu.Unlock()
-	query := url.Values{
-		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {hongguoAppVersionCode}, "version_name": {hongguoAppVersionName},
-		"manifest_version_code": {hongguoAppVersionCode}, "update_version_code": {hongguoAppVersionCode}, "channel": {"update_64"},
-		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"},
-		"device_brand": {"Redmi"}, "language": {"zh"}, "os_api": {"36"}, "os_version": {"16"},
-		"resolution": {"1280*2772"}, "dpi": {"520"}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
-	}
+	query := hongguoAppBaseQuery(deviceID, installID)
 	for key, values := range extra {
 		query[key] = append([]string(nil), values...)
 	}
