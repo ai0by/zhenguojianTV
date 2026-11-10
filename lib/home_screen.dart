@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -1534,10 +1535,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
                 const SizedBox(height: 12),
                 // 检查更新（0.8.18）：只在用户点这里时才发请求。
-                UpdateEntry(
-                  currentVersion: AppLayout.versionOf(context),
-                ),
-                const SizedBox(height: 12),
+                // Windows 侧没有 APK 安装通道与 duanju/device 原生实现，
+                // 露出这个入口只会让用户点了没反应，所以按平台收起来。
+                if (defaultTargetPlatform == TargetPlatform.android) ...[
+                  UpdateEntry(
+                    currentVersion: AppLayout.versionOf(context),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 // 作者信息（0.2.30 新增，用户要求）：
                 // 名字蓝色可点击，跳转各自 GitHub 页面，并标明身份。
                 const AboutCredit(

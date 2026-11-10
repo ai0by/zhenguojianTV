@@ -1,0 +1,119 @@
+name: Build Windows
+
+# Windows 端只在这里构建：本地不装 Flutter / VS，全部交给 GitHub 托管的
+# windows-latest（预装 VS2022 Enterprise + CMake + MSVC C++ 工作负载）。
+# 与 Build APK 一样只挂 workflow_dispatch，push 不触发，免得每次提交都跑
+# 一轮 20 分钟的 Windows 构建。
+on:
+  workflow_dispatch:
+    inputs:
+      all_sources:
+        description: '构建真果鉴（全部站源）；关闭则只构建红果鉴'
+        type: boolean
+        default: true
+      smoke:
+        description: '出包后跑 --package-smoke 启动验收'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.47.4'
+  GO_VERSION: '1.24.1'
+  # 境外 runner 直连官方源比绕国内镜像稳；build_windows.py 用的是
+  # setdefault，这里先给值就不会再被改成 goproxy.cn。
+  GOPROXY: 'https://proxy.golang.org,direct'
+  GOSUMDB: 'sum.golang.org'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # Go 的 -buildmode=c-shared 在 Windows 上必须走 cgo，而 cgo 只认 gcc，
+      # MSVC 的 cl.exe 不行。windows-latest 预装了 MSYS2 但**没加 PATH**，
+      # 也不保证带 mingw-w64 工具链，所以这里显式装一份并暴露给后续步骤。
+      - name: MinGW-w64 for Go c-shared DLL
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          location: C:\msys64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: Expose MinGW-w64 compiler
+        shell: pwsh
+        run: |
+          $bin = 'C:\msys64\mingw64\bin'
+          $cc = Join-Path $bin 'x86_64-w64-mingw32-gcc.exe'
+          if (-not (Test-Path $cc)) { throw "缺少交叉编译器：$cc" }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $cc --version | Select-Object -First 1
+          Write-Host "CC=$cc"
+
+      - name: Toolchain sanity
+        shell: pwsh
+        run: |
+          foreach ($tool in @('flutter', 'dart', 'go', 'python', 'cmake', 'x86_64-w64-mingw32-gcc')) {
+            $found = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($found) { Write-Host ("{0} -> {1}" -f $tool, $found.Source) }
+            else { Write-Host "WARN: $tool 不在 PATH（不一定致命，Flutter 会自己找 VS/CMake）" }
+          }
+          flutter --version
+          go version
+
+      - name: Build Windows bundle
+        shell: pwsh
+        run: |
+          $buildArgs = @()
+          if ('${{ inputs.all_sources }}' -eq 'true') { $buildArgs += '--all-sources' }
+          python scripts/build_windows.py @buildArgs
+          if ($LASTEXITCODE -ne 0) { throw "build_windows.py 退出码 $LASTEXITCODE" }
+
+      - name: List bundle contents
+        if: always()
+        shell: pwsh
+        run: |
+          $bundle = 'build/windows/x64/runner/Release'
+          if (Test-Path $bundle) { Get-ChildItem $bundle | Select-Object Name, Length }
+          if (Test-Path 'dist/windows') { Get-ChildItem 'dist/windows' | Select-Object Name, Length }
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.all_sources && 'zhenguojian' || 'hongguojian' }}-windows-x64
+          path: |
+            dist/windows/*.zip
+            dist/windows/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      # 启动验收放在上传之后：即使 smoke 因为 runner 上没有 ffmpeg 或
+      # 无显示器环境失败，安装包本身也已经在 Actions 产物里可以下载。
+      - name: Package smoke test
+        if: ${{ inputs.smoke }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $smokeArgs = @()
+          if ('${{ inputs.all_sources }}' -eq 'true') { $smokeArgs += '--all-sources' }
+          python scripts/smoke_windows.py @smokeArgs
+          if (Test-Path 'build/windows-package-smoke.json') {
+            Get-Content 'build/windows-package-smoke.json'
+          }
