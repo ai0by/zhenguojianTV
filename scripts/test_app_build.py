@@ -51,7 +51,9 @@ class AppBuildTests(unittest.TestCase):
         branding = Path(__file__).resolve().parents[1] / 'windows/runner/app_branding.cmake'
         for flags, expected in [
             ([], '红果鉴'),
-            (['ALL_SOURCES=true'], '真果鉴'),
+            # 0.8.10 起全源版的显示名是「真果鉴TV」，与 lib/app_build.dart 的
+            # appName 保持一致；红果鉴那条分发线不动。
+            (['ALL_SOURCES=true'], '真果鉴TV'),
             (['OTHER=true', 'ALL_SOURCES=false'], '红果鉴'),
             (['ALL_SOURCES=true', 'ALL_SOURCES=false'], '红果鉴'),
         ]:
