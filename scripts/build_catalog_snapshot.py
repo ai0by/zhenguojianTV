@@ -328,16 +328,24 @@ def build(input_dir: Path, output_dir: Path, merge: bool = False) -> dict:
         name = f"sources/{source}.json.enc"
         (output_dir / name).write_bytes(blob)
         # 这一份最终**仍然不完整**吗？两种情形都算：
-        #   a) 本轮 dump 自己撞了上限（dump_truncated）；
+        #   a) 本轮 dump 自己撞了上限（dump_truncated，仅全量模式有意义）；
         #   b) 本轮没产出（走不到这里），标记由 previous_entries 继承。
         # 标记写进 index 有两个用处：运维一眼能看出哪个站源从来没抓全；
         # 下一轮沿用这份文件时标记不会丢。
+        #
+        # 2026-11-10：**增量模式不能照搬 dump 的 truncated**。`-pages 3` 下
+        # 每个站源都必然撞上限，但后面有 `--merge` 把上一轮全量按 id 补齐，
+        # 并不残缺。照搬的话 index 里十几个健康源会永远挂着 True，运维再也
+        # 分不出真正残缺的 403 源（花果 / 网果 / 伍果 / 囧次元）。增量只
+        # 继承上一版的标记，全量仍以本轮为准 —— 真抓全了就把标记摘掉。
+        inherited_truncated = bool(entries.get(source, {}).get("truncated"))
         entries[source] = {
             "file": name,
             "sha256": hashlib.sha256(blob).hexdigest(),
             "count": len(cleaned),
         }
-        if dump_truncated:
+        truncated = inherited_truncated if merge else dump_truncated
+        if truncated:
             entries[source]["truncated"] = True
         produced.add(source)
         print(f"[ok] {source}: {len(cleaned)} 条 -> {name} ({len(blob)} 字节)")

@@ -483,6 +483,44 @@ class CatalogSnapshotBuildTests(unittest.TestCase):
             index = build(second, output, merge=False)
             self.assertFalse(index['sources']['wangguo'].get('truncated'))
 
+    def test_incremental_partial_dump_does_not_mark_healthy_source(self):
+        """增量只翻 3 页必然撞上限，不该把健康源也标成残缺（2026-11-10）。
+
+        `catalogdump -pages 3` 下每个站源都会回 `truncated=True`，但增量有
+        `--merge` 拿上一轮全量按 id 补齐，并不残缺。照搬进 index 的话，
+        十几个能抓的源会永远挂着 True，运维再也分不出真正残缺的境外 403 源。
+        增量模式应沿用上一版标记：健康的继续健康，真残血继续挂着。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'out'
+            first = root / 'first'
+            first.mkdir()
+            self._dump(first, 'hema', [{'id': 'hema:1', 'title': '剧1'}])
+            build(first, output)
+            second = root / 'second'
+            second.mkdir()
+            self._dump(second, 'hema', [{'id': 'hema:2', 'title': '剧2'}],
+                       truncated=True, pages=3)
+            index = build(second, output, merge=True)
+            self.assertFalse(index['sources']['hema'].get('truncated'))
+            # 标记归标记，合并照旧生效：上一轮的剧不能丢。
+            self.assertEqual(index['sources']['hema']['count'], 2)
+
+            # 上一版确实残血的源，即使本轮增量产出了，标记也继续挂着。
+            third = root / 'third'
+            third.mkdir()
+            self._dump(third, 'wangguo', [{'id': 'wangguo:1', 'title': '剧1'}],
+                       truncated=True, pages=1600)
+            build(third, output, merge=False)
+            fourth = root / 'fourth'
+            fourth.mkdir()
+            self._dump(fourth, 'wangguo', [{'id': 'wangguo:2', 'title': '剧2'}],
+                       truncated=True, pages=3)
+            index = build(fourth, output, merge=True)
+            self.assertTrue(index['sources']['wangguo'].get('truncated'))
+            self.assertEqual(index['sources']['wangguo']['count'], 2)
+
 
 if __name__ == '__main__':
     unittest.main()
