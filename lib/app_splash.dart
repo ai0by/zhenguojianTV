@@ -126,7 +126,7 @@ class _AppSplashState extends State<AppSplash> {
                 setState(() => _visible = false);
               },
               child: _SplashSurface(
-                television: AppLayout.isTelevision(context),
+                landscape: landscapeSplash(AppLayout.isTelevision(context)),
               ),
             ),
           ),
@@ -134,6 +134,18 @@ class _AppSplashState extends State<AppSplash> {
     );
   }
 }
+
+/// 开屏图该用横版还是竖版。
+///
+/// 电视用横版；**Windows 桌面版也用横版** —— 桌面窗口是横的（最小 980×620），
+/// 把 1080×1920 的竖版图 `BoxFit.cover` 进来只会露出中间一条，上下全被裁掉。
+/// 手机竖屏继续用竖版，与 0.8.11 以来的行为一致。
+bool landscapeSplash(bool television) =>
+    television ||
+    (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.macOS ||
+            defaultTargetPlatform == TargetPlatform.linux));
 
 /// 把开屏图提前解进图片缓存。
 ///
@@ -151,7 +163,9 @@ class _AppSplashState extends State<AppSplash> {
 /// values-v31 纯色启动画面）继续保留。
 Future<void> precacheSplashImage(bool television) async {
   final provider = AssetImage(
-    television ? 'assets/splash/splash_tv.jpg' : 'assets/splash/splash_phone.jpg',
+    landscapeSplash(television)
+        ? 'assets/splash/splash_tv.jpg'
+        : 'assets/splash/splash_phone.jpg',
   );
   final completer = Completer<void>();
   void finish() {
@@ -177,9 +191,10 @@ Future<void> precacheSplashImage(bool television) async {
 ///
 /// 图上不再有任何品牌块 / 文字 / 花哨动效，避免和图片本身打架。
 class _SplashSurface extends StatelessWidget {
-  const _SplashSurface({required this.television});
+  const _SplashSurface({required this.landscape});
 
-  final bool television;
+  /// 该用横版还是竖版开屏图，见 [landscapeSplash]。
+  final bool landscape;
 
   /// 与开屏图顶部主色一致（手机图取样 #FEF5F5，电视图 #FDF7F7）。
   ///
@@ -209,7 +224,7 @@ class _SplashSurface extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             Image.asset(
-              television
+              landscape
                   ? 'assets/splash/splash_tv.jpg'
                   : 'assets/splash/splash_phone.jpg',
               fit: BoxFit.cover,
@@ -221,12 +236,12 @@ class _SplashSurface extends StatelessWidget {
             Align(
               // 竖版图从高度 0.5 往下是红色胶片带，白线放 0.90 的深红区才看得见；
               // 横版底部是浅色，品牌橙放在 0.84。
-              alignment: Alignment(0, television ? .84 : .90),
+              alignment: Alignment(0, landscape ? .84 : .90),
               child: SizedBox(
                 width: 96,
                 height: 2,
                 child: _SplashBar(
-                  color: television ? const Color(0xFFFF765F) : Colors.white,
+                  color: landscape ? const Color(0xFFFF765F) : Colors.white,
                 ),
               ),
             ),

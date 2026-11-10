@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -504,12 +505,79 @@ class DramaTile extends StatelessWidget {
       button: true,
       selected: selected,
       label: '${drama.title}${drama.episodes > 0 ? '，${drama.episodes}集' : ''}',
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress ?? onMore,
-        onSecondaryTap: onMore,
-        borderRadius: BorderRadius.circular(14),
-        child: content,
+      // 桌面版（鼠标）给一格「抬起来」的反馈：手机上不存在悬停，这里不产生
+      // 任何额外布局（变换只影响绘制），所以不影响网格的 extent 计算。
+      child: DesktopHoverLift(
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress ?? onMore,
+          onSecondaryTap: onMore,
+          borderRadius: BorderRadius.circular(14),
+          child: content,
+        ),
+      ),
+    );
+  }
+}
+
+/// 鼠标悬停时轻微抬起 + 描边的容器，只在有鼠标的桌面平台上生效。
+///
+/// 电视版走 `RemoteTarget` 的焦点环，手机版没有指针设备 —— 两边都不该看到
+/// 这个效果，所以判据是 `AppLayout.isTelevision` 的反面**且**平台是桌面。
+class DesktopHoverLift extends StatefulWidget {
+  const DesktopHoverLift({
+    super.key,
+    required this.child,
+    this.scale = 1.02,
+    this.borderRadius = 14,
+  });
+
+  final Widget child;
+  final double scale;
+  final double borderRadius;
+
+  /// 只有这几种平台有常驻鼠标；触屏设备上 `onEnter` 不会触发，留着也无害。
+  static bool get _enabled =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux);
+
+  @override
+  State<DesktopHoverLift> createState() => _DesktopHoverLiftState();
+}
+
+class _DesktopHoverLiftState extends State<DesktopHoverLift> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!DesktopHoverLift._enabled || AppLayout.isTelevision(context)) {
+      return widget.child;
+    }
+    final radius = BorderRadius.circular(widget.borderRadius);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedScale(
+        scale: _hovered ? widget.scale : 1,
+        duration: const Duration(milliseconds: 130),
+        curve: Curves.easeOut,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 130),
+          curve: Curves.easeOut,
+          foregroundDecoration: _hovered
+              ? BoxDecoration(
+                  borderRadius: radius,
+                  border: Border.all(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: .55),
+                  ),
+                )
+              : null,
+          child: widget.child,
+        ),
       ),
     );
   }

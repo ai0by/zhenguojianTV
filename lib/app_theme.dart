@@ -82,11 +82,53 @@ abstract final class AppTheme {
         elevation: 0,
         centerTitle: false,
         systemOverlayStyle: systemBars(brightness),
+        // 顶栏与内容之间拉一条 1px 细线。浅色底上阴影会发灰、显脏，细线更干净，
+        // 也让桌面版的「自绘标题栏 / 顶栏 / 内容」三层各自成形。
+        shape: Border(bottom: BorderSide(color: scheme.outlineVariant)),
       ),
       dividerTheme: DividerThemeData(color: scheme.outlineVariant),
+      // 桌面版（Windows）滚动条是常驻可见的，默认那条又细又淡还贴着边。
+      // 统一成 6px 圆角、悬停加深、四周留 2px 间隙，宽度不再随内容抖动。
+      scrollbarTheme: ScrollbarThemeData(
+        thickness: const WidgetStatePropertyAll(6),
+        radius: const Radius.circular(3),
+        crossAxisMargin: 2,
+        mainAxisMargin: 2,
+        interactive: true,
+        trackColor: const WidgetStatePropertyAll(Colors.transparent),
+        thumbColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.hovered)
+              ? scheme.onSurface.withValues(alpha: .38)
+              : scheme.onSurface.withValues(alpha: .2),
+        ),
+      ),
+      // Tooltip 在桌面上是高频出现的元素（顶栏图标、下载按钮都靠它说明），
+      // Material 3 默认那套浅色气泡在深色界面上几乎看不见，这里统一成
+      // 深色气泡 + 白字，深浅主题下都清晰。
+      tooltipTheme: TooltipThemeData(
+        waitDuration: const Duration(milliseconds: 500),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: dark ? const Color(0xFF3A3B43) : const Color(0xFF34353C),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        textStyle: const TextStyle(
+          fontSize: 12,
+          height: 1.2,
+          fontWeight: FontWeight.w500,
+          color: Colors.white,
+        ),
+      ),
       navigationRailTheme: NavigationRailThemeData(
         backgroundColor: background,
-        useIndicator: false,
+        // 0.8.27：桌面侧栏改成「胶囊指示器 + 品牌色图标」。
+        // 原来关掉指示器只剩图标变色，在暖白底上几乎看不出哪一项是选中的；
+        // 桌面用户靠鼠标点，需要一块明确的落点提示。
+        useIndicator: true,
+        indicatorColor: scheme.primary.withValues(alpha: dark ? .18 : .12),
+        indicatorShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
         selectedIconTheme: IconThemeData(color: scheme.primary),
         unselectedIconTheme: IconThemeData(color: scheme.onSurfaceVariant),
         selectedLabelTextStyle: TextStyle(

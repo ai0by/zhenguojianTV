@@ -1634,7 +1634,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           appBar: television
               ? null
               : AppBar(
-                  titleSpacing: 12,
+                  // 桌面版（宽窗口）顶栏给到 62：鼠标点选的目标更大，
+                  // 也能和上面 36px 的自绘标题栏凑成一块像样的头部。
+                  // 手机保持 Material 默认 56，不额外吃掉竖屏高度。
+                  toolbarHeight: desktop ? 62 : null,
+                  titleSpacing: desktop ? 16 : 12,
                   title: _selectionMode
                       ? const Text(
                           '选择短剧',

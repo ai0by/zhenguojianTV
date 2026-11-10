@@ -21,6 +21,7 @@ import 'media_library.dart';
 import 'package_smoke.dart';
 import 'lan_controller.dart';
 import 'vertical_feed_screen.dart';
+import 'windows_chrome.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,6 +31,28 @@ Future<void> main(List<String> arguments) async {
   }
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
+    // Windows 版改用**自绘标题栏**（`lib/windows_chrome.dart`）：原生标题栏
+    // 不跟随主题，还挂着旧品牌名，与下面的界面拼成"两条割裂的顶栏"。
+    //
+    // `waitUntilReadyToShow` 刻意不 await —— 它要等窗口显示后的 ready 事件，
+    // await 在这里会直接把启动卡死（官方示例也是浮空调用）。
+    unawaited(
+      windowManager.waitUntilReadyToShow(
+        WindowOptions(
+          size: const Size(1360, 840),
+          minimumSize: const Size(980, 620),
+          center: true,
+          // 窗口标题只在任务栏 / 缩略图里可见，与应用内 appName 保持一致。
+          title: appName,
+          titleBarStyle: TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        ),
+        () async {
+          await windowManager.show();
+          await windowManager.focus();
+        },
+      ),
+    );
   }
   MediaKit.ensureInitialized();
   if (Platform.isWindows && arguments.firstOrNull == '--package-smoke') {
@@ -260,34 +283,37 @@ class DuanjuApp extends StatelessWidget {
       final mode = store?.displayMode ?? 'auto';
       final tv = mode == 'television' || mode == 'auto' && television;
       final theme = Theme.of(context);
-      return AnnotatedRegion<SystemUiOverlayStyle>(
-        value: AppTheme.systemBars(theme.brightness),
-        child: ColoredBox(
-          color: theme.scaffoldBackgroundColor,
-          child: AppLayout(
-            television: tv,
-            version: version,
-            child: Theme(
-              data: tv ? televisionTheme(theme) : theme,
-              child: Shortcuts(
-                shortcuts: const {
-                  SingleActivator(
-                    LogicalKeyboardKey.select,
-                    includeRepeats: false,
-                  ): ActivateIntent(),
-                  SingleActivator(
-                    LogicalKeyboardKey.gameButtonA,
-                    includeRepeats: false,
-                  ): ActivateIntent(),
-                },
-                child: CallbackShortcuts(
-                  bindings: {
-                    const SingleActivator(LogicalKeyboardKey.goBack): () {
-                      if (!entryBackGuard.claim()) return;
-                      navigatorKey?.currentState?.maybePop();
-                    },
+      // Windows 桌面版在应用最外层再套一条自绘标题栏；其它平台原样返回。
+      return WindowsDesktopFrame(
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          value: AppTheme.systemBars(theme.brightness),
+          child: ColoredBox(
+            color: theme.scaffoldBackgroundColor,
+            child: AppLayout(
+              television: tv,
+              version: version,
+              child: Theme(
+                data: tv ? televisionTheme(theme) : theme,
+                child: Shortcuts(
+                  shortcuts: const {
+                    SingleActivator(
+                      LogicalKeyboardKey.select,
+                      includeRepeats: false,
+                    ): ActivateIntent(),
+                    SingleActivator(
+                      LogicalKeyboardKey.gameButtonA,
+                      includeRepeats: false,
+                    ): ActivateIntent(),
                   },
-                  child: FocusTraversalGroup(child: child!),
+                  child: CallbackShortcuts(
+                    bindings: {
+                      const SingleActivator(LogicalKeyboardKey.goBack): () {
+                        if (!entryBackGuard.claim()) return;
+                        navigatorKey?.currentState?.maybePop();
+                      },
+                    },
+                    child: FocusTraversalGroup(child: child!),
+                  ),
                 ),
               ),
             ),

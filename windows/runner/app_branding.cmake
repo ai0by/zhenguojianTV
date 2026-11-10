@@ -5,7 +5,9 @@ foreach(ENTRY IN LISTS FLUTTER_TOOL_ENVIRONMENT)
     string(REPLACE "," ";" APP_DART_DEFINES "${CMAKE_MATCH_1}")
     foreach(DEFINE IN LISTS APP_DART_DEFINES)
       if(DEFINE STREQUAL "QUxMX1NPVVJDRVM9dHJ1ZQ==")
-        set(APP_DISPLAY_NAME "真果鉴")
+        # 与 lib/app_build.dart 的 appName 保持一致（0.8.10 起全源版叫「真果鉴TV」）。
+        # 这里少写一个 TV，任务栏 / 文件属性 / 窗口标题就会跟应用内不一样。
+        set(APP_DISPLAY_NAME "真果鉴TV")
         set(APP_EXECUTABLE_NAME "zhenguojian.exe")
       elseif(DEFINE STREQUAL "QUxMX1NPVVJDRVM9ZmFsc2U=")
         set(APP_DISPLAY_NAME "红果鉴")
