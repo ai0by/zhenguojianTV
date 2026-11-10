@@ -6,6 +6,11 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app_build.dart';
 
+// TODO(windows-pip): Windows 端画中画尚未实现。Windows 没有系统级 PiP API，
+// 只能把主窗口切成「小尺寸 + 无边框 + 置顶」的浮窗形态（Android 那套
+// PictureInPictureParams 完全用不上）。方案对比、实现要点与验收标准见
+// docs/TODO.md 的「Windows 端画中画」一节。
+
 /// Windows 桌面版的窗口外框（自绘标题栏）。
 ///
 /// 为什么自绘：Flutter 的 Windows 模板给的是**系统原生标题栏** —— 一块不跟随
