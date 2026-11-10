@@ -99,7 +99,7 @@
 | --- | --- |
 | Android 手机（arm64-v8a / armeabi-v7a） | **当前交付**，持续发版 |
 | Android TV / 盒子 / 投影 | **已适配**，遥控器可用 |
-| Windows x64 | 源码保留，暂停构建 |
+| Windows x64 | **CI 构建**，在 Actions 手动跑 `Build Windows` 取 zip |
 | iOS | 未实施（工程保留） |
 
 ## 声明

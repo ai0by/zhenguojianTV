@@ -53,19 +53,32 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          location: C:\msys64
           update: false
           install: mingw-w64-x86_64-gcc
 
       - name: Expose MinGW-w64 compiler
         shell: pwsh
         run: |
-          $bin = 'C:\msys64\mingw64\bin'
-          $cc = Join-Path $bin 'x86_64-w64-mingw32-gcc.exe'
-          if (-not (Test-Path $cc)) { throw "缺少交叉编译器：$cc" }
+          # setup-msys2 的 location 是「安装父目录」，不同 runner 镜像可能把
+          # MSYS2 放在 C:\msys64，也可能在 RUNNER_TEMP 下新解一套，所以别硬编码，
+          # 直接把实际装好的交叉编译器找出来。
+          $roots = @('C:\msys64', (Join-Path $env:RUNNER_TEMP 'msys64'),
+                     'D:\a\_temp\msys64', 'C:\Program Files\msys64')
+          $found = @()
+          foreach ($root in $roots) {
+            if (Test-Path -LiteralPath $root) {
+              $found += @(Get-ChildItem -LiteralPath $root -Filter 'x86_64-w64-mingw32-gcc.exe' -Recurse -File -ErrorAction SilentlyContinue)
+            }
+          }
+          Write-Host "找到 $($found.Count) 个 x86_64-w64-mingw32-gcc.exe:"
+          $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          if (-not $found) { throw 'setup-msys2 装完仍找不到 MinGW-w64 交叉编译器' }
+          $preferred = @($found | Where-Object { $_.FullName -match '\\mingw64\\' })
+          $cc = if ($preferred.Count -gt 0) { $preferred[0] } else { $found[0] }
+          $bin = Split-Path $cc.FullName -Parent
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $cc --version | Select-Object -First 1
-          Write-Host "CC=$cc"
+          Write-Host "CC=$($cc.FullName)"
+          & $cc.FullName --version | Select-Object -First 1
 
       - name: Toolchain sanity
         shell: pwsh
