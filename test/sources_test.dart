@@ -185,12 +185,29 @@ void main() {
     expect(SourceSite.byId('sorani').name, '青空');
   });
 
-  test('hidden source is filtered from store display but stays playable', () async {
+  test('hidden sources are filtered from store display but stay playable', () async {
     if (!allSourcesEnabled) return;
     SharedPreferences.setMockInitialValues({});
     final store = LocalStore(await SharedPreferences.getInstance());
-    expect(store.sources.any((site) => site.id == 'sorani'), isFalse);
-    expect(store.allowsSource('sorani'), isTrue);
+    // 遍历整个 hiddenIds 而不是写死某个 id：以后隐藏 / 恢复站源时，
+    // 这条用例都会自动覆盖，不需要同步改断言。隐藏只影响展示，权限仍放行。
+    for (final id in SourceSite.hiddenIds) {
+      expect(
+        store.sources.any((site) => site.id == id),
+        isFalse,
+        reason: '$id 不该出现在可展示列表里',
+      );
+      expect(SourceSite.displayValues.any((site) => site.id == id), isFalse);
+      expect(
+        store.allowsSource(id),
+        isTrue,
+        reason: '$id 的历史记录 / 已下载剧集必须仍能播',
+      );
+    }
+    expect(
+      SourceSite.displayValues.length,
+      SourceSite.values.length - SourceSite.hiddenIds.length,
+    );
   });
 
   testWidgets(

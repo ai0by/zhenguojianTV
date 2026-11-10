@@ -1,7 +1,9 @@
 import argparse
 import json
+import os
 import platform
 import re
+import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -25,9 +27,20 @@ def main():
         with zipfile.ZipFile(package) as archive:
             archive.extractall(directory)
         media = directory / 'fixture.mp4'
-        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi',
+        # ffmpeg 只用来造一段 3 秒测试片，不是产品依赖。CI 里由 MSYS2 提供；
+        # 本机跑的时候可以用 ZGJ_FFMPEG 指到任意一份 ffmpeg.exe。
+        ffmpeg = os.environ.get('ZGJ_FFMPEG') or shutil.which('ffmpeg')
+        if not ffmpeg:
+            raise SystemExit(
+                '启动验收需要 ffmpeg 生成 3 秒测试片：请把 ffmpeg.exe 加入 PATH，'
+                '或用 ZGJ_FFMPEG 指定路径（CI 里由 msys2 安装 mingw-w64-x86_64-ffmpeg）。'
+            )
+        # mpeg4 是 FFmpeg 任何精简构建都带的编码器；原来写 libx264，遇到
+        # GPL-free / 精简版 ffmpeg 会直接报 Unknown encoder，验收还没开始就挂了。
+        subprocess.run([ffmpeg, '-v', 'error', '-y', '-f', 'lavfi',
                         '-i', 'testsrc2=size=160x90:rate=12', '-t', '3',
-                        '-c:v', 'libx264', '-threads', '1', str(media)], check=True)
+                        '-c:v', 'mpeg4', '-q:v', '5', '-threads', '1', str(media)],
+                       check=True)
         report = directory / 'result.json'
         result = subprocess.run([str(directory / (variant.slug + '.exe')), '--package-smoke', str(report), str(media)],
                                 cwd=directory, check=False, timeout=90)

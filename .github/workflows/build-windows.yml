@@ -15,6 +15,10 @@ on:
         description: '出包后跑 --package-smoke 启动验收'
         type: boolean
         default: true
+      publish_release:
+        description: '把 zip 发到可直接下载的预发布 Release'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -54,7 +58,12 @@ jobs:
         with:
           msystem: MINGW64
           update: false
-          install: mingw-w64-x86_64-gcc
+          # ffmpeg 只是给 --package-smoke 造 3 秒测试片用的，不是产品依赖。
+          # 它和 gcc 一起落在 mingw64/bin，下面的 Expose 步骤已经把该目录
+          # 加进 GITHUB_PATH，smoke 里就能直接调 ffmpeg.exe。
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-ffmpeg
 
       - name: Expose MinGW-w64 compiler
         shell: pwsh
@@ -83,7 +92,7 @@ jobs:
       - name: Toolchain sanity
         shell: pwsh
         run: |
-          foreach ($tool in @('flutter', 'dart', 'go', 'python', 'cmake', 'x86_64-w64-mingw32-gcc')) {
+          foreach ($tool in @('flutter', 'dart', 'go', 'python', 'cmake', 'x86_64-w64-mingw32-gcc', 'ffmpeg')) {
             $found = Get-Command $tool -ErrorAction SilentlyContinue
             if ($found) { Write-Host ("{0} -> {1}" -f $tool, $found.Source) }
             else { Write-Host "WARN: $tool 不在 PATH（不一定致命，Flutter 会自己找 VS/CMake）" }
@@ -117,9 +126,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 启动验收放在上传之后：即使 smoke 因为 runner 上没有 ffmpeg 或
-      # 无显示器环境失败，安装包本身也已经在 Actions 产物里可以下载。
+      # 启动验收放在上传之后：即使 runner 环境导致 smoke 失败，安装包本身
+      # 也已经进了 Actions 产物。但**不能把失败显示成 OK** —— 原来只挂
+      # continue-on-error，job 上一片绿，实际是 FileNotFoundError 没跑起来。
+      # 现在用 outcome 单独出结论，真失败就打 warning 并写进 job summary。
       - name: Package smoke test
+        id: smoke
         if: ${{ inputs.smoke }}
         continue-on-error: true
         shell: pwsh
@@ -130,3 +142,86 @@ jobs:
           if (Test-Path 'build/windows-package-smoke.json') {
             Get-Content 'build/windows-package-smoke.json'
           }
+
+      - name: Smoke verdict
+        if: ${{ always() && inputs.smoke }}
+        shell: pwsh
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          $report = 'build/windows-package-smoke.json'
+          if ($env:SMOKE_OUTCOME -eq 'success') {
+            Write-Host '启动验收通过'
+            Add-Content $env:GITHUB_STEP_SUMMARY '### Windows 包启动验收：通过'
+          } else {
+            Write-Host "::warning::Windows 包启动验收未通过（outcome=$env:SMOKE_OUTCOME），zip 仅供参考"
+            Add-Content $env:GITHUB_STEP_SUMMARY "### Windows 包启动验收：未通过（$env:SMOKE_OUTCOME）"
+            Add-Content $env:GITHUB_STEP_SUMMARY '> 包已构建并通过 9 个必需文件校验，但端到端启动验收没跑起来；请看上面 `Package smoke test` 的日志。'
+          }
+          if (Test-Path $report) {
+            Add-Content $env:GITHUB_STEP_SUMMARY '```json'
+            Add-Content $env:GITHUB_STEP_SUMMARY (Get-Content $report -Raw)
+            Add-Content $env:GITHUB_STEP_SUMMARY '```'
+          }
+
+  # 单独一个 job：构建 job 保持 contents: read，不因为「偶尔想发个预发布」
+  # 就把整条构建链的 token 提权。预发布不会进 /releases/latest，Android
+  # 客户端的更新检查不受影响。
+  publish:
+    needs: windows
+    if: ${{ inputs.publish_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.all_sources && 'zhenguojian' || 'hongguojian' }}-windows-x64
+          path: dist/windows
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version:[[:space:]]*\([^[:space:]]*\).*/\1/p' pubspec.yaml | head -1)"
+          test -n "$version" || { echo 'pubspec.yaml 里没读到 version'; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=windows-$version" >> "$GITHUB_OUTPUT"
+          ls -lh dist/windows
+
+      - name: Publish prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.meta.outputs.tag }}'
+          version='${{ steps.meta.outputs.version }}'
+          mapfile -t files < <(find dist/windows -maxdepth 1 -type f \( -name '*.zip' -o -name 'SHA256SUMS.txt' \) -print | sort)
+          test "${#files[@]}" -gt 0 || { echo '没找到要发布的 zip'; exit 1; }
+          cat > /tmp/windows-notes.md <<EOF
+          Windows x64 预览包，版本 $version。
+
+          - 解压后直接运行 \`zhenguojian.exe\`，无需安装、无需 Flutter / Visual Studio。
+          - 构建记录：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - 校验：同目录 \`SHA256SUMS.txt\`。
+          - 这是**预发布**，不会出现在 \`/releases/latest\`，不影响 Android 端应用内更新。
+          - Windows 版没有应用内更新通道，升级请重新下载新包。
+          - 启动验收结果见构建 run 的 job summary。
+          EOF
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+            echo "已更新预发布 $tag"
+          else
+            gh release create "$tag" "${files[@]}" \
+              --title "真果鉴 TV Windows x64 $version（预览）" \
+              --notes-file /tmp/windows-notes.md \
+              --prerelease --target "$GITHUB_SHA"
+            echo "已创建预发布 $tag"
+          fi
