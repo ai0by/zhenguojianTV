@@ -58,9 +58,12 @@ def main():
         output = root / 'build' / 'windows-package-smoke.json'
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
-        print(json.dumps(evidence, ensure_ascii=False))
+        # CI 的 pwsh 把子进程 stdout 按 cp1252 解码，报告里一旦有中文
+        # （例如 clockNote），`ensure_ascii=False` 会让 print 抛 UnicodeEncodeError，
+        # 验收明明通过却以退出码 1 收场。日志统一输出纯 ASCII 转义。
+        print(json.dumps(evidence, ensure_ascii=True))
         if evidence.get('ok') is not True:
-            raise SystemExit('Windows 包启动验收未通过：' + json.dumps(evidence, ensure_ascii=False))
+            raise SystemExit('Windows package smoke failed: ' + json.dumps(evidence, ensure_ascii=True))
 
 
 if __name__ == '__main__':
