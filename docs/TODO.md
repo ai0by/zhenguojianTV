@@ -65,5 +65,6 @@ Windows 没有"系统级 PiP"这种东西 —— 没有 `enterPictureInPictureMo
 
 ## 其它已知遗留
 
-- **Windows 包启动验收 `--package-smoke` 卡在位置流 20s 超时**：前 3 项（Native Core / ffprobe / remux）通过，用 ctypes 直调包内 `libmpv-2.dll` 播同一文件正常推进，判定为老验收脚本 `vo:'null'` + `open()` 前订阅位置流的写法问题，不是包的问题。详见 `docs/BUILD.md`。
+- ~~**Windows 包启动验收 `--package-smoke` 卡在位置流 20s 超时**~~ —— **2026-11-11 已修好**。根因不是时序：`PlayerConfiguration(vo:'null')` + 纯视频无音轨 + headless runner ⇒ mpv 没有输出时钟，`time-pos` 恒 0，老判据「位置推进到 400ms」在该环境**不可能成立**。现改为 `duration` / `playing` / `seek` 三条不依赖时钟的硬断言，`Build Windows` 已真绿。详见 `docs/BUILD.md`。
+- **红果播放取流的「每轮注册新身份」可以清理**：2026-11-11 实测固定同一身份连取 4 集 4/4 成功，证明 0.8.27 的「一个身份只能取流一次」是误判（真因是取流接口改认播放器专用签名，已修）。当前保留只为容错，代价是每集多一次 `device_register` 往返。清理时 `provider_hongguo_playback_routes_test.go` 里断言「每轮新身份 / 全失败再注册一次」的用例要一起改。
 - **境外 runner 抓不到花果 / 网果 / 无果 / 发果**：恒 403，只能国内机器串行深抓后手工提交快照。详见 `memory/catalog.md`。
