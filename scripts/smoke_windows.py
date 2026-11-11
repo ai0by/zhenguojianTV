@@ -42,18 +42,25 @@ def main():
                         '-c:v', 'mpeg4', '-q:v', '5', '-threads', '1', str(media)],
                        check=True)
         report = directory / 'result.json'
-        result = subprocess.run([str(directory / (variant.slug + '.exe')), '--package-smoke', str(report), str(media)],
-                                cwd=directory, check=False, timeout=90)
+        try:
+            result = subprocess.run([str(directory / (variant.slug + '.exe')), '--package-smoke', str(report), str(media)],
+                                    cwd=directory, check=False, timeout=90)
+            missing = '未生成检查结果，退出码 ' + str(result.returncode)
+        except subprocess.TimeoutExpired:
+            missing = '启动验收进程 90 秒未退出'
         if report.is_file():
             evidence = json.loads(report.read_text(encoding='utf-8'))
         else:
-            evidence = {'ok': False, 'error': '未生成检查结果，退出码 ' + str(result.returncode)}
-        print(json.dumps(evidence, ensure_ascii=False))
-        if evidence.get('ok') is not True:
-            raise SystemExit('Windows 包启动验收未通过：' + json.dumps(evidence, ensure_ascii=False))
+            evidence = {'ok': False, 'error': missing}
+        # 无论通过与否都落盘：原来只在成功时写，失败时
+        # build/windows-package-smoke.json 根本不存在，job summary 与日志里
+        # 只剩一行笼统的失败提示，看不到播放器状态诊断。
         output = root / 'build' / 'windows-package-smoke.json'
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps(evidence, ensure_ascii=False))
+        if evidence.get('ok') is not True:
+            raise SystemExit('Windows 包启动验收未通过：' + json.dumps(evidence, ensure_ascii=False))
 
 
 if __name__ == '__main__':
