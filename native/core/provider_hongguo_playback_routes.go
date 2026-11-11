@@ -197,23 +197,42 @@ func (downloader *Downloader) hongguoPlaybackModelOnce(
 		}
 		body = encoded
 	}
-	request, err := http.NewRequestWithContext(ctx, route.method, strings.TrimRight(route.host, "/")+route.path, bytes.NewReader(body))
+	// 把"构造 request + prepare 签名 + 发送"收成一个闭包：命中 host 退避
+	// 重发时必须重新构造 request（body 用新的 bytes.Reader、URL 重新拼），
+	// 不能复用上一次那个已被 doPreparedCatalogRequest 改过 RawQuery 的
+	// request。prepare 回调每次都会重设 _rticket 并重算签名，天然幂等。
+	send := func() (*http.Response, error) {
+		request, err := http.NewRequestWithContext(ctx, route.method, strings.TrimRight(route.host, "/")+route.path, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("User-Agent", hongguoAppUserAgent)
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("X-XS-From-Web", "0")
+		request.Header.Set("Sdk-Version", "2")
+		if route.body != nil {
+			request.Header.Set("Content-Type", "application/json; charset=utf-8")
+		}
+		return downloader.doPreparedCatalogRequest(request, hongguoPlaybackRequestTimeout, func(prepared *http.Request) {
+			now := time.Now()
+			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
+			prepared.URL.RawQuery = query.Encode()
+			signHongguoAppRequest(prepared, body, prepared.URL.RawQuery, identity.DeviceID, now)
+		})
+	}
+	response, err := send()
 	if err != nil {
-		return nil, err
+		var backoff *requestBackoff
+		if errors.As(err, &backoff) && downloader.limiter != nil {
+			// 其他链路（目录/弹幕/预载）给这个 host 挂的退避会在 acquire
+			// 阶段把取流直接挡下，而红果 App 的退避本来就不可信（见
+			// skipCatalogObserveKey）。就地清掉这一条，用新签名原样重发
+			// 一次；只重试一次，别把抖动放大成多轮等待。注册链路有自己的
+			// 重试，不加这套。
+			downloader.limiter.clearBackoff(backoff.host)
+			response, err = send()
+		}
 	}
-	request.Header.Set("User-Agent", hongguoAppUserAgent)
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("X-XS-From-Web", "0")
-	request.Header.Set("Sdk-Version", "2")
-	if route.body != nil {
-		request.Header.Set("Content-Type", "application/json; charset=utf-8")
-	}
-	response, err := downloader.doPreparedCatalogRequest(request, hongguoPlaybackRequestTimeout, func(prepared *http.Request) {
-		now := time.Now()
-		query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
-		prepared.URL.RawQuery = query.Encode()
-		signHongguoAppRequest(prepared, body, prepared.URL.RawQuery, identity.DeviceID, now)
-	})
 	if err != nil {
 		return nil, err
 	}

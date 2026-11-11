@@ -219,12 +219,14 @@ func TestNativeHongguoStalledCursorKeepsPartialItems(t *testing.T) {
 }
 
 func TestNativeCatalogPreservesLargeLibraryAndPage501(t *testing.T) {
-	var requested string
+	// 黄果AI 的镜像竞速会让多个 goroutine 同时进这个 transport，普通
+	// string 赋值在 -race 下是数据竞争。用 atomic.Value 存最后一次页码。
+	var requested atomic.Value
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/api/videos/category/ai-duanju" {
 			return nil, errors.New("only synthetic catalog metadata is allowed")
 		}
-		requested = request.URL.Query().Get("page")
+		requested.Store(request.URL.Query().Get("page"))
 		return sourceFixtureResponse(request, 200, `{"data":[{"id":"6001","title":"第6001部"}]}`), nil
 	})
 	items := make([]nativeDrama, 6000)
@@ -238,8 +240,12 @@ func TestNativeCatalogPreservesLargeLibraryAndPage501(t *testing.T) {
 	if result, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 501}); err != nil || result.Warning != "" {
 		t.Fatal(err, result.Warning)
 	}
-	if requested != "501" {
-		t.Fatal("catalog silently clamped the requested page", requested)
+	var lastRequested string
+	if value := requested.Load(); value != nil {
+		lastRequested, _ = value.(string)
+	}
+	if lastRequested != "501" {
+		t.Fatal("catalog silently clamped the requested page", lastRequested)
 	}
 	if err := engine.saveCatalogCache(nativeCatalogKey(sourceHuangguoAI, "ai-manju"), &nativeCatalogResult{
 		Items: []nativeDrama{{ID: "huangguoai:6001", Source: sourceHuangguoAI, Title: "第6001部"}, {ID: "huangguoai:6002", Source: sourceHuangguoAI, Title: "第6002部"}},

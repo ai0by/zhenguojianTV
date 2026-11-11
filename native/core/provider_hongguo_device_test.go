@@ -217,7 +217,8 @@ func TestEnsureHongguoDeviceCooldownSkipsRetry(t *testing.T) {
 }
 
 // 设备没注册成功时，取流必然空正文；公开片源与网页只会给 10 秒预告，
-// 所以主链路要直接短路，不浪费两个网络往返、也不把根因埋在别的错误后面。
+// 所以主链路不再往下试那两条路。但注册抖动是暂态，0.8.28 起这个错误
+// 会包上 errNativeMediaTransient，让前端静默自动重试一次（不再硬判死）。
 func TestResolveHongguoMediaShortCircuitsWhenDeviceUnregistered(t *testing.T) {
 	// 未注册设备的空正文重试会跑满 attempts 次（秒级跨窗退避），
 	// 缩到毫秒级避免测试干等。
@@ -252,6 +253,11 @@ func TestResolveHongguoMediaShortCircuitsWhenDeviceUnregistered(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "红果游客设备注册失败") {
 		t.Fatalf("错误应直指根因，实际：%v", err)
+	}
+	// 新语义：注册失败也要包 transient，前端才会自动重试，而不是一次
+	// 抖动就把整集判死。
+	if !errors.Is(err, errNativeMediaTransient) {
+		t.Fatalf("注册失败应标记成瞬时失败，实际：%v", err)
 	}
 	for _, path := range paths {
 		if strings.Contains(path, "/video/public/") {

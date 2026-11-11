@@ -33,6 +33,7 @@ import 'picture_in_picture.dart';
 import 'tv_dialogs.dart';
 import 'tv_player_panel.dart';
 import 'widgets.dart';
+import 'windows_pip.dart';
 
 /// 全屏横屏分区手势的类型（0.7.2，`XQ-0105`）。
 enum _FsGesture { none, seek, brightness, volume, episode }
@@ -1838,10 +1839,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
 
   /// 画中画（0.8.17，手机端）。
   ///
-  /// `_pipAvailable` 由 `PictureInPicture.initialize()` 探测；
+  /// `_pipAndroidAvailable` 由 `PictureInPicture.initialize()` 探测；
   /// `_pipActive` 跟随原生的进出小窗回调 —— 进小窗要立刻收起控件，
   /// 否则小窗里会糊着一层按钮和进度条。
-  bool _pipAvailable = false;
+  ///
+  /// Windows 走另一套（`WindowsPip` 浮窗形态），但共用同一个小窗按钮，
+  /// 所以把「有没有小窗能力」收成一个 getter。判据是
+  /// `defaultTargetPlatform`，widget 测试里恒为 false，不新增分支。
+  bool _pipAndroidAvailable = false;
+  bool get _pipAvailable => _pipAndroidAvailable || WindowsPip.supported;
   bool _pipActive = false;
   bool _pipArmed = false;
   bool _pipInitialized = false;
@@ -6750,6 +6756,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 探测设备能力并挂上小窗进出回调。电视端直接跳过。
   void _initPictureInPicture() {
     if (_television) return;
+    // Windows 走 `WindowsPip` 浮窗，不注册 Android 的 PiP 通道与监听，
+    // 免得在桌面上白发一堆 SystemChrome / Activity 调用。小窗按钮的可用性
+    // 由 `_pipAvailable` getter 单独给出，不依赖这里的初始化。
+    if (WindowsPip.supported) return;
     unawaited(() async {
       final available = await PictureInPicture.initialize();
       if (!mounted || _closed) return;
@@ -6759,8 +6769,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       // 进小窗时页面可能被重建（例如从小窗点回来换了一集），
       // 先把当前真实状态同步进来，别默认成"不在小窗"。
       _pipActive = PictureInPicture.active.value;
-      if (available != _pipAvailable) {
-        setState(() => _pipAvailable = available);
+      if (available != _pipAndroidAvailable) {
+        setState(() => _pipAndroidAvailable = available);
       }
       _queuePictureInPictureSync();
       _syncPictureInPicturePlayback(_player?.state.playing ?? false, force: true);
@@ -6820,6 +6830,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   Future<void> _enterPictureInPicture() async {
     if (_closed || !_pipAvailable) return;
     _hideTimer?.cancel();
+    // Windows 没有系统 PiP：切成置顶浮窗，播放器实例不动、不重新缓冲。
+    if (WindowsPip.supported) {
+      await WindowsPip.instance.enter();
+      return;
+    }
     await PictureInPicture.enter(aspectRatio: _pipAspectRatio);
   }
 

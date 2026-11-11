@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -57,9 +58,39 @@ func (engine *nativeEngine) prepareReadsLocked() {
 	if engine.reads == nil {
 		engine.reads = map[string]nativeReadRequest{}
 	}
+	// session 里带集号：Dart 侧预载用的是 "preload-<集号>"，每切一集就新增
+	// 一条；而 read 完成后 finish 只清 cancel、并不删条目，于是连播越久
+	// engine.reads 越大（按集号线性累积）。这些后台预载/弹幕/目录请求还和
+	// 前台取流共用同一个 limiter，旧策略 15 分钟才清一次远远不够。这里把
+	// 过期窗口收到 2 分钟，并在条目数超过 96 时按 updated 把最旧的一批
+	// 直接删到 64 以内（无论是否过期），避免长连播后 map 无限膨胀。
 	for key, request := range engine.reads {
-		if request.cancel == nil && time.Since(request.updated) > 15*time.Minute {
+		if request.cancel == nil && time.Since(request.updated) > 2*time.Minute {
 			delete(engine.reads, key)
+		}
+	}
+	if len(engine.reads) > 96 {
+		// 只裁剪已完成的条目：进行中的 read 带 cancel / sequence，删掉会
+		// 影响 input.Sequence <= previous.sequence 的取消判断；readCount
+		// 上限 16 保证进行中不超过 16 条，删已完成的足够降到 64。
+		type readEntry struct {
+			key     string
+			updated time.Time
+		}
+		finished := make([]readEntry, 0, len(engine.reads))
+		for key, request := range engine.reads {
+			if request.cancel == nil {
+				finished = append(finished, readEntry{key: key, updated: request.updated})
+			}
+		}
+		sort.Slice(finished, func(i, j int) bool {
+			return finished[i].updated.Before(finished[j].updated)
+		})
+		for _, entry := range finished {
+			if len(engine.reads) <= 64 {
+				break
+			}
+			delete(engine.reads, entry.key)
 		}
 	}
 }

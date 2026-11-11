@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_layout.dart';
+import 'windows_splash.dart';
 
 /// 开屏页（启动画面）。
 ///
@@ -33,6 +34,7 @@ class AppSplash extends StatefulWidget {
     required this.ready,
     this.minimumDuration = const Duration(milliseconds: 420),
     this.timeout = const Duration(milliseconds: 2200),
+    this.waitForReady = true,
   });
 
   /// 真正的主界面。
@@ -46,6 +48,13 @@ class AppSplash extends StatefulWidget {
 
   /// 最长等待时间，超过则**强制**放行（不再等 [ready]）。
   final Duration timeout;
+
+  /// 是否等主界面就绪才淡出。
+  ///
+  /// Windows 桌面版关掉它：桌面开屏是一段固定 1.5 秒的完整动画，落地页是
+  /// 「发现」页（不是会回调 `onFeedReady` 的竖滑流），继续等 ready 只会让
+  /// 每次启动都白白走满硬超时。
+  final bool waitForReady;
 
   @override
   State<AppSplash> createState() => _AppSplashState();
@@ -103,7 +112,7 @@ class _AppSplashState extends State<AppSplash> {
   void _maybeDismiss() {
     if (!mounted || _dismissed) return;
     if (!_minimumElapsed) return;
-    if (!_timedOut && !widget.ready.value) return;
+    if (!_timedOut && widget.waitForReady && !widget.ready.value) return;
     setState(() => _dismissed = true);
   }
 
@@ -147,6 +156,14 @@ bool landscapeSplash(bool television) =>
             defaultTargetPlatform == TargetPlatform.macOS ||
             defaultTargetPlatform == TargetPlatform.linux));
 
+/// Windows 桌面版用满屏横版动画开屏（[WindowsSplashSurface]），不再用成品图。
+///
+/// 和 [landscapeSplash] 的区别：后者仍要给 `precacheSplashImage` 判断横竖图，
+/// 这里只决定**渲染哪一套开屏**。判据是 `defaultTargetPlatform`，widget
+/// 测试里恒为 false，不会冒出额外的动画节点或 timer。
+bool get windowsCinematicSplash =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
 /// 把开屏图提前解进图片缓存。
 ///
 /// 这是"开屏不闪"的关键一步：`Image.asset` 的解码是异步的，不预加载的话
@@ -162,11 +179,14 @@ bool landscapeSplash(bool television) =>
 /// 三处防闪措施（这里预解码、`_SplashSurface` 垫色、Android 12+ 的
 /// values-v31 纯色启动画面）继续保留。
 Future<void> precacheSplashImage(bool television) async {
-  final provider = AssetImage(
-    landscapeSplash(television)
-        ? 'assets/splash/splash_tv.jpg'
-        : 'assets/splash/splash_phone.jpg',
-  );
+  // Windows 动画开屏只用到 logo.jpg（胶片带 / 光晕是 CustomPaint 自绘），
+  // 预载那张根本不会显示的 splash_tv.jpg 纯属浪费内存。
+  final asset = windowsCinematicSplash
+      ? 'assets/logo.jpg'
+      : landscapeSplash(television)
+      ? 'assets/splash/splash_tv.jpg'
+      : 'assets/splash/splash_phone.jpg';
+  final provider = AssetImage(asset);
   final completer = Completer<void>();
   void finish() {
     if (!completer.isCompleted) completer.complete();
@@ -214,8 +234,22 @@ class _SplashSurface extends StatelessWidget {
     systemNavigationBarIconBrightness: Brightness.dark,
   );
 
+  /// Windows 桌面一律走 `windows_splash.dart` 的满屏横版动画页，不看窗口
+  /// 当时的宽高比：启动瞬间窗口还没稳定，若此时按竖窗口落到 splash_phone
+  /// 就会闪一帧竖版图，正是反馈里「感觉用的是竖版图」的来源。动画页内部
+  /// 用 LayoutBuilder 做了宽窄适配，横竖窗口都不会裁元素。
   @override
   Widget build(BuildContext context) {
+    if (windowsCinematicSplash) {
+      return const AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          statusBarBrightness: Brightness.dark,
+        ),
+        child: WindowsSplashSurface(),
+      );
+    }
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: _overlay,
       child: ColoredBox(

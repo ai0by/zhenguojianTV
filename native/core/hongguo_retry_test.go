@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,6 +82,149 @@ func TestHongguoAppMediaGivesUpAfterRepeatedEmptyModel(t *testing.T) {
 	}
 }
 
+// 0.8.28：预载（session preload-<集号>）与前台正片常常同时 miss 短缓存。
+// 各取一发会对同一 videoID 各注册一次新身份 —— 一个身份只能成功取流一次，
+// 两次注册互相顶掉，还把两发请求一起压进 limiter 队列。这里把并发取流钉成
+// 一发，后来者等结果即可。
+func TestHongguoAppMediaSingleflightMergesConcurrentFetch(t *testing.T) {
+	const videoID = "7694655440692448281"
+	good := hongguoModelBody(t, videoID, map[string]any{
+		"status":         10,
+		"video_duration": 79.534,
+		"video_list": []any{map[string]any{
+			"main_url":   "https://v5-reading-video-d.qznovelvod.com/a/720p.mp4",
+			"video_meta": map[string]any{"codec_type": "bytevc1", "vheight": 1280},
+		}},
+	})
+	var modelCalls int32
+	var once sync.Once
+	started := make(chan struct{})
+	release := make(chan struct{})
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "multi_video_model") {
+			atomic.AddInt32(&modelCalls, 1)
+			// leader 已登记 inflight 并卡在这一发里，follower 必定走等待分支。
+			once.Do(func() { close(started) })
+			<-release
+			return sourceFixtureResponse(request, http.StatusOK, good), nil
+		}
+		return hongguoProbeResponse(request, 79*time.Second+534*time.Millisecond), nil
+	}))
+
+	type outcome struct {
+		url string
+		err error
+	}
+	await := func(ch <-chan outcome, index int) outcome {
+		t.Helper()
+		select {
+		case got := <-ch:
+			return got
+		case <-time.After(5 * time.Second):
+			t.Fatalf("第 %d 个并发取流超时", index)
+			return outcome{}
+		}
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
+		first <- outcome{media.URL, err}
+	}()
+	<-started
+	second := make(chan outcome, 1)
+	go func() {
+		media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
+		second <- outcome{media.URL, err}
+	}()
+	// 没合并的话 follower 会在 release 之前自己发第 2 发，计数立刻变 2。
+	time.Sleep(120 * time.Millisecond)
+	if got := atomic.LoadInt32(&modelCalls); got != 1 {
+		close(release)
+		t.Fatalf("同一集的并发取流应合并成一发，实际已发 %d 发", got)
+	}
+	close(release)
+	for index, ch := range []<-chan outcome{first, second} {
+		got := await(ch, index+1)
+		if got.err != nil || !strings.HasSuffix(got.url, "720p.mp4") {
+			t.Fatalf("第 %d 个调用应拿到同一份片源，err=%v url=%q", index+1, got.err, got.url)
+		}
+	}
+}
+
+// 0.8.28：leader 失败时等待方不能原样吞下失败。最典型的场景就是切集把
+// 预载的 ctx cancel 掉，而等待方其实是前台正片 —— 复用那个
+// context.Canceled 会平白判死一集。失败不共享，等待方自己重取一发。
+func TestHongguoAppMediaSingleflightDoesNotShareFailure(t *testing.T) {
+	const videoID = "7694655440692448281"
+	good := hongguoModelBody(t, videoID, map[string]any{
+		"status":         10,
+		"video_duration": 79.534,
+		"video_list": []any{map[string]any{
+			"main_url":   "https://v5-reading-video-d.qznovelvod.com/a/720p.mp4",
+			"video_meta": map[string]any{"codec_type": "bytevc1", "vheight": 1280},
+		}},
+	})
+	var modelCalls int32
+	var once sync.Once
+	started := make(chan struct{})
+	release := make(chan struct{})
+	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "multi_video_model") {
+			call := atomic.AddInt32(&modelCalls, 1)
+			once.Do(func() { close(started) })
+			if call == 1 {
+				<-release
+			}
+			// 前 4 发 = leader 的「三条单发 + 换身份重试首选路径」，全空
+			// model；第 5 发起才给正片，只够 follower 重取那一发成功。
+			if call <= 4 {
+				return sourceFixtureResponse(request, http.StatusOK, `{"code":0,"data":{}}`), nil
+			}
+			return sourceFixtureResponse(request, http.StatusOK, good), nil
+		}
+		return hongguoProbeResponse(request, 79*time.Second+534*time.Millisecond), nil
+	}))
+
+	type outcome struct {
+		url string
+		err error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
+		first <- outcome{media.URL, err}
+	}()
+	<-started
+	second := make(chan outcome, 1)
+	go func() {
+		media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
+		second <- outcome{media.URL, err}
+	}()
+	time.Sleep(120 * time.Millisecond)
+	if got := atomic.LoadInt32(&modelCalls); got != 1 {
+		close(release)
+		t.Fatalf("follower 不应抢先自己发请求，实际已发 %d 发", got)
+	}
+	close(release)
+
+	select {
+	case got := <-first:
+		if !errors.Is(got.err, errHongguoAppEmptyModel) {
+			t.Fatalf("leader 应因连续空 model 失败，实际 %v", got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader 超时")
+	}
+	select {
+	case got := <-second:
+		if got.err != nil || !strings.HasSuffix(got.url, "720p.mp4") {
+			t.Fatalf("follower 应自己重取成功，err=%v url=%q", got.err, got.url)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("follower 超时")
+	}
+}
+
 // 预取失败不能进失败缓存：用户紧接着切到这一集，会被这份瞬时失败挡住。
 func TestPrefetchDanmakuFailureNotCached(t *testing.T) {
 	var calls int32
@@ -153,7 +297,8 @@ func TestParseHongguoDanmakuMissingDataBlock(t *testing.T) {
 func TestHongguoMediaEmptyModelIsTransient(t *testing.T) {
 	const videoID = "7694655440692448281"
 	// 注册要成功：这条用例验证的是「注册没问题、但上游就是不给 model」时
-	// 上层仍标记瞬时失败；注册失败是另一条用例的短路分支。
+	// 上层仍标记瞬时失败；注册失败现在同样包 transient（见
+	// provider_hongguo_device_test.go 的 TestResolveHongguoMediaShortCircuitsWhenDeviceUnregistered）。
 	d := sourceFixtureDownloader(t, withHongguoPlaybackRegistration(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "multi_video_model") {
 			return sourceFixtureResponse(request, http.StatusOK, `{"code":0,"data":{}}`), nil

@@ -5,11 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app_build.dart';
+import 'windows_pip.dart';
 
-// TODO(windows-pip): Windows 端画中画尚未实现。Windows 没有系统级 PiP API，
-// 只能把主窗口切成「小尺寸 + 无边框 + 置顶」的浮窗形态（Android 那套
-// PictureInPictureParams 完全用不上）。方案对比、实现要点与验收标准见
-// docs/TODO.md 的「Windows 端画中画」一节。
+// Windows 画中画见 lib/windows_pip.dart + windows/runner/flutter_window.cpp：
+// 浮窗形态切换 + 全局热键 Ctrl+Shift+P，方案取舍记在 docs/TODO.md。
 
 /// Windows 桌面版的窗口外框（自绘标题栏）。
 ///
@@ -34,12 +33,20 @@ class WindowsDesktopFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!supported) return child;
-    return Column(
-      children: [
-        const WindowsTitleBar(),
-        // 标题栏固定占顶部一条，其余高度留给应用的 Navigator。
-        Expanded(child: child),
-      ],
+    // 画中画时标题栏要彻底消失，但**不能把 Column 的子项数量改掉**：
+    // `child` 里挂着播放器，索引一变 Flutter 会重建整棵子树，正在播的那一路
+    // 会被 dispose 掉。用 Offstage 固定住两个位置，只切显示与高度。
+    return AnimatedBuilder(
+      animation: WindowsPip.instance,
+      builder: (context, _) {
+        final pip = WindowsPip.instance.active;
+        return Column(
+          children: [
+            Offstage(offstage: pip, child: const WindowsTitleBar()),
+            Expanded(child: WindowsPipOverlay(child: child)),
+          ],
+        );
+      },
     );
   }
 }

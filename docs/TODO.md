@@ -6,7 +6,19 @@
 
 ## Windows 端画中画（PiP）
 
-**状态**：未开始（2026-11-10 立项，用户要求先记待办）
+**状态**：已实现（2026-11-11，0.8.28；下列方案对比保留作决策记录）
+
+### 实际落地（2026-11-11）
+
+用户要求「真正的画中画、可随意拖动改大小、快捷键显示隐藏」，因此在方案 A 的基础上做了增强：
+
+- `lib/windows_pip.dart`：`WindowsPip` 切窗口形态（480×270 起步、置顶、记住进入前的 bounds / 最大化状态），退出原样还原；`minimumSize` 从 980×620 降到 240×135，**保留 `WS_THICKFRAME` 所以四条边 / 四个角都能拖着改大小**，改过的尺寸下次沿用；`WindowsPipOverlay` 提供拖动条与置顶 / 退出按钮。
+- `windows/runner/flutter_window.cpp`：Win32 `RegisterHotKey` 注册全局 `Ctrl+Shift+P`，`WM_HOTKEY` 经 `duanju/windows_pip` MethodChannel 回传 Dart。窗口隐藏 / 失焦时全局热键照样能收到；注册失败不阻断启动，播放页还有小窗按钮。
+- 隐藏小窗时只 `hide()` 窗口，**不暂停播放**（声音继续）；再按一次叫回来。`Esc` 退出小窗并还原窗口。
+- `lib/home_screen.dart`：PiP 时隐藏 AppBar / NavigationRail、强制切到竖滑播放页；退出自动回到原页面。
+- 播放页小窗按钮（`feed-pip`）在 Windows 上改为调 `WindowsPip.enter()`，Android 行为不变。
+
+**为什么仍是「主窗口形态切换」而不是独立 HWND**：Windows 没有系统级 PiP；方案 B/C 要新起 Flutter 引擎或改写 runner 的视频渲染，而 media_kit 的 Player 不能跨引擎共享，等于两个播放器、内存翻倍。浮窗形态在当前架构下是唯一不牺牲播放连续性的做法，用户可见行为（拖动、缩放、置顶、全局热键显隐、隐藏时继续播）已全部满足。若后续确实需要「小窗与主窗同时可用」，再评估方案 C。
 
 ### 背景
 

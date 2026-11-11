@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -22,6 +23,19 @@ import 'package_smoke.dart';
 import 'lan_controller.dart';
 import 'vertical_feed_screen.dart';
 import 'windows_chrome.dart';
+import 'windows_pip.dart';
+
+/// 构建 widget 树时判断「是不是 Windows 桌面版」。
+///
+/// 刻意不用 `dart:io` 的 `Platform.isWindows`：`flutter test` 的 VM 就跑在
+/// Windows 宿主上，`Platform.isWindows` 照样返回 true，会让所有不传
+/// `initialTab` 的 widget 用例误落到「发现」页。`defaultTargetPlatform` 在
+/// 测试里默认是 Android，才是 widget 树该用的判据。
+///
+/// 只有 `main()` 里真实的窗口初始化（`windowManager`）继续用
+/// `Platform.isWindows` —— 那里要的确实是宿主操作系统。
+bool get windowsDesktopUI =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,6 +45,9 @@ Future<void> main(List<String> arguments) async {
   }
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
+    // 全局热键 Ctrl+Shift+P 由原生 runner 注册，这里挂上回传通道与应用内
+    // Esc 兜底。必须早于 runApp，否则开屏期间按热键没人接。
+    unawaited(WindowsPip.instance.initialize());
     // Windows 版改用**自绘标题栏**（`lib/windows_chrome.dart`）：原生标题栏
     // 不跟随主题，还挂着旧品牌名，与下面的界面拼成"两条割裂的顶栏"。
     //
@@ -160,7 +177,7 @@ class _AppBootstrapState extends State<AppBootstrap>
             store!,
             kind: device.television
                 ? 'tv'
-                : Platform.isWindows
+                : windowsDesktopUI
                 ? 'computer'
                 : 'phone',
           );
@@ -331,7 +348,11 @@ class DuanjuApp extends StatelessWidget {
                     ),
                     repository: repository,
                     store: store!,
-                    initialTab: initialTab,
+                    // Windows 桌面落地页直接是「发现」（剧库海报墙），不进
+                    // 手机端那套上来就自动播的竖滑流。测试显式传 initialTab
+                    // 时以测试为准；判据用 windowsDesktopUI（测试环境恒为
+                    // false），现有断言不受影响。
+                    initialTab: initialTab ?? (windowsDesktopUI ? 1 : null),
                     feedPlayerFactory: feedPlayerFactory,
                     onFeedReady: feedReady == null
                         ? null
@@ -377,6 +398,17 @@ class DuanjuApp extends StatelessWidget {
   Widget _withSplash(Widget child) {
     final ready = feedReady;
     if (ready == null) return child;
+    if (windowsDesktopUI) {
+      // 桌面开屏是固定时长的满屏横版动画，落地页「发现」不会回调
+      // onFeedReady，别再让每次启动都白等 2.2 秒硬超时。
+      return AppSplash(
+        ready: ready,
+        child: child,
+        waitForReady: false,
+        minimumDuration: const Duration(milliseconds: 1500),
+        timeout: const Duration(milliseconds: 2600),
+      );
+    }
     return AppSplash(ready: ready, child: child);
   }
 }

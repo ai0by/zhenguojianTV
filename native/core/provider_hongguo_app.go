@@ -110,6 +110,20 @@ type hongguoAppClient struct {
 	// 播放取流结果缓存（0.8.27）：见 provider_hongguo_playback_routes.go。
 	// 挂在客户端实例上而不是包级变量，单测之间不会互相污染。
 	mediaCache map[string]hongguoMediaCacheEntry
+	// 同一 videoID 的并发取流合并（0.8.28）：见 resolveHongguoAppMedia。
+	// 刻意用独立的 inflightMu，不与 mediaCache 的 mu 嵌套，避免锁顺序死锁。
+	inflightMu sync.Mutex
+	inflight   map[string]*hongguoInflightCall
+}
+
+// hongguoInflightCall 是一次"正在进行的取流"，后来者等 done 拿结果。
+// 用 done channel（而不是 sync.WaitGroup）是为了支持等待方的
+// select { case <-done: case <-ctx.Done() }，调用方取消能立刻返回。
+// 只暂存一发的结果（成功或失败），失败绝不落 mediaCache。
+type hongguoInflightCall struct {
+	done  chan struct{}
+	media providerMedia
+	err   error
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
@@ -122,6 +136,7 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
 			danmaku: map[string]hongguoDanmakuCacheEntry{}, danmakuPending: map[string]*hongguoDanmakuCall{},
 			mediaCache: map[string]hongguoMediaCacheEntry{},
+			inflight:   map[string]*hongguoInflightCall{},
 		}
 	})
 	return downloader.hongguo

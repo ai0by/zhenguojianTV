@@ -107,6 +107,35 @@ type requestLimiter struct {
 
 type backgroundCatalogKey struct{}
 
+// playbackPriorityKey 标记"前台播放取流"请求，让它在 limiter.acquire 里拥有
+// 越过排队的最高优先级。子 ctx 会继承这个 Value，所以只要在打了标记的 ctx
+// 下派生，设备注册、取流路由、CDN 头部探测就都自动带上它。
+//
+// 为什么播放取流必须优先（0.8.28 连播卡死修复）：
+//
+// 用户现象是「红果连播很多集后，突然某一集无法播放；切到后一集能播；重启
+// App 后原来那集又能播」。根因链：每集切集会异步起弹幕预取与预载
+// （app_preload.go，session 是 preload-<集号>，engine.reads 完成后不删、
+// 按集号线性累积），这些后台请求与前台取流共用同一个 requestLimiter ——
+// gate.busy 按 source 单布尔、并发额度 3、interval 250ms，且 release 绑在
+// response.Body.Close 上。队列一长，播放那条 6 秒整轮预算（注册新身份 +
+// 3 条路由单发 + 兜底重注册，provider_hongguo_native_media.go）就在 acquire
+// 排队阶段耗尽，被吞成空正文；前端只对 media_transient 静默重试一次，窗口
+// 没过就硬报错。切到下一集会 cancel 掉旧预载、清空队列，重启会清零
+// limiter/reads/goroutine —— 正好解释了全部现象。
+//
+// 因此带此标记的请求在 acquire 里跳过 gate.busy、active<concurrency、
+// interval/delay 三项排队限制，只保留两道必要防线：host 级退避（backoffs /
+// backgroundBackoffs）和 ctx.Err()。同时它从未占用 gate.busy / gate.lastStart，
+// release 也绝不能去清这两项 —— 否则会误放行本应继续排队的同 source 请求，
+// 破坏单 host 串行化的初衷。
+type playbackPriorityKey struct{}
+
+// withPlaybackPriority 给 ctx 打上前台播放取流优先级标记。
+func withPlaybackPriority(ctx context.Context) context.Context {
+	return context.WithValue(ctx, playbackPriorityKey{}, true)
+}
+
 // skipCatalogObserveKey 标记"不要把响应记成 host 级封禁"的请求。
 //
 // 红果 App 接口（api5-normal-sinfonlineb.fqnovel.com）的 4xx 绝大多数来自
@@ -143,6 +172,7 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		return func() {}, nil
 	}
 	background, _ := ctx.Value(backgroundCatalogKey{}).(bool)
+	playbackPriority, _ := ctx.Value(playbackPriorityKey{}).(bool)
 	host := strings.ToLower(request.URL.Hostname())
 	source := providerSourceForURL(request.URL.String())
 	if source == "" {
@@ -167,6 +197,38 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		limiter.gates[source] = gate
 	}
 	limiter.mu.Unlock()
+	if playbackPriority {
+		// 前台播放取流：不排队，直接放行（详见 playbackPriorityKey 的说明）。
+		// 仍要认 host 级退避与调用方 ctx，不能把这两道防线一起绕掉。
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		limiter.mu.Lock()
+		if backoff := limiter.backoffs[host]; backoff != nil && time.Now().Before(backoff.until) {
+			limiter.mu.Unlock()
+			return nil, backoff
+		}
+		if backoff := limiter.backgroundBackoffs[host]; background && backoff != nil && time.Now().Before(backoff.until) {
+			limiter.mu.Unlock()
+			return nil, backoff
+		}
+		limiter.active++
+		limiter.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				limiter.mu.Lock()
+				limiter.active--
+				// 优先级请求没占过 gate.busy / gate.lastStart，这里刻意不动它们，
+				// 否则会误放行本应继续排队的同 source 请求。
+				if !background {
+					limiter.lastForeground = time.Now()
+				}
+				limiter.notifyLocked()
+				limiter.mu.Unlock()
+			})
+		}, nil
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err

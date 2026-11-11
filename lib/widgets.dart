@@ -10,6 +10,18 @@ import 'app_layout.dart';
 import 'models.dart';
 import 'remote_widgets.dart';
 
+/// 是否有常驻鼠标的桌面平台。
+///
+/// 判据刻意用 `defaultTargetPlatform` 而不是 `Platform.isWindows`：
+/// `flutter test` 的默认目标平台是 Android，因此所有用这个 getter 守住的
+/// 桌面专属 UI（Hero 横幅、悬停抬升、画中画浮层）在 widget 测试里都不会
+/// 出现，`find.byType(DramaCover)` 这类计数断言不会被新的装饰节点打破。
+bool get isDesktopPlatform =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux);
+
 Future<void> saveUserChange(
   BuildContext context,
   Future<void> Function() action,
@@ -137,12 +149,15 @@ class DramaCover extends StatelessWidget {
             child: IgnorePointer(
               child: DecoratedBox(
                 decoration: BoxDecoration(
+                  // 0.8.28：渐变只压下半张海报，上半张保留原本的画面亮度。
+                  // 从整张图的中心就开始压黑会让海报墙发灰，媒体库类应用
+                  // 都是「海报自己发光 + 底部一小段渐变托字」。
                   gradient: LinearGradient(
-                    begin: Alignment.center,
+                    begin: const Alignment(0, .18),
                     end: Alignment.bottomCenter,
                     colors: [
                       Colors.transparent,
-                      Colors.black.withValues(alpha: .78),
+                      Colors.black.withValues(alpha: .72),
                     ],
                   ),
                 ),
@@ -455,7 +470,7 @@ class DramaTile extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
                 height: 1.3,
                 fontSize: 14,
               ),
@@ -537,11 +552,7 @@ class DesktopHoverLift extends StatefulWidget {
   final double borderRadius;
 
   /// 只有这几种平台有常驻鼠标；触屏设备上 `onEnter` 不会触发，留着也无害。
-  static bool get _enabled =>
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.windows ||
-          defaultTargetPlatform == TargetPlatform.macOS ||
-          defaultTargetPlatform == TargetPlatform.linux);
+  static bool get _enabled => isDesktopPlatform;
 
   @override
   State<DesktopHoverLift> createState() => _DesktopHoverLiftState();
@@ -566,6 +577,20 @@ class _DesktopHoverLiftState extends State<DesktopHoverLift> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 130),
           curve: Curves.easeOut,
+          // 0.8.28：悬停时补一层柔和投影，海报像"浮"在卡片墙上，
+          // 比单纯放大一点更接近媒体库应用的质感。
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            boxShadow: _hovered
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: .42),
+                      blurRadius: 20,
+                      offset: const Offset(0, 9),
+                    ),
+                  ]
+                : null,
+          ),
           foregroundDecoration: _hovered
               ? BoxDecoration(
                   borderRadius: radius,

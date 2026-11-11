@@ -35,7 +35,10 @@ abstract final class AppTheme {
 
   static ThemeData _theme(Brightness brightness) {
     final dark = brightness == Brightness.dark;
-    final background = dark ? const Color(0xFF101114) : const Color(0xFFFAF8F6);
+    // 0.8.28 桌面视觉：深色底压到接近影院黑，卡片层才有可辨的深浅差。
+    // 媒体库类应用（Jellyfin / Plex）靠的是「背景更黑、卡片略亮、海报自己
+    // 发光」的层次，不是把所有表面都调成一个灰。
+    final background = dark ? const Color(0xFF0C0D12) : const Color(0xFFFAF8F6);
     final scheme = ColorScheme.fromSeed(
       seedColor: const Color(0xFFFF664F),
       brightness: brightness,
@@ -48,7 +51,7 @@ abstract final class AppTheme {
           ? const Color(0xFFFFE0D8)
           : const Color(0xFF4B160D),
       tertiary: dark ? const Color(0xFFF6C86B) : const Color(0xFF805500),
-      surface: dark ? const Color(0xFF16171B) : Colors.white,
+      surface: dark ? const Color(0xFF15171D) : Colors.white,
       onSurface: dark ? const Color(0xFFF2F0F4) : const Color(0xFF252328),
       onSurfaceVariant: dark
           ? const Color(0xFFB9B6C2)
@@ -57,16 +60,16 @@ abstract final class AppTheme {
       outlineVariant: dark ? const Color(0xFF34343D) : const Color(0xFFE3DFDC),
       surfaceContainerLowest: dark ? const Color(0xFF0D0E11) : Colors.white,
       surfaceContainerLow: dark
-          ? const Color(0xFF191A20)
+          ? const Color(0xFF171920)
           : const Color(0xFFF7F3F0),
       surfaceContainer: dark
-          ? const Color(0xFF1E2026)
+          ? const Color(0xFF1C1F26)
           : const Color(0xFFF2EEEB),
       surfaceContainerHigh: dark
-          ? const Color(0xFF25262D)
+          ? const Color(0xFF23252D)
           : const Color(0xFFEDE8E5),
       surfaceContainerHighest: dark
-          ? const Color(0xFF30313A)
+          ? const Color(0xFF2B2D36)
           : const Color(0xFFE6E0DC),
       surfaceTint: Colors.transparent,
     );
@@ -87,6 +90,23 @@ abstract final class AppTheme {
         shape: Border(bottom: BorderSide(color: scheme.outlineVariant)),
       ),
       dividerTheme: DividerThemeData(color: scheme.outlineVariant),
+      // 0.8.28：卡片与按钮统一圆角，减少 Material 默认的高投影，
+      // 让海报墙自己成为视觉主体。
+      cardTheme: CardThemeData(
+        color: scheme.surfaceContainerLow,
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+      ),
       // 桌面版（Windows）滚动条是常驻可见的，默认那条又细又淡还贴着边。
       // 统一成 6px 圆角、悬停加深、四周留 2px 间隙，宽度不再随内容抖动。
       scrollbarTheme: ScrollbarThemeData(
@@ -121,11 +141,13 @@ abstract final class AppTheme {
       ),
       navigationRailTheme: NavigationRailThemeData(
         backgroundColor: background,
+        // 侧栏稍宽一点，图标与文字不再挤在 72px 里。
+        minWidth: 78,
         // 0.8.27：桌面侧栏改成「胶囊指示器 + 品牌色图标」。
         // 原来关掉指示器只剩图标变色，在暖白底上几乎看不出哪一项是选中的；
         // 桌面用户靠鼠标点，需要一块明确的落点提示。
         useIndicator: true,
-        indicatorColor: scheme.primary.withValues(alpha: dark ? .18 : .12),
+        indicatorColor: scheme.primary.withValues(alpha: dark ? .22 : .12),
         indicatorShape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
         ),

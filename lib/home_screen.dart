@@ -38,6 +38,8 @@ import 'batch_download_screen.dart';
 import 'batch_downloads.dart';
 import 'drama_actions.dart';
 import 'library_updater.dart';
+import 'windows_hero.dart';
+import 'windows_pip.dart';
 import 'saved_library.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -1623,15 +1625,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: widget.store,
+    // 画中画切换会改变整个 Scaffold 的形态（隐藏顶栏 / 侧栏、强制播放页），
+    // 所以这里也要跟着 WindowsPip 重建。测试环境 supported == false，
+    // active 恒为 false，下面的 tab 就等于原来的 _tab。
+    animation: Listenable.merge([widget.store, WindowsPip.instance]),
     builder: (context, _) => LayoutBuilder(
       builder: (context, constraints) {
         final television = AppLayout.isTelevision(context);
+        final pip = WindowsPip.instance.active;
         final desktop = constraints.maxWidth >= 840;
+        // 进小窗时无条件切到竖滑播放页：小窗里只该有画面，不该是剧库网格。
+        // 退出后 tab 变量没被写回 _tab，所以自动回到用户原来的页面。
+        final tab = pip ? _feedIndex : _tab;
         final scaffold = Scaffold(
           // 0.8.7：电视不要顶部栏。站源/搜索/设置都挪进左侧菜单，
           // 顶部省下来的高度全给海报和剧集格子。
-          appBar: television
+          appBar: television || pip
               ? null
               : AppBar(
                   // 桌面版（宽窗口）顶栏给到 62：鼠标点选的目标更大，
@@ -1645,7 +1654,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         )
-                      : _tab == _feedIndex || _tab == _discoverIndex
+                      : tab == _feedIndex || tab == _discoverIndex
                       ? _sourceMenu()
                       : const Text(appName),
                   actions: _appBarActions(context, constraints),
@@ -1657,9 +1666,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 if (television) ...[
                   SizedBox(width: 132, child: _televisionNav()),
                   const VerticalDivider(width: 1),
-                ] else if (desktop) ...[
+                ] else if (desktop && !pip) ...[
                   NavigationRail(
-                    selectedIndex: _tab,
+                    selectedIndex: tab,
                     onDestinationSelected: _changeTab,
                     labelType: NavigationRailLabelType.all,
                     groupAlignment: -.8,
@@ -1708,7 +1717,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   // - 退到后台再回来（前后台切换时首页会因内存回收自然重载，
                   //   同时 _feedRefresh 由生命周期兜底触发）。
                   child: IndexedStack(
-                    index: _tab,
+                    index: tab,
                     children: [
                       // 首页（0.8.3）：电视和手机是两个完全不同的东西。
                       //
@@ -1748,7 +1757,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               playerFactory: widget.feedPlayerFactory,
                               refreshSignal: _feedRefresh,
                               onReady: widget.onFeedReady,
-                              active: _tab == _feedIndex,
+                              active: tab == _feedIndex,
                             ),
                       // 发现页。
                       widget.store.sources.isEmpty
@@ -1792,7 +1801,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 repository: widget.repository,
                                 store: widget.store,
                                 embedded: true,
-                                active: _tab == _downloadIndex,
+                                active: tab == _downloadIndex,
                               )
                             : const SizedBox.shrink(),
                     ],
@@ -1801,12 +1810,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ],
             ),
           ),
-          bottomNavigationBar: desktop || television
+          bottomNavigationBar: desktop || television || pip
               ? null
               : _selectionMode
               ? _selectionBar()
               : AppBottomNavigation(
-                  selectedIndex: _tab,
+                  selectedIndex: tab,
                   onDestinationSelected: _changeTab,
                   onDestinationDoubleTap: _onTabDoubleTap,
                   destinations: [
@@ -1838,7 +1847,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ],
                 ),
         );
-        if (!television && !_selectionMode) return scaffold;
+        // PiP 时不包 CallbackShortcuts：Esc 要留给 WindowsPip 退出小窗，
+        // 不能被这里的「返回上一页」吃掉。
+        if (pip || !television && !_selectionMode) return scaffold;
         return PopScope(
           // 电视（0.8.1）：所有返回都先交给 `_televisionBack` 逐层退让。
           // 手机保持原行为：不在选择模式时直接交给系统退出。
@@ -1865,6 +1876,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final television = AppLayout.isTelevision(context);
     return Column(
       children: [
+        // 桌面「发现」顶部的 Jellyfin 式主推横幅：只在有常驻鼠标的桌面
+        // 平台、非搜索态、已有剧集时渲染。判据是 defaultTargetPlatform，
+        // widget 测试里恒不出现，DramaCover 数量断言不受影响。
+        if (isDesktopPlatform &&
+            !television &&
+            !WindowsPip.instance.active &&
+            !_searchVisible &&
+            items.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+            child: WindowsHeroBanner(
+              key: ValueKey('windows-hero-${items.first.id}'),
+              drama: items.first,
+              repository: widget.repository,
+              onPlay: () => _openDrama(items.first, resume: true),
+            ),
+          ),
         if (_searchVisible && !television)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),

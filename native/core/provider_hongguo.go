@@ -208,10 +208,13 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 		return providerMedia{}, err
 	}
 	// 设备没注册成功时，取流必然空正文，公开片源与网页链路也只会给 10 秒预告
-	// （会被时长校验拒掉）。继续往下试只是让用户多等两个网络往返，还会把
-	// 真正的根因埋在"公开片源不可用"后面 —— 直接把根因抛给用户。
+	// （会被时长校验拒掉），继续往下试只是白等两个网络往返。但注册抖动本身
+	// 是暂态（0.8.27 复测里出现过一次把 3s 预算吃光的抖动），旧代码把它当
+	// 硬失败短路、不包 errNativeMediaTransient，前端因此永不自动重试，一次
+	// 抖动就让整集判死。这里保留"直指根因 + 请检查网络后重试"的语义，但包
+	// 一层 transient（media_transient），让前端静默再试一次。
 	if errors.Is(nativeErr, errHongguoDeviceUnregistered) {
-		return providerMedia{}, fmt.Errorf("%v，请检查网络后重试", nativeErr)
+		return providerMedia{}, fmt.Errorf("%w：%v，请检查网络后重试", errNativeMediaTransient, nativeErr)
 	}
 	// 0.8.16 第四批：App 链路换设备重注册后仍然空正文，也直接短路。
 	//
