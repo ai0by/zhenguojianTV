@@ -1,33 +1,30 @@
 package core
 
-// 红果播放取流专用链路（0.8.27）。
+// 红果播放取流专用链路（0.8.27 建，2026-11-11 换签名修好）。
 //
-// 2026-11-09 的三轮真实片源对照实测把根因彻底改写了：上游并非「按时间片
-// 静默回空」，而是 **一个注册身份只能成功取流一次，用过之后按身份屏蔽**。
-// 实测数据（WSL 清代理直连，每轮 8~14 集）：
+// 2026-11-11 的逐路由对照实测把 0.8.27 的结论彻底改写了：上游并不是
+// 「一个注册身份只能成功取流一次」，而是**对取流接口单独收紧了签名校验**。
+// 通用 App 签名（signHongguoAppRequest，目录 / 详情 / 弹幕仍在用）打到这里
+// 一律回 200 + 0 字节空正文，换多少设备号、换哪条路由都救不回来；只有
+// signHongguoPlayerRequest 的播放器专用签名能拿到完整 video_model。
 //
-//	固定身份 + 旧 POST     1/8  (12%)
-//	固定身份 + GET tab    1/14 (7%)
-//	同一身份取第 2 集     0/7  (0%)
-//	每轮新身份 + 旧 POST  7/8  (88%)
-//	每轮新身份 + GET tab  14/14 (100%)，平均 579ms（含注册）
-//	我方旧完整链路        8/8 但 p50 12.49s / p95 17.59s
+// 实测（WSL 直连）：当前产品链路 0/5；换成「播放器签名 + 现有 GET video_tab
+// + 现有解析链」后 5/5 拿到带 CENC key / 时长 / 多档清晰度的真实地址，
+// Range 请求可达；固定同一身份连取 4 集 4/4 成功。
 //
-// 旧链路之所以最终还能出片，是靠外层「原地重取 → resetHongguoDevice 重注册
-// → 再取」碰巧撞到新身份那一次；13~17 秒里真正有用的只有那一次注册 + 一发
-// 请求（约 0.5 秒），其余全是 0.8/1.4/2.0/2.5s 跨窗退避和多层重试在白等。
-//
-// 因此这里把播放取流从共用的 hongguoAppRequest（目录 / 详情 / 弹幕仍在用，
-// 保持原样）里彻底拆出来：
-//  1. 每轮取流主动注册一个新的匿名身份，不复用落盘的 hongguoCatalogState；
+// 本文件的定位不变，但签名只允许走播放器那套：
+//  1. 与共用的 hongguoAppRequest 分开，播放侧不打断目录 / 弹幕的会话；
 //  2. 首选官方现行 GET /reading/bookapi/video_tab/multi_video_model/v1/；
-//  3. 每条路径**单发即换**，没有跨窗退避、没有 5 次空正文重试；
+//  3. 每条路径**单发即换**，没有跨窗退避、没有多轮空正文重试；
 //  4. 全部失败才再注册一个新身份，只重试首选路径一次；
-//  5. 取流阶段整链硬预算 6 秒（不含 CDN 头部的试看探测），且每轮都会重新
-//     注册，注册抖动不会让整集直接判死。
+//  5. 成功结果短缓存 10 分钟，重复打开同一集直接返回。
 //
-// 另参照 aston314/hongguo-tv 的生产流程保留一条成功结果短缓存：重复打开
-// 同一集直接 0ms 返回，也顺带少注册一次身份。
+// 「每轮注册新身份」源于 0.8.27 那个已证伪的假设，现在并非必需（同一身份
+// 连取 4 集全成功），但保留不影响正确性，且隔离目录侧身份仍有价值。清理它
+// 属于独立优化，别和签名修复混在一次改动里。
+//
+// ⚠️ 取流请求**绝不能**再叠 X-Medusa / X-Helios：叠加会把播放器签名打回
+// 空正文。那两项只属于通用签名（provider_hongguo_sign.go）。
 
 import (
 	"bytes"
@@ -67,8 +64,9 @@ const (
 // hongguoPlaybackIdentity 是**只供本轮取流使用**的匿名身份。
 //
 // 刻意不写回 hongguoCatalogState：目录 / 详情 / 弹幕有各自的分页游标与会话，
-// 每播一集就换掉它们的 device_id 反而会打断那些链路。播放侧自带身份是这次
-// 修复的关键 —— 一个身份只用一次。
+// 每播一集就换掉它们的 device_id 反而会打断那些链路。
+// 2026-11-11 实测固定同一身份连取 4 集 4/4 成功，所以「一个身份只用一次」
+// 不是服务端约束；每轮换身份只是保留下来的容错，不是必要条件。
 type hongguoPlaybackIdentity struct {
 	DeviceID  string
 	InstallID string
@@ -139,8 +137,9 @@ func hongguoPlaybackLegacyBody(videoID string) map[string]any {
 
 // hongguoPlaybackRoutes 按实测命中率排序：GET tab > 旧 POST 主域 > 旧 POST 备域。
 //
-// 旧 POST 并没有被上游彻底废弃（新身份下实测仍有 88%），保留它作为兼容兜底；
-// 但它比 GET tab 低约 12 个点，所以不再当首选。
+// 首选 GET tab 已在「播放器专用签名」下端到端复测 5/5；两条旧 POST 保留为
+// 兼容兜底（0.8.27 通用签名时代实测约 88%），**换签名后未单独复测**，所以
+// 只作首选失败时的补位，不要调到前面去。
 func hongguoPlaybackRoutes(videoID string) []hongguoPlaybackRoute {
 	legacyExtra := hongguoPlayerQuery()
 	legacyBody := hongguoPlaybackLegacyBody(videoID)
@@ -217,7 +216,11 @@ func (downloader *Downloader) hongguoPlaybackModelOnce(
 			now := time.Now()
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()
-			signHongguoAppRequest(prepared, body, prepared.URL.RawQuery, identity.DeviceID, now)
+			// 取流接口只认播放器专用签名；通用签名会拿到 200 + 0 字节。
+			// 签名覆盖最终 RawQuery（含 _rticket），必须在重设之后调用。
+			// 这里**不要**再调 signHongguoAppRequest：它会补上 X-Medusa /
+			// X-Helios，把播放器签名整发打回空正文。
+			signHongguoPlayerRequest(prepared, body, now)
 		})
 	}
 	response, err := send()
