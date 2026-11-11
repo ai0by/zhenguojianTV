@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.27",
-    "build": 109,
-    "tag": "v0.8.27",
-    "notes": "0.8.27 · 红果取流重写：十几秒回到一秒内 + 品牌图还原成原图",
+    "version": "0.8.28",
+    "build": 110,
+    "tag": "v0.8.28",
+    "notes": "0.8.28 · Windows 真画中画与媒体库式桌面 + 红果连播卡死的根因修复",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.27+109-all.apk",
-        "size": 72990858,
-        "sha256": "3a27bc153bb1cc00836ac9f6a18ecc80b8a320a85529eac6b502a77eefcfeb7b"
+        "name": "zhenguojianTV-0.8.28+110-all.apk",
+        "size": 73025581,
+        "sha256": "3143f2ceb78c38eac8c0f3f35c84bb1db05b214b4e3ef68092922c8c8d2b9e35"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.27+109-arm64-v8a.apk",
-        "size": 33130746,
-        "sha256": "4c1aeb919a293b0e2c03e0a8cd62a33d68221b6203dbeb20c0b3aca3feae5637"
+        "name": "zhenguojianTV-0.8.28+110-arm64-v8a.apk",
+        "size": 33147488,
+        "sha256": "4891dd5322e30963c946af34e14bbf8cbe0f328cc04de9666a647e01247099cc"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.27+109-armeabi-v7a.apk",
-        "size": 41680209,
-        "sha256": "8a75f3c4da8848a7e279577f3bd7d014865393c7457e619f1492b03039817ab4"
+        "name": "zhenguojianTV-0.8.28+110-armeabi-v7a.apk",
+        "size": 41698542,
+        "sha256": "204350caa32f563b0b5d24485d5937d27b61f50c55b9b9815f4677a0a0ae030d"
       }
     ]
   },
