@@ -136,6 +136,9 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	var model map[string]any
 	var lastErr error
 	var registerErr error
+	// 记下成功取到 model 那一发所用的身份：后面编码救济要用同一个已注册
+	// 身份，不能退回可能为空的目录侧身份（见 hongguoPlaybackModelV1 注释）。
+	var playbackIdentity hongguoPlaybackIdentity
 	for round := 0; round < 2 && model == nil && fetchCtx.Err() == nil; round++ {
 		identity := downloader.hongguoFallbackPlaybackIdentity()
 		// 每一轮都必须注册一个全新身份。0.8.27 构建前复测的 11/12 里，唯一
@@ -159,6 +162,7 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 			candidate, err := downloader.hongguoPlaybackModelOnce(fetchCtx, route, videoID, identity)
 			if err == nil {
 				model = candidate
+				playbackIdentity = identity
 				break
 			}
 			lastErr = err
@@ -201,6 +205,32 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 			return providerMedia{}, errHongguoAppEmptyModel
 		}
 		return providerMedia{}, lastErr
+	}
+	// 2026-11-12：GET video_tab 对少数集**只**返回 bytevc2（片源盒里
+	// frma=bvc2，FFmpeg / libmpv 没有对应解码器），用户侧表现为「取流成功、
+	// 底部时长正常、但一直播不出来」，重启 App 也不会好 —— 这是上游按集
+	// 给的编码数据，不是进程内状态。往后跳到 bytevc1 / 明文的那几集又能播。
+	//
+	// 实测同一 video_id 用 POST /novel/player/video_model/v1/ 能拿到
+	// h265_hvc1 档位（相同的 CENC key、相同的时长、片源盒为 encv+hvcC+cenc），
+	// 20/20 集走生产 hongguoMediaFromModel 全链路通过，单次 0.2~0.6s。
+	//
+	// 只在「明确只给了 bytevc2」时补这一跳：绝大多数集 GET tab 直接命中，
+	// 零额外请求；救济失败也保留原 model，行为不比修复前更差。
+	if hongguoModelNeedsCodecRescue(model) {
+		// 单独给预算：fetchCtx 可能已被前两轮注册 / 路由吃光。父 ctx 仍保留
+		// playbackPriority 与取消语义，救济超时也只是保留原 model。
+		rescueCtx, stopRescue := context.WithTimeout(ctx, hongguoPlaybackRescueBudget)
+		rescued, rescueErr := downloader.hongguoPlaybackModelV1(rescueCtx, videoID, playbackIdentity)
+		stopRescue()
+		if rescueErr == nil && !hongguoModelNeedsCodecRescue(rescued) {
+			downloader.recordDiagnostic(diagnosticEvent{
+				Event:   "hongguo_app_playback_codec_rescued",
+				Source:  sourceHongguo,
+				Message: fmt.Sprintf("videoID=%s：video_tab 只给 bytevc2，已切到 video_model/v1 的 hvc1 档位", videoID),
+			})
+			model = rescued
+		}
 	}
 	media, err = downloader.hongguoMediaFromModel(ctx, model)
 	if err != nil {

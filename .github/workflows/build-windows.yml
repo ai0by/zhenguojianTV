@@ -2,9 +2,27 @@ name: Build Windows
 
 # Windows 端只在这里构建：本地不装 Flutter / VS，全部交给 GitHub 托管的
 # windows-latest（预装 VS2022 Enterprise + CMake + MSVC C++ 工作负载）。
-# 与 Build APK 一样只挂 workflow_dispatch，push 不触发，免得每次提交都跑
-# 一轮 20 分钟的 Windows 构建。
+# push 不触发，免得每次提交都跑一轮 20 分钟的 Windows 构建：只由
+# `Build APK` 发版时通过 workflow_call 拉起，或手动 workflow_dispatch。
 on:
+  # 0.8.30：随 `Build APK` 的发版 job 统一构建（workflow_call）。
+  # 用 workflow_call 而不是 workflow_run：后者没法读调用方的
+  # publish_release / all_sources 输入，也没法保证只在真正发版时跑，
+  # 还容易被 `[skip ci]` 回写提交再次触发。
+  # 两边都从同一个 GITHUB_SHA 的 pubspec.yaml 读版本号，天然对齐；
+  # Windows 仍只发到 windows-<version> 预发布，/releases/latest 归 Android。
+  workflow_call:
+    inputs:
+      all_sources:
+        type: boolean
+        default: true
+      smoke:
+        type: boolean
+        default: true
+      publish_release:
+        type: boolean
+        default: false
+  # 单独重出 Windows 包时仍可手动跑，输入与被调用时完全一致。
   workflow_dispatch:
     inputs:
       all_sources:

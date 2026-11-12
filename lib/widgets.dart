@@ -398,104 +398,153 @@ class DramaTile extends StatelessWidget {
         .ceilToDouble();
   }
 
+  /// 桌面悬停时只装饰海报：圆角裁剪 + 柔和投影 + 品牌橙细描边。
+  ///
+  /// 刻意不用 `AnimatedContainer.clipBehavior`：那个裁剪会连 boxShadow 一起
+  /// 裁掉，投影就看不见了。改成用 `ClipRRect` 只裁海报本身。
+  static Widget desktopCover(
+    BuildContext context,
+    bool hovered,
+    Widget stack,
+  ) {
+    const radius = BorderRadius.all(Radius.circular(10));
+    return AnimatedScale(
+      scale: hovered ? 1.02 : 1,
+      duration: const Duration(milliseconds: 140),
+      curve: Curves.easeOut,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          boxShadow: hovered
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: .24),
+                    blurRadius: 18,
+                    offset: const Offset(0, 7),
+                  ),
+                ]
+              : null,
+        ),
+        foregroundDecoration: hovered
+            ? BoxDecoration(
+                borderRadius: radius,
+                border: Border.all(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .primary
+                      .withValues(alpha: .8),
+                  width: 2,
+                ),
+              )
+            : null,
+        child: ClipRRect(
+          borderRadius: radius,
+          child: AspectRatio(aspectRatio: 2 / 3, child: stack),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final television = AppLayout.isTelevision(context);
-    final content = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final coverStack = Stack(
+      fit: StackFit.expand,
       children: [
-        AspectRatio(
-          aspectRatio: 2 / 3,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              DramaCover(drama: drama, repository: repository),
-              if (badge != null && badge!.isNotEmpty)
-                Positioned(
-                  left: 6,
-                  right: 6,
-                  bottom: 6,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: .72),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 4,
-                      ),
-                      child: Text(
-                        badge!,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
+        DramaCover(drama: drama, repository: repository),
+        if (badge != null && badge!.isNotEmpty)
+          Positioned(
+            left: 6,
+            right: 6,
+            bottom: 6,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: .72),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 6,
+                  vertical: 4,
+                ),
+                child: Text(
+                  badge!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
                   ),
                 ),
-              if (actions != null && selected == null)
-                Positioned(top: 2, right: 2, child: actions!),
-              if (selected != null)
-                Positioned(
-                  top: 6,
-                  right: 6,
-                  child: CircleAvatar(
-                    radius: 16,
-                    backgroundColor: selected!
-                        ? Theme.of(context).colorScheme.primary
-                        : Colors.black.withValues(alpha: .64),
-                    child: Icon(
-                      selected! ? Icons.check_rounded : Icons.circle_outlined,
-                      size: 22,
-                      color: selected!
-                          ? Theme.of(context).colorScheme.onPrimary
-                          : Colors.white,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 9),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: SizedBox(
-            height: titleHeight(context),
-            child: Text(
-              drama.title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontWeight: FontWeight.w700,
-                height: 1.3,
-                fontSize: 14,
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: SizedBox(
-            height: subtitleHeight(context),
-            child: Text(
-              subtitle ?? drama.category,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.3,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+        if (actions != null && selected == null)
+          Positioned(top: 6, right: 6, child: actions!),
+        if (selected != null)
+          Positioned(
+            top: 6,
+            right: 6,
+            child: CircleAvatar(
+              radius: 16,
+              backgroundColor: selected!
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.black.withValues(alpha: .64),
+              child: Icon(
+                selected! ? Icons.check_rounded : Icons.circle_outlined,
+                size: 22,
+                color: selected!
+                    ? Theme.of(context).colorScheme.onPrimary
+                    : Colors.white,
               ),
             ),
           ),
-        ),
       ],
     );
+    final cover = AspectRatio(aspectRatio: 2 / 3, child: coverStack);
+    Widget buildContent({Widget? poster}) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            poster ?? cover,
+            const SizedBox(height: 9),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: SizedBox(
+                height: titleHeight(context),
+                child: Text(
+                  drama.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    height: 1.3,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: SizedBox(
+                height: subtitleHeight(context),
+                child: Text(
+                  subtitle ?? drama.category,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.3,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+    final content = buildContent();
     if (television) {
       return CallbackShortcuts(
         bindings: {
@@ -516,43 +565,53 @@ class DramaTile extends StatelessWidget {
         ),
       );
     }
+    // 桌面版（鼠标）：悬停反馈只作用在海报本身 —— 抬升、柔和投影、细描边
+    // 都限制在封面范围内，标题与分类文字始终留在干净的底色上。
+    // 0.8.28 那版把 InkWell 的 hoverColor 与整圈描边铺满整格（含文字区），
+    // 会压出一块浅灰圆角底板盖住标题，见 2026-11-12 用户截图。
+    Widget body;
+    if (!isDesktopPlatform) {
+      body = InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress ?? onMore,
+        onSecondaryTap: onMore,
+        borderRadius: BorderRadius.circular(14),
+        child: content,
+      );
+    } else {
+      body = DesktopHoverLift(
+        builder: (context, hovered) => InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress ?? onMore,
+          onSecondaryTap: onMore,
+          hoverColor: Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+          child: buildContent(
+            poster: DramaTile.desktopCover(context, hovered, coverStack),
+          ),
+        ),
+      );
+    }
     return Semantics(
       button: true,
       selected: selected,
       label: '${drama.title}${drama.episodes > 0 ? '，${drama.episodes}集' : ''}',
-      // 桌面版（鼠标）给一格「抬起来」的反馈：手机上不存在悬停，这里不产生
-      // 任何额外布局（变换只影响绘制），所以不影响网格的 extent 计算。
-      child: DesktopHoverLift(
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress ?? onMore,
-          onSecondaryTap: onMore,
-          borderRadius: BorderRadius.circular(14),
-          child: content,
-        ),
-      ),
+      child: body,
     );
   }
 }
 
-/// 鼠标悬停时轻微抬起 + 描边的容器，只在有鼠标的桌面平台上生效。
+/// 桌面版鼠标悬停状态：把 `hovered` 交给 builder，由调用方决定装饰落在哪。
 ///
-/// 电视版走 `RemoteTarget` 的焦点环，手机版没有指针设备 —— 两边都不该看到
-/// 这个效果，所以判据是 `AppLayout.isTelevision` 的反面**且**平台是桌面。
+/// 电视版走 `RemoteTarget` 的焦点环，手机上没有常驻鼠标 —— 调用方
+/// （`DramaTile`）用 `isDesktopPlatform` 把这条分支整个挡掉。
 class DesktopHoverLift extends StatefulWidget {
   const DesktopHoverLift({
     super.key,
-    required this.child,
-    this.scale = 1.02,
-    this.borderRadius = 14,
+    required this.builder,
   });
 
-  final Widget child;
-  final double scale;
-  final double borderRadius;
-
-  /// 只有这几种平台有常驻鼠标；触屏设备上 `onEnter` 不会触发，留着也无害。
-  static bool get _enabled => isDesktopPlatform;
+  final Widget Function(BuildContext context, bool hovered) builder;
 
   @override
   State<DesktopHoverLift> createState() => _DesktopHoverLiftState();
@@ -563,47 +622,10 @@ class _DesktopHoverLiftState extends State<DesktopHoverLift> {
 
   @override
   Widget build(BuildContext context) {
-    if (!DesktopHoverLift._enabled || AppLayout.isTelevision(context)) {
-      return widget.child;
-    }
-    final radius = BorderRadius.circular(widget.borderRadius);
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedScale(
-        scale: _hovered ? widget.scale : 1,
-        duration: const Duration(milliseconds: 130),
-        curve: Curves.easeOut,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 130),
-          curve: Curves.easeOut,
-          // 0.8.28：悬停时补一层柔和投影，海报像"浮"在卡片墙上，
-          // 比单纯放大一点更接近媒体库应用的质感。
-          decoration: BoxDecoration(
-            borderRadius: radius,
-            boxShadow: _hovered
-                ? [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: .42),
-                      blurRadius: 20,
-                      offset: const Offset(0, 9),
-                    ),
-                  ]
-                : null,
-          ),
-          foregroundDecoration: _hovered
-              ? BoxDecoration(
-                  borderRadius: radius,
-                  border: Border.all(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.primary.withValues(alpha: .55),
-                  ),
-                )
-              : null,
-          child: widget.child,
-        ),
-      ),
+      child: widget.builder(context, _hovered),
     );
   }
 }

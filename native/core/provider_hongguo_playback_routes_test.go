@@ -10,6 +10,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -186,5 +187,173 @@ func TestHongguoPlaybackReregistersAfterTransientRegisterFailure(t *testing.T) {
 	}
 	if len(modelDeviceIDs) == 0 || modelDeviceIDs[len(modelDeviceIDs)-1] != freshDevice {
 		t.Fatalf("第二轮必须用新注册的身份取流，实际 %v", modelDeviceIDs)
+	}
+}
+
+// 2026-11-12：单集 POST 的响应把 model 直接铺在 data.video_model（字符串），
+// 没有 video_model_data.<videoID> 这一层。
+func TestHongguoPlaybackModelFromVideoModelV1(t *testing.T) {
+	const videoID = "7703870387817303064"
+	model := `{"status":10,"video_duration":119.282,"video_list":{"video_1":{"main_url":"https://v5-reading-video-d.qznovelvod.com/a/hvc1.mp4","video_meta":{"codec_type":"bytevc1","definition":"1080p"}}}}`
+	result := map[string]any{
+		"BaseResp": map[string]any{"StatusCode": 0},
+		"code":     0,
+		"data": map[string]any{
+			"expire_time":  1794475338,
+			"video_height": 720,
+			"video_width":  1280,
+			"video_model":  model,
+		},
+	}
+	got, err := hongguoPlaybackModelFromResult(result, videoID)
+	if err != nil {
+		t.Fatalf("应解析出单集 POST 的 model：%v", err)
+	}
+	if got := mapString(got, "video_duration"); got != "119.282" {
+		t.Fatalf("model 时长不对：%q", got)
+	}
+	if len(hongguoVideoRows(got["video_list"])) != 1 {
+		t.Fatal("应解析出 1 档清晰度")
+	}
+}
+
+func TestHongguoModelNeedsCodecRescue(t *testing.T) {
+	row := func(codec, gear string) map[string]any {
+		return map[string]any{
+			"main_url":     "https://v5-reading-video-d.qznovelvod.com/a/720p.mp4",
+			"video_meta":   map[string]any{"codec_type": codec, "definition": "720p"},
+			"gear_des_key": gear,
+		}
+	}
+	list := func(rows ...map[string]any) map[string]any {
+		values := make([]any, 0, len(rows))
+		for _, item := range rows {
+			values = append(values, item)
+		}
+		return map[string]any{"video_duration": 119.282, "video_list": values}
+	}
+	cases := []struct {
+		name  string
+		model map[string]any
+		want  bool
+	}{
+		{"全档 bytevc2", list(row("bytevc2", "0:MP4|2:bytevc2"), row("bytevc2", "0:MP4|2:bytevc2")), true},
+		{"只有 gear 标 bytevc2", list(map[string]any{"gear_des_key": "0:MP4|2:bytevc2"}), true},
+		{"全档 bytevc1", list(row("bytevc1", "0:MP4|2:h265_hvc1")), false},
+		{"混合档位", list(row("bytevc2", ""), row("bytevc1", "")), false},
+		{"缺编码字段", list(map[string]any{"main_url": "https://x/a.mp4"}), false},
+		{"空清单", map[string]any{"video_list": []any{}}, false},
+	}
+	for _, item := range cases {
+		if got := hongguoModelNeedsCodecRescue(item.model); got != item.want {
+			t.Errorf("%s：want %v got %v", item.name, item.want, got)
+		}
+	}
+}
+
+// 用户报的《万倍返还…第二季》第 7 集形态：GET tab 只给 bytevc2，
+// 生产必须补一发单集 POST 换到 hvc1，且这一发仍要用播放器专用签名。
+func TestHongguoPlaybackRescuesBytevc2OnlyEpisode(t *testing.T) {
+	const videoID = "7703870387817303064"
+	tabBody := hongguoModelBody(t, videoID, map[string]any{
+		"status":         10,
+		"video_duration": 119.282,
+		"video_list": []any{
+			map[string]any{
+				"main_url":     "https://v5-reading-video-d.qznovelvod.com/a/bvc2.mp4",
+				"video_meta":   map[string]any{"codec_type": "bytevc2", "vheight": 1080},
+				"gear_des_key": "0:MP4|1:encrypt|2:bytevc2|4:1080p",
+			},
+		},
+	})
+	v1Model := `{"status":10,"video_duration":119.282,"video_list":{"video_1":{"main_url":"https://v5-reading-video-d.qznovelvod.com/a/hvc1.mp4","video_meta":{"codec_type":"bytevc1","definition":"1080p","vheight":1080}}}}`
+	v1Body, err := json.Marshal(map[string]any{
+		"BaseResp": map[string]any{"StatusCode": 0},
+		"code":     0,
+		"data":     map[string]any{"video_model": v1Model},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabCount, postCount := 0, 0
+	var postHasPlayerSign, postHasMedusa bool
+	var postDeviceID string
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		path := request.URL.Path
+		switch {
+		case strings.Contains(path, "device_register"):
+			return sourceFixtureResponse(request, http.StatusOK,
+				`{"device_id_str":"76338817222429","install_id_str":"76338817226529"}`), nil
+		case path == hongguoPlaybackModelV1Path:
+			postCount++
+			postHasPlayerSign = request.Header.Get("X-Gorgon") != "" && request.Header.Get("X-Argus") != ""
+			postHasMedusa = request.Header.Get("X-Medusa") != "" || request.Header.Get("X-Helios") != ""
+			postDeviceID = request.URL.Query().Get("device_id")
+			return sourceFixtureResponse(request, http.StatusOK, string(v1Body)), nil
+		case strings.Contains(path, "multi_video_model"):
+			tabCount++
+			return sourceFixtureResponse(request, http.StatusOK, tabBody), nil
+		default:
+			return hongguoProbeResponse(request, 119*time.Second), nil
+		}
+	})
+	media, err := d.resolveHongguoAppMedia(context.Background(), videoID)
+	if err != nil {
+		t.Fatalf("bytevc2-only 集应被救济成功，实际报错：%v", err)
+	}
+	if postCount != 1 {
+		t.Fatalf("应补发 1 次单集 POST，实际 %d 次", postCount)
+	}
+	if tabCount != 1 {
+		t.Fatalf("GET tab 首次成功后不应再试 legacy 路由，实际 %d 次", tabCount)
+	}
+	if !strings.HasSuffix(media.URL, "hvc1.mp4") {
+		t.Fatalf("最终片源应来自 hvc1 档，实际 %s", media.URL)
+	}
+	if !postHasPlayerSign || postHasMedusa {
+		t.Fatalf("救济请求签名不对：player=%v medusa=%v", postHasPlayerSign, postHasMedusa)
+	}
+	// 2026-11-12 实测：救济若拿目录侧（可能未注册）的 fallback 身份发，
+	// device_id 为空 → 上游回空正文 → 静默退回 bvc2，用户仍然播不了。
+	// 必须沿用主取流成功那一发的新注册身份。
+	if postDeviceID != "76338817222429" {
+		t.Fatalf("救济必须用主取流的新身份，实际 device_id=%q", postDeviceID)
+	}
+}
+
+// 正常集（bytevc1 / 明文）不该为编码救济多发一跳请求。
+func TestHongguoPlaybackSkipsCodecRescueForNormalEpisode(t *testing.T) {
+	const videoID = "7703870385393011736"
+	tabBody := hongguoModelBody(t, videoID, map[string]any{
+		"status":         10,
+		"video_duration": 119.142,
+		"video_list": []any{
+			map[string]any{
+				"main_url":     "https://v5-reading-video-d.qznovelvod.com/a/hvc1.mp4",
+				"video_meta":   map[string]any{"codec_type": "bytevc1", "vheight": 1080},
+				"gear_des_key": "0:MP4|1:encrypt|2:h265_hvc1|4:1080p",
+			},
+		},
+	})
+	postCount := 0
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		switch {
+		case strings.Contains(request.URL.Path, "device_register"):
+			return sourceFixtureResponse(request, http.StatusOK,
+				`{"device_id_str":"76338817222429","install_id_str":"76338817226529"}`), nil
+		case request.URL.Path == hongguoPlaybackModelV1Path:
+			postCount++
+			return sourceFixtureResponse(request, http.StatusOK, `{"code":0}`), nil
+		case strings.Contains(request.URL.Path, "multi_video_model"):
+			return sourceFixtureResponse(request, http.StatusOK, tabBody), nil
+		default:
+			return hongguoProbeResponse(request, 119*time.Second), nil
+		}
+	})
+	if _, err := d.resolveHongguoAppMedia(context.Background(), videoID); err != nil {
+		t.Fatalf("正常集不该取流失败：%v", err)
+	}
+	if postCount != 0 {
+		t.Fatalf("正常集不该补发单集 POST，实际 %d 次", postCount)
 	}
 }

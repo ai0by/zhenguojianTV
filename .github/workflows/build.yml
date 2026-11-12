@@ -26,6 +26,9 @@ on:
 
 permissions:
   contents: write
+  # 被调用的 Build Windows 要在同一个 workflow run 里下载构建产物，
+  # 顶层不声明的话 reusable workflow 里的 download-artifact 会拿不到权限。
+  actions: read
 
 env:
   FLUTTER_VERSION: '3.47.4'
@@ -337,3 +340,22 @@ jobs:
           git add config/update.json
           git commit -m "chore(release): 同步 config/update.json 到 $RELEASE_TAG [skip ci]"
           git push origin main || echo "::warning::config/update.json 推送失败，请手动同步"
+
+  # 0.8.30：Windows 跟随同一次发布构建，不用再手动单独派发一次。
+  #
+  # 为什么用 workflow_call 而不是 workflow_run：后者读不到本次 dispatch 的
+  # publish_release / all_sources 输入，也没法保证「Android 正式版真的发出
+  # 去了」才跑，还会被上面 [skip ci] 的回写提交反复触发。
+  #
+  # 两边都在同一个 GITHUB_SHA 上读 pubspec.yaml 的 version，Windows 的
+  # tag 因此永远是 windows-<同一个版本>；它仍是 prerelease，
+  # /releases/latest 归 Android 正式版，应用内更新通道不受影响。
+  windows:
+    needs: release
+    if: ${{ inputs.publish_release }}
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      all_sources: ${{ inputs.all_sources }}
+      smoke: true
+      publish_release: true
+    secrets: inherit

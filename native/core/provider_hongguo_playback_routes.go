@@ -44,6 +44,11 @@ const (
 	hongguoPlaybackTabPath    = "/reading/bookapi/video_tab/multi_video_model/v1/"
 	hongguoPlaybackLegacyPath = "/novel/player/multi_video_model/v1/"
 
+	// 单集取流兜底：GET tab 对少数集只返回 bytevc2（片源 frma=bvc2，
+	// FFmpeg / libmpv 没有对应解码器）。这条 POST 对同一 video_id 返回
+	// h265_hvc1 档位，CENC key 与时长完全一致（2026-11-12 实测 20/20）。
+	hongguoPlaybackModelV1Path = "/novel/player/video_model/v1/"
+
 	// hongguoPlaybackFetchBudget 覆盖「注册 + 三条路由单发 + 一次新身份兜底」。
 	// 实测一次注册约 0.3s、一发请求约 0.2s，正常命中 0.5~0.8s（复测 p50
 	// 1.74s 含 CDN 头部探测）。0.8.27 构建前 12 集复测里出现过一次注册
@@ -56,6 +61,12 @@ const (
 	// 卡到 1.5s 就把偶发抖动判死 —— 注册接口本身还会内部重试 3 次。
 	hongguoPlaybackRegisterBudget = 2500 * time.Millisecond
 	hongguoPlaybackRequestTimeout = 3 * time.Second
+
+	// 编码救济是主取流成功之后补的一发，不能沿用快耗尽的 fetchCtx：主链路
+	// 走过第二轮（注册抖动）时 6s 预算可能只剩几百毫秒，救济会被自己的
+	// context 掐死、静默退回不可播的 bytevc2。实测单集 POST 只要 0.1~0.2s，
+	// 单独给 2s 足够，也保证最坏只多等 2s。
+	hongguoPlaybackRescueBudget = 2 * time.Second
 
 	hongguoPlaybackCacheTTL   = 10 * time.Minute
 	hongguoPlaybackCacheLimit = 64
@@ -262,10 +273,72 @@ func (downloader *Downloader) hongguoPlaybackModelOnce(
 	return hongguoPlaybackModelFromResult(result, videoID)
 }
 
-// hongguoPlaybackModelFromResult 兼容新旧两种响应容器：
+// hongguoPlaybackModelV1Body 是单集取流接口的请求体。
 //
-//	旧 POST: data.<videoID>.video_model
-//	GET tab: data.video_model_data.<videoID>.video_model（video_model 可能是字符串）
+// 参数必须在 body 里：content_type=1、biz_param.need_all_video_definition=true。
+// 开源实现用 video_platform=3，实测 3 与 1024 都返回同一组 hvc1 档位；这里
+// 沿用项目其它取流接口的 1024。别把 biz_param 塞进 query —— 那样只回 1 档，
+// 且 video_platform=3 打到 multi_video_model 会回 100001。
+func hongguoPlaybackModelV1Body(videoID string) map[string]any {
+	return map[string]any{
+		"video_id": videoID, "content_type": 1,
+		"biz_param": map[string]any{
+			"need_all_video_definition": true,
+			"video_platform":            1024,
+		},
+	}
+}
+
+// hongguoPlaybackModelV1 单发一次单集取流，复用播放器专用签名与同一解析链。
+//
+// 身份必须用**主取流成功那一发**的新身份。2026-11-12 实测：拿目录侧
+// fallback 身份去补这一发，在目录设备未注册（device_id 为空）时恒定失败，
+// 救济静默失效、用户拿到的仍是不可播的 bvc2——这正是「取流正常但一直
+// 播不出来」复测里踩到的坑。实测固定身份连取 8 次、换 6 个新身份都成功，
+// 所以身份本身不需要每次换，但必须是已注册过的那份。
+func (downloader *Downloader) hongguoPlaybackModelV1(ctx context.Context, videoID string, identity hongguoPlaybackIdentity) (map[string]any, error) {
+	if identity.DeviceID == "" {
+		identity = downloader.hongguoFallbackPlaybackIdentity()
+	}
+	route := hongguoPlaybackRoute{
+		name: "model_v1", host: hongguoAppBaseURL, method: http.MethodPost,
+		path: hongguoPlaybackModelV1Path, extra: hongguoPlayerQuery(),
+		body: hongguoPlaybackModelV1Body(videoID),
+	}
+	return downloader.hongguoPlaybackModelOnce(ctx, route, videoID, identity)
+}
+
+// hongguoModelNeedsCodecRescue 判断一份 model 是否**只**给了不可播的 bytevc2。
+//
+// 刻意保守：只有出现 bytevc2 且没有任何其它档位时才返回 true。缺 codec_type
+// 的历史 / 测试夹具一律当成可播，避免给正常集平白多发一跳请求；混合清单里
+// 只要有 h264 / bytevc1，selectHongguoAppVideoList 本来就会优先挑它们。
+func hongguoModelNeedsCodecRescue(model map[string]any) bool {
+	rows := hongguoVideoRows(model["video_list"])
+	if len(rows) == 0 {
+		return false
+	}
+	sawBytevc2 := false
+	for _, row := range rows {
+		meta := nestedMap(row, "video_meta")
+		codec := strings.ToLower(firstNonEmpty(mapString(meta, "codec_type"), mapString(row, "codec_type")))
+		if codec == "" && strings.Contains(strings.ToLower(mapString(row, "gear_des_key")), "bytevc2") {
+			codec = "bytevc2"
+		}
+		if codec == "bytevc2" || strings.Contains(codec, "bvc2") {
+			sawBytevc2 = true
+			continue
+		}
+		return false
+	}
+	return sawBytevc2
+}
+
+// hongguoPlaybackModelFromResult 兼容几种响应容器：
+//
+//	旧 POST multi: data.<videoID>.video_model
+//	GET tab:       data.video_model_data.<videoID>.video_model（video_model 可能是字符串）
+//	单集 POST v1:  data.video_model（字符串或对象，直接铺开）
 //
 // 少数响应把 model 直接铺在 entry 上（带 video_list 但没有 video_model 键），
 // 一并兼容。取不到 model 统一返回 errHongguoAppEmptyModel，由上层换路径。
@@ -275,6 +348,12 @@ func hongguoPlaybackModelFromResult(result map[string]any, videoID string) (map[
 		return nil, fmt.Errorf("红果取流暂不可用（%s）", truncate(code, 20))
 	}
 	data := nestedMap(result, "data")
+	// 单集 POST /novel/player/video_model/v1/ 把 model 直接铺在
+	// data.video_model（可能是 JSON 字符串），没有 video_model_data.<vid> 这层。
+	if direct := hongguoVideoModelValue(data["video_model"]); len(direct) > 0 &&
+		len(hongguoVideoRows(direct["video_list"])) > 0 {
+		return direct, nil
+	}
 	containers := []map[string]any{data, nestedMap(data, "video_model_data"), nestedMap(result, "video_model_data")}
 	for _, container := range containers {
 		if len(container) == 0 {

@@ -99,8 +99,14 @@
 | --- | --- |
 | Android 手机（arm64-v8a / armeabi-v7a） | **当前交付**，持续发版 |
 | Android TV / 盒子 / 投影 | **已适配**，遥控器可用 |
-| Windows x64 | **CI 构建**，在 Actions 手动跑 `Build Windows` 取 zip |
+| Windows x64 | **随 Android 发版统一构建**，产物在 `windows-<版本>` 预发布 |
 | iOS | 未实施（工程保留） |
+
+Windows x64 不需要单独派发：每次 `Build APK` 勾选「发布到 GitHub Release」后，
+会在**同一个 commit** 上自动跑 `Build Windows`，把 zip 发到 `windows-<版本>` 预发布。
+它始终是 prerelease，`/releases/latest` 只留给 Android 正式版，应用内更新不受影响。
+需要单独重出 Windows 包时，仍可在 Actions 手动跑 `Build Windows`。
+Windows 版没有应用内更新通道，升级请重新下载 zip。
 
 ## 声明
 
