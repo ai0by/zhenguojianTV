@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.29",
-    "build": 111,
-    "tag": "v0.8.29",
-    "notes": "0.8.29 · 红果取流改用播放器专用签名（0.8.28 全废的根因）",
+    "version": "0.8.30",
+    "build": 112,
+    "tag": "v0.8.30",
+    "notes": "0.8.30 · 红果两类播放故障定位 + Windows 随版构建",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.29+111-all.apk",
-        "size": 73045133,
-        "sha256": "ad2962455cc3a72d6d489ffda2554974bc99617e6a3c6235e30b552e7c584764"
+        "name": "zhenguojianTV-0.8.30+112-all.apk",
+        "size": 73051887,
+        "sha256": "91b7c3179ee2043fdc78d543174fd4a8eb42b4341cac1e3f03cf0cb0bad4f9ca"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.29+111-arm64-v8a.apk",
-        "size": 33155325,
-        "sha256": "b5ba5e07b3a40dc88aa3c4e29a332a87f445e4dfae9275cc30c0a204faae65f1"
+        "name": "zhenguojianTV-0.8.30+112-arm64-v8a.apk",
+        "size": 33157850,
+        "sha256": "01220b78e5081e5ee8d9492a53b1ab3f4fc7ce03aa6b4c363f2c2e4f427c341d"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.29+111-armeabi-v7a.apk",
-        "size": 41710264,
-        "sha256": "6b980117a106f2ec46ccd94acd2ea41723601b897de8d712937e9138d228f63f"
+        "name": "zhenguojianTV-0.8.30+112-armeabi-v7a.apk",
+        "size": 41714494,
+        "sha256": "4d3c072652fa1aa4e5ad58e560337d2f9a2ad8185a31c5ee94aa0688730c6f7c"
       }
     ]
   },
