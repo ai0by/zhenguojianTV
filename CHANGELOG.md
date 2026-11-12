@@ -6,6 +6,16 @@
 
 ---
 
+### 0.8.30 · 红果两类播放故障定位 + Windows 随版构建
+
+- **「看一会儿突然一集不能播、重启 App 就好」：这轮先排除两个旧推测，再按最贴合的原因做保守修。** 实测上游 `data.video_model_data.<vid>.expire_time = 取流时刻 + 21600s`（6 小时），而 native 短缓存只有 10 分钟、前端计划缓存 5 分钟 —— 「缓存里躺着过期 URL」不成立，别再往 TTL 方向改；同一集固定身份连取 8 次全是同一编码，也排除了「上游间歇性返回坏档位」。真正对得上现象的是：`_prepare(force: true)` 里的 `force` **只**绕过 `_ready` 早退，本页计划缓存、预载结果与 native `mediaCache` 全都照常命中（探针实测 `CACHE_HIT_SAME_URL=true`），native 取流 action 也没有 force 通道。于是一份从一开始就坏掉的地址，页面内怎么点重试都会原样拿回来，只有重启清掉进程内缓存才恢复。
+- **修法只动失败重试路径，不碰正常播放。** 新增独立的 `resolveFresh` 通道（与 `force` 分开：`force` 是「别用已下载的本地文件」）：手动重试、错误页「重试」、`media_transient` 静默重试、健康检查判定「重新获取播放地址」这四条路径会丢掉本页计划缓存 / 预载结果、释放旧会话，并在 native 侧按 `videoID` 精确作废这一集的红果短缓存后现场重取。换集、切清晰度、软解降级、切备用线路照旧复用缓存，连播的零请求优化不受影响；重试成功时也不会把那份坏计划当「上一集」塞回缓存。补了「正常路径不清缓存、重试只清本集、非红果站源是 no-op」的 Go 回归。
+- **「第 7 集取流正常、显示 1 分 59 秒却永远播不出来、重启也没用」：不是取流失败，是编码没有解码器。** 上游 GET `video_tab` 对这一集 5 个清晰度全部只给 `bytevc2`，抓片源头部解析出 `stsd=encv/enca` + `frma=bvc2`，没有 `hvcC` / `avcC` / `vvcC`，FFmpeg / libmpv 根本没有对应解码器；生产代码「优先排除 bytevc2，没有其它档位时回退全量」必然回退到它。**而且不是单集**：《万倍返还：收徒筑基我直接成仙第二季》前 20 集里 E07 / E08 / E16 是纯 `bytevc2`、E15 / E19 是混合档位，连播「突然一集」很可能就是撞上这些集。
+- **救济是保守的一发，正常集零额外请求。** 只在「全部档位都是 bytevc2」时补一发 `POST /novel/player/video_model/v1/`，同一 `video_id` 会返回 `h265_hvc1` 档位，CENC key 与 119.282 秒时长完全一致。两个坑都踩过并修掉：救济必须用主取流成功那一发的新注册身份（退回目录侧身份会因 `device_id` 未注册而静默失败），也必须用独立的 2 秒预算（复用快耗尽的 6 秒 `fetchCtx` 会被自己的 context 掐死）。全 20 集走生产 `resolveHongguoAppMedia` 并抓最终片源前 256KB 解析 MP4 box：**20/20 全部 `hvcC` 可播**，E07 / E08 / E16 已换到 `hvc1`，混合档位没被误伤。取流成功不等于可播，这条验收口径已写进项目记忆。
+- **Windows 以后跟着 Android 一起出包，不用再单独派发。** `Build Windows` 加了 `workflow_call`，`Build APK` 勾「发布到 GitHub Release」后由其 `release` job 在同一个 commit 上拉起；两边都从同一个 `GITHUB_SHA` 的 `pubspec.yaml` 读版本号，Windows 仍只发到 `windows-<版本>` 预发布，`/releases/latest` 继续留给 Android 应用内更新。没用 `workflow_run`：读不到调用方 inputs、没法 `needs: release` 保证 Android 真发出去了、还会被 `config/update.json` 的 `[skip ci]` 回写提交二次触发。README 的下载与发版说明已同步。
+- **桌面悬浮封面重做。** 截图里 hover 时一整块灰色半透明圆角底板压到标题与「剧情」标签上，是 `InkWell` 默认 hover/splash 覆盖整格、加上 `DesktopHoverLift` 把装饰套在「海报 + 文字」整个 content 上造成的。现在桌面分支 `hoverColor: transparent`，`DesktopHoverLift` 只提供 hovered 状态，动效只作用在海报本身：1.02 倍缩放、柔和投影、品牌橙 2px 细描边与圆角裁剪，文字区域保持干净。
+- **验证**：Go `go build ./...` / `go vet ./...` / `gofmt -l .` / `go test -count=1 ./core` / `go test -race -count=1 ./core` 全套干净；Dart 侧本机无 SDK，只做词法配对与 `git diff --check`，编译与 widget 回归交给两条 CI。
+
 ### 0.8.29 · 红果取流改用播放器专用签名（0.8.28 全废的根因）
 
 - **0.8.28 上红果所有集都取不到流，不是站源抽风，是上游把取流接口的签名校验单独收紧了。** 目录 / 搜索 / 详情 / 设备注册全部正常（详情照旧 92KB、80 集），只有 `video_model` 系取流接口对现有的通用 App 签名（`X-Gorgon` + `X-Argus` + `X-Ladon` + `X-Medusa` + `X-Helios`）一律回 `200 + 0 字节` 空正文。所以 0.8.27 那套「每轮注册新身份、单发即换、6 秒硬预算」全打空 —— 换多少设备号都在跟一个永远返回空正文的签名死磕。

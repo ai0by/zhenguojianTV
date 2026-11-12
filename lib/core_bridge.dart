@@ -257,6 +257,19 @@ abstract class AppRepository {
     Episode episode, {
     int quality = 0,
   }) => resolve(drama, episode, quality: quality);
+
+  /// 0.8.30：播放**失败重试**专用，绕开进程内的片源缓存重新取一次。
+  ///
+  /// 普通 [resolve] 命中本页计划缓存 / 预载 / native 短缓存时会原样返回同一份
+  /// 播放地址。如果那一份地址恰好坏了，页面内怎么点重试都拿不回新地址，
+  /// 只有重启 App 清掉进程内缓存才恢复 —— 红果「看一会儿突然一集不能播、
+  /// 重启就好」最贴合的解释。默认实现退回 [resolve]：本地文件与测试夹具
+  /// 没有这层缓存，行为保持不变；只有 [NativeRepository] 需要 override。
+  Future<PlaybackPlan> resolveFresh(
+    Drama drama,
+    Episode episode, {
+    int quality = 0,
+  }) => resolve(drama, episode, quality: quality);
   Future<void> initialize();
   Future<CatalogPage> catalog(
     String source, {
@@ -1052,6 +1065,25 @@ class NativeRepository extends AppRepository {
       'sequence': ++_playbackSequence,
     }),
   );
+  @override
+  Future<PlaybackPlan> resolveFresh(
+    Drama drama,
+    Episode episode, {
+    int quality = 0,
+  }) async => PlaybackPlan.fromJson(
+    await _call({
+      'action': 'resolve',
+      'drama': drama.toJson(),
+      'chapter': episode.raw,
+      'index': episode.number,
+      'quality': quality,
+      // 与 resolveOnline 的 force 分开：force 只表示「别用已下载的本地
+      // 文件」，bypassCache 才是「把这一集的短缓存作废后重新取流」。
+      'bypassCache': true,
+      'sequence': ++_playbackSequence,
+    }),
+  );
+
   @override
   Future<PlaybackPlan> fallback(PlaybackPlan current) async =>
       PlaybackPlan.fromJson(

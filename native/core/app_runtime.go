@@ -115,6 +115,11 @@ type nativeInput struct {
 	Session          string                  `json:"session"`
 	Sequence         int64                   `json:"sequence"`
 	Force            bool                    `json:"force"`
+	// BypassCache（0.8.30）只由播放失败重试的 `resolveFresh` 带上：把这一集
+	// 在进程内的红果片源短缓存作废，强制重新问上游。与 Force 分开 ——
+	// Force 是 resolveOnline / 目录刷新的「别用已下载本地文件 / 别用目录缓存」，
+	// 两者语义不同，不能互相代替。正常切集不带这个字段，仍然零请求命中缓存。
+	BypassCache bool `json:"bypassCache"`
 	// AllCategories 让 categories 返回**未截断**的完整分类表（0.8.24）。
 	//
 	// UI 的横向 chip 条只放得下 40 个分类（河马上游有 126 项），但抓目录时
@@ -1005,6 +1010,20 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	return map[string]any{"drama": drama, "chapters": chapters, "warning": warning}, nil
 }
 
+// nativeForgetPlaybackCache 把「失败重试」的穿透语义落到取流层。
+//
+// 只对红果生效：其它站源没有 hongguo-cenc:// 这个 videoID，也没有这层
+// 10 分钟短缓存。预载 / 预缓存 / 下载任务同样走 nativeResolve，但它们不带
+// BypassCache，正常连播的缓存命中率不受影响。
+func nativeForgetPlaybackCache(downloader *Downloader, task Task, bypass bool) {
+	if !bypass || downloader == nil {
+		return
+	}
+	if _, videoID, ok := hongguoPlaybackIDs(task); ok {
+		downloader.hongguoMediaCacheForget(videoID)
+	}
+}
+
 func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput) (nativePlan, error) {
 	if _, _, valid := splitProviderDramaID(input.Drama.ID); !valid {
 		return nativePlan{}, errors.New("剧集信息无效")
@@ -1017,6 +1036,9 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 		}
 	}
 	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}
+	// 0.8.30：重试先把这一集的坏缓存删掉，否则 resolveProviderMedia 会
+	// 直接返回刚才那份地址，页面内怎么重试都跟没点一样。
+	nativeForgetPlaybackCache(engine.downloader, task, input.BypassCache)
 	media, err := engine.downloader.resolveProviderMedia(ctx, task)
 	// 0.8.10：被 host 退避挡住时自动重试一次（与 `nativeCatalog` 同一套理由）。
 	// 否则一次 403 就会让整个站源的播放"一直转圈"，只能靠手动检查链接恢复。

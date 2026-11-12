@@ -445,3 +445,19 @@ func (downloader *Downloader) hongguoMediaCachePut(videoID string, media provide
 	}
 	client.mediaCache[videoID] = hongguoMediaCacheEntry{media: media, expires: now.Add(hongguoPlaybackCacheTTL)}
 }
+
+// hongguoMediaCacheForget 只作废一集的短缓存（0.8.30 播放失败重试）。
+//
+// 短缓存 TTL 只有 10 分钟，里面躺着的地址本身没过期（上游 expire_time 是
+// 6 小时）；问题在于这份地址可能从一开始就是坏的，而 10 分钟内所有重试
+// 都命中同一份，页面内怎么点都没用，只有重启清进程内缓存才恢复。所以
+// 重试路径按 videoID 精确删一条，不动 TTL、不动其它集、不动正常播放路径。
+func (downloader *Downloader) hongguoMediaCacheForget(videoID string) {
+	if videoID == "" {
+		return
+	}
+	client := downloader.hongguoClient()
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	delete(client.mediaCache, videoID)
+}

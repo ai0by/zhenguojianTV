@@ -2385,11 +2385,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   ///
   /// 不做这一步的话，页面被滑走时放弃的加载会永久停住，
   /// 用户只能靠"切到别的集再切回来"绕过（0.3.5 前的真机现象）。
-  Future<void> _resumeAfterRelease() async {
+  Future<void> _resumeAfterRelease({bool bypassCache = false}) async {
     if (_closed || !_playerReleased) return;
     _playerReleased = false;
     _ready = false;
-    await _prepare(force: true);
+    await _prepare(force: true, bypassCache: bypassCache);
   }
 
   /// 自动降级到软件解码（0.8.3）。
@@ -2466,7 +2466,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       PlaybackRecoveryAction.stop => '',
     };
     if (mounted && !_closed && message.isNotEmpty) _toast(message);
-    await _prepare(force: true);
+    // 「重新获取播放地址」才该穿透缓存；「切备用线路」用的是同一份计划里
+    // 已有的其它线路，重新取流纯属浪费（还多一次设备注册）。
+    await _prepare(
+      force: true,
+      bypassCache: action == PlaybackRecoveryAction.refresh,
+    );
   }
 
   /// 应用前后台切换（0.6.0）。
@@ -3454,7 +3459,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 0.8.22：手动重试同样给"瞬时失败自动再试一次"一个全新的名额 ——
     // 用户点是他的选择，但点多一次不该让本集彻底失去静默自愈的机会。
     _autoMediaRetried = false;
-    unawaited(_playerReleased ? _resumeAfterRelease() : _prepare(force: true));
+    // 0.8.30：手动重试必须穿透进程内片源缓存，否则很可能原样拿回刚才
+    // 那份播不了的地址，用户只能靠重启 App 恢复。
+    unawaited(
+      _playerReleased
+          ? _resumeAfterRelease(bypassCache: true)
+          : _prepare(force: true, bypassCache: true),
+    );
   }
 
   /// TV 短按 OK：正常时播放/暂停；失败页直接重试。
@@ -3969,7 +3980,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     await _prepare(force: true);
   }
 
-  Future<void> _prepare({bool force = false}) async {
+  /// [bypassCache] 只给失败重试路径用：丢掉本页计划缓存 / 预载结果 /
+  /// native 短缓存后现场重新取流。[force] 只是绕过 `_ready` 早退，
+  /// 换集、切清晰度、软解降级都必须继续复用缓存，别把两者混为一谈。
+  Future<void> _prepare({bool force = false, bool bypassCache = false}) async {
     if (_closed) return;
     if (!_ensurePlayer()) {
       // 0.3.5：拿不到播放器时不能静默退出，否则页面会停在"既不加载也不报错"。
@@ -3999,10 +4013,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     //
     // 预载器只留"邻居"，播过的集早就被清掉了；而用户最常做的就是
     // 6 → 5 → 6 来回切。缓存命中同样不该闪遮罩，所以两个来源一起判。
-    final cacheHit = !widget.localOnly && _hasCachedPlan(_episodeIndex);
+    final cacheHit =
+        !bypassCache && !widget.localOnly && _hasCachedPlan(_episodeIndex);
     final silent =
         cacheHit ||
         (cachedDetail != null &&
+            !bypassCache &&
             !widget.localOnly &&
             cachedDetail.episodes.isNotEmpty &&
             _preloader.hasPlan(
@@ -4069,24 +4085,49 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
               quality: _quality,
             );
       final cachedPlan = widget.localOnly ? null : _takeCachedPlan(index);
-      if (cachedPlan != null && fromPreloader != null) {
-        // 缓存里的必定更近、更可信，预载那份还回去，别让两份会话并存。
-        unawaited(widget.repository.release(fromPreloader.session));
+      PlaybackPlan? prepared;
+      if (bypassCache) {
+        // 0.8.30：失败重试连「刚解析好的」计划也不复用。两份都取走并
+        // 立刻释放会话，不让旧会话占着池子；`resolveFresh` 会同步作废
+        // native 的 mediaCache，保证这一发真的重新问上游拿新地址。
+        for (final stale in <PlaybackPlan?>[cachedPlan, fromPreloader]) {
+          if (stale != null) {
+            unawaited(
+              widget.repository
+                  .release(stale.session)
+                  .catchError((Object _) {}),
+            );
+          }
+        }
+      } else {
+        if (cachedPlan != null && fromPreloader != null) {
+          // 缓存里的必定更近、更可信，预载那份还回去，别让两份会话并存。
+          unawaited(widget.repository.release(fromPreloader.session));
+        }
+        prepared = cachedPlan ?? fromPreloader;
       }
-      final prepared = cachedPlan ?? fromPreloader;
       // 单剧模式的本地文件模式（0.2.29，下载页）：
       // 用 `localPlayback` 取已下载的本地文件，而不是拉在线流。
       // 两者返回的都是 `PlaybackPlan`，后续处理完全一致
       // （`plan.local` 为 true 时下面会走 file/crypto/data 协议白名单）。
-      final plan =
-          prepared ??
-          (widget.localOnly
-              ? await _resolveLocal(detail, index)
-              : await widget.repository.resolve(
-                  detail.drama,
-                  detail.episodes[index],
-                  quality: _quality,
-                ));
+      late final PlaybackPlan plan;
+      if (prepared != null) {
+        plan = prepared;
+      } else if (widget.localOnly) {
+        plan = await _resolveLocal(detail, index);
+      } else if (bypassCache) {
+        plan = await widget.repository.resolveFresh(
+          detail.drama,
+          detail.episodes[index],
+          quality: _quality,
+        );
+      } else {
+        plan = await widget.repository.resolve(
+          detail.drama,
+          detail.episodes[index],
+          quality: _quality,
+        );
+      }
       if (!_attemptAlive(player)) {
         // 页面已不可用：把刚解析出来的会话还回去，避免会话泄漏。
         unawaited(widget.repository.release(plan.session));
@@ -4132,13 +4173,24 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       await _interactions?.applySpeed();
       if (!_attemptAlive(player)) return;
       if (previous != null && previous.session != plan.session) {
-        // 0.8.16 第二批：**不要立刻释放**，留在本页缓存里。
-        //
-        // 用户最常做的是 6 → 5 → 6 来回切。以前这里一换集就 release，
-        // 回切第 6 集只能重新解析 —— 表现就是"停在本集转圈，等它好了
-        // 才切过去"。留在缓存里，回切是零网络、零等待。
-        // 超出上限 / 凭证将过期时，`_rememberPlan` 会自己释放。
-        _rememberPlan(previous, previousIndex);
+        if (bypassCache) {
+          // 0.8.30：重试时「上一集」就是本集，previous 正是那份播不了的
+          // 计划。绝不能按常规把它塞回本页缓存，否则用户切走再切回来
+          // 又会命中同一个坏地址，等于修复白做；直接释放会话。
+          unawaited(
+            widget.repository
+                .release(previous.session)
+                .catchError((Object _) {}),
+          );
+        } else {
+          // 0.8.16 第二批：**不要立刻释放**，留在本页缓存里。
+          //
+          // 用户最常做的是 6 → 5 → 6 来回切。以前这里一换集就 release，
+          // 回切第 6 集只能重新解析 —— 表现就是"停在本集转圈，等它好了
+          // 才切过去"。留在缓存里，回切是零网络、零等待。
+          // 超出上限 / 凭证将过期时，`_rememberPlan` 会自己释放。
+          _rememberPlan(previous, previousIndex);
+        }
       }
       setState(() {
         _loading = false;
@@ -4220,7 +4272,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         _mediaRetryTimer = Timer(const Duration(milliseconds: 700), () {
           _mediaRetryTimer = null;
           if (_closed || generation != _generation) return;
-          unawaited(_prepare(force: true));
+          unawaited(_prepare(force: true, bypassCache: true));
         });
         return;
       }
@@ -5744,8 +5796,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                   // 0.3.5：播放器已释放时先重建再加载，避免在已释放实例上操作。
                                   unawaited(
                                     _playerReleased
-                                        ? _resumeAfterRelease()
-                                        : _prepare(force: true),
+                                        ? _resumeAfterRelease(
+                                            bypassCache: true,
+                                          )
+                                        : _prepare(
+                                            force: true,
+                                            bypassCache: true,
+                                          ),
                                   );
                                 },
                                 child: const Text('重试'),
