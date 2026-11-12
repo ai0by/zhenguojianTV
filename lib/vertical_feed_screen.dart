@@ -33,6 +33,7 @@ import 'picture_in_picture.dart';
 import 'tv_dialogs.dart';
 import 'tv_player_panel.dart';
 import 'widgets.dart';
+import 'windows_chrome.dart';
 import 'windows_pip.dart';
 
 /// 全屏横屏分区手势的类型（0.7.2，`XQ-0105`）。
@@ -1748,6 +1749,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   DateTime _lastPanelClosedAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _controlsVisible = true;
 
+  /// 桌面鼠标唤醒控件的上次时间（0.8.31，节流用，避免每帧 setState）。
+  int _lastDesktopWake = 0;
+
   /// 是否电视模式（0.8.0 恢复电视支持）。
   ///
   /// 在 `didChangeDependencies` 里缓存：`dispose` 与部分异步回调中
@@ -2054,6 +2058,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    // 0.8.31：桌面播放页进入沉浸 —— 最外层窗口外框收起固定标题栏，
+    // 画面铺满整窗。引用计数，退出时由 dispose 归还。
+    if (isDesktopPlatform) WindowsChrome.pushImmersive();
     WidgetsBinding.instance.addObserver(this);
     final preferences = widget.store.playbackPreferences;
     _speed = preferences.speed;
@@ -3318,6 +3325,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _releasePlayer();
     // 预载器（0.2.31）由**父级**持有并释放（0.6.9 改为全流共享），
     // 本页只借用，不负责 dispose。
+    // 0.8.31：归还沉浸计数，回到发现页时固定标题栏要回来。
+    if (isDesktopPlatform) WindowsChrome.popImmersive();
     super.dispose();
   }
 
@@ -3451,6 +3460,24 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       // 用户操作，跳过节流立即刷新（0.3.1）。
       _refreshFullscreen(immediate: true);
     });
+  }
+
+  /// 桌面鼠标移动唤醒控件（0.8.31）。
+  ///
+  /// 手机靠「点一下画面」，桌面有常驻鼠标，播放中鼠标一动就该把进度条叫
+  /// 出来，停下 4 秒再自动收起（复用 [_scheduleHide]）。不复用
+  /// [_showControls] 是因为它会清掉「自动连播静默」标记 —— 鼠标随便一晃
+  /// 就把静默连播打断了。
+  void _desktopWake() {
+    if (!isDesktopPlatform || !mounted || _closed || _panelOpen) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastDesktopWake < 220) return;
+    _lastDesktopWake = now;
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+      _refreshFullscreen(immediate: true);
+    }
+    _scheduleHide();
   }
 
   void _retryPlayback() {
@@ -4484,7 +4511,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       bottom: false,
       child: Padding(
         // 0.8.19：让开顶部自绘状态条。
-        padding: const EdgeInsets.fromLTRB(0, 6 + _hudStrip, 6, 0),
+        padding: EdgeInsets.fromLTRB(0, _topOffset(6), 6, 0),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -4499,28 +4526,62 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     ),
   );
 
+  /// 桌面播放页的圆形玻璃按钮（0.8.31）。
+  ///
+  /// 手机那套 38×38 纯黑方块压在画面上像贴了两块膏药；桌面改成低对比
+  /// 玻璃圆 + hover 提亮，和底部桌面控制条是同一套语言。
+  Widget _desktopGlassIcon({
+    Key? key,
+    required IconData icon,
+    required VoidCallback? onTap,
+    double size = 36,
+  }) => Material(
+    color: const Color(0x33101216),
+    shape: const CircleBorder(),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      key: key,
+      onTap: onTap,
+      hoverColor: Colors.white.withValues(alpha: .16),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Icon(icon, color: Colors.white, size: 19),
+      ),
+    ),
+  );
+
   /// 画中画按钮（0.8.17）。
   ///
   /// 与推送按钮同尺寸同底色（`LanPushButton` 是 38×38 圆角方块），
   /// 放在同一行才不会一大一小。
-  Widget _pipButton() => Material(
-    color: Colors.black38,
-    borderRadius: BorderRadius.circular(10),
-    clipBehavior: Clip.antiAlias,
-    child: InkWell(
-      key: const ValueKey('feed-pip'),
-      onTap: _enterPictureInPicture,
-      child: const SizedBox(
-        width: 38,
-        height: 38,
-        child: Icon(
-          Icons.picture_in_picture_alt_rounded,
-          color: Colors.white,
-          size: 20,
+  Widget _pipButton() {
+    if (isDesktopPlatform) {
+      return _desktopGlassIcon(
+        key: const ValueKey('feed-pip'),
+        icon: Icons.picture_in_picture_alt_rounded,
+        onTap: _enterPictureInPicture,
+      );
+    }
+    return Material(
+      color: Colors.black38,
+      borderRadius: BorderRadius.circular(10),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: const ValueKey('feed-pip'),
+        onTap: _enterPictureInPicture,
+        child: const SizedBox(
+          width: 38,
+          height: 38,
+          child: Icon(
+            Icons.picture_in_picture_alt_rounded,
+            color: Colors.white,
+            size: 20,
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
   /// 剧名行（0.6.2）。
   ///
@@ -4653,6 +4714,40 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 右上角的画中画 / 推送按钮都要让开这一条，否则会叠在一起。
   static const double _hudStrip = 28;
 
+  /// 顶部浮层的上边距（0.8.31）。
+  ///
+  /// 手机 / 电视让开 28px 的自绘状态条；Windows 没有状态条、也不画 HUD，
+  /// 但顶部有一条「鼠标靠近才淡入」的 36px 玻璃标题栏，所以浮层统一
+  /// 下移到 52px，两者不会叠在一起。
+  double _topOffset(double base) =>
+      isDesktopPlatform ? 52 : base + _hudStrip;
+
+  /// 控件层的上下压暗渐变（0.8.31）。
+  ///
+  /// 桌面窗口横向很宽，手机那套 60% / 87% 黑会把整块画面压成灰的；
+  /// 这里减到 30% / 70%，只保证白字可读、不抢画面。
+  LinearGradient get _stageShade => isDesktopPlatform
+      ? const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Color(0x4D000000),
+            Colors.transparent,
+            Color(0xB3000000),
+          ],
+          stops: [0, .30, 1],
+        )
+      : const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Color(0x99000000),
+            Colors.transparent,
+            Color(0xDD000000),
+          ],
+          stops: [0, .45, 1],
+        );
+
   /// 顶部自绘状态条：左时间、右电量（0.8.19）。
   ///
   /// 竖屏、全屏共用同一个组件，保证"点一下屏幕"两种状态下看到的东西一致。
@@ -4669,31 +4764,47 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       bottom: false,
       child: Padding(
         // 0.8.19：让开顶部自绘状态条。
-        padding: const EdgeInsets.fromLTRB(12, 10 + _hudStrip, 0, 0),
+        padding: EdgeInsets.fromLTRB(12, _topOffset(10), 0, 0),
         child: _episodeBadgeBox(textKey: textKey),
       ),
     ),
   );
 
   /// 集数标签本体（不含定位与安全区），供左上角一行布局复用。
-  Widget _episodeBadgeBox({Key? textKey}) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: Colors.black54,
-      borderRadius: BorderRadius.circular(6),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      child: Text(
-        '第${_episodeIndex + 1}集',
-        key: textKey ?? const ValueKey('feed-episode-badge'),
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
+  Widget _episodeBadgeBox({Key? textKey}) {
+    final label = Text(
+      '第${_episodeIndex + 1}集',
+      key: textKey ?? const ValueKey('feed-episode-badge'),
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
       ),
-    ),
-  );
+    );
+    // 桌面：胶囊玻璃，别用 6px 小方块的「手机截图角标」观感。
+    if (isDesktopPlatform) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0x33101216),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+          child: label,
+        ),
+      );
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        child: label,
+      ),
+    );
+  }
 
   /// 左上角浮层：返回按钮（仅独立播放页）+ 集数标签（0.8.15 第二批）。
   ///
@@ -4709,7 +4820,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       bottom: false,
       child: Padding(
         // 0.8.19：让开顶部自绘状态条。
-        padding: const EdgeInsets.fromLTRB(6, 8 + _hudStrip, 0, 0),
+        padding: EdgeInsets.fromLTRB(6, _topOffset(8), 0, 0),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -4725,20 +4836,29 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   );
 
   /// 画面左上角的返回按钮（0.8.15 第二批）。
-  Widget _backButton() => Material(
-    color: Colors.black38,
-    shape: const CircleBorder(),
-    clipBehavior: Clip.antiAlias,
-    child: InkWell(
-      key: const ValueKey('feed-back'),
-      onTap: widget.onBack,
-      child: const SizedBox(
-        width: 38,
-        height: 38,
-        child: Icon(Icons.arrow_back_rounded, color: Colors.white, size: 21),
+  Widget _backButton() {
+    if (isDesktopPlatform) {
+      return _desktopGlassIcon(
+        key: const ValueKey('feed-back'),
+        icon: Icons.arrow_back_rounded,
+        onTap: widget.onBack,
+      );
+    }
+    return Material(
+      color: Colors.black38,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: const ValueKey('feed-back'),
+        onTap: widget.onBack,
+        child: const SizedBox(
+          width: 38,
+          height: 38,
+          child: Icon(Icons.arrow_back_rounded, color: Colors.white, size: 21),
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   /// 亮度不再用画面滤镜（0.7.8）：改调窗口亮度，滤镜层直接透传。
   Widget _applyBrightness(Widget child) => child;
@@ -5829,23 +5949,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
-                            const IgnorePointer(
+                            IgnorePointer(
                               child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Color(0x99000000),
-                                      Colors.transparent,
-                                      Color(0xDD000000),
-                                    ],
-                                    stops: [0, .45, 1],
-                                  ),
-                                ),
+                                decoration: BoxDecoration(gradient: _stageShade),
                               ),
                             ),
-                            _statusHud(),
+                            if (!isDesktopPlatform) _statusHud(),
                             // 中央：播放/暂停。
                             if (!(state?.playing ?? false) &&
                                 !_loading &&
@@ -6425,23 +6534,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                       return Stack(
                         fit: StackFit.expand,
                         children: [
-                          const IgnorePointer(
+                          IgnorePointer(
                             child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [
-                                    Color(0x99000000),
-                                    Colors.transparent,
-                                    Color(0xDD000000),
-                                  ],
-                                  stops: [0, .45, 1],
-                                ),
-                              ),
+                              decoration: BoxDecoration(gradient: _stageShade),
                             ),
                           ),
-                          _statusHud(),
+                          if (!isDesktopPlatform) _statusHud(),
                           // 左上角：返回按钮（仅独立播放页）+ 集数标签。
                           //
                           // 集数标签只在有多个剧集时显示：单集、本地单文件
@@ -6492,7 +6590,19 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                           // + 热度行）会向上撑高，把位于 right:8, bottom:190 的按钮组盖住，
                           // 导致按钮收不到点击（表现为"完全没反应"，连按钮文字都不变）。
                           // 改为同一个 Column 布局后，两者在结构上永不重叠。
-                          Align(
+                          // 0.8.31：桌面换成紧凑的播放器控制条；手机 / 电视
+                          // 继续走下面这套「5 个等宽槽位 + 文字标签」布局。
+                          if (isDesktopPlatform)
+                            _desktopBottomControls(
+                              context: context,
+                              playing: state?.playing ?? false,
+                              position: position,
+                              duration: duration,
+                              buffered: buffered,
+                              total: total,
+                            )
+                          else
+                            Align(
                             alignment: Alignment.bottomCenter,
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
@@ -6769,7 +6879,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // `_syncSystemUi` 自己比对上一次应用的模式，重复调用无副作用。
     _queueSystemUiSync();
     _queuePictureInPictureSync();
-    return SizedBox(key: const ValueKey('feed-stage'), child: stage);
+    final stageBox = SizedBox(key: const ValueKey('feed-stage'), child: stage);
+    // 0.8.31：桌面有常驻鼠标，移动就把控件叫出来；手机 / 电视原样返回，
+    // 不多挂一层 MouseRegion（widget 测试的命中树保持不变）。
+    if (!isDesktopPlatform) return stageBox;
+    return MouseRegion(onHover: (_) => _desktopWake(), child: stageBox);
   }
 
   /// 上一次真正应用过的系统栏模式（null = 还没应用过）。
@@ -6999,6 +7113,253 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           textAlign: TextAlign.center,
         ),
       ],
+    ),
+  );
+
+  /// Windows 桌面播放页的底部控制条（0.8.31）。
+  ///
+  /// 手机那套「5 个等宽图标 + 文字标签铺满整行」是按 360dp 竖屏设计的，
+  /// 搬到 1000+ 宽的桌面窗口里，spaceEvenly 把按钮拉到彼此相隔近 200px，
+  /// 又小又散。桌面改成播放器惯例：剧名 + 整行进度条（两端时间）+ 一行
+  /// 紧凑图标按钮（文字走 tooltip），整体压在底部渐变上、随控件一起淡出。
+  Widget _desktopBottomControls({
+    required BuildContext context,
+    required bool playing,
+    required int position,
+    required int duration,
+    required int buffered,
+    required double total,
+  }) => Align(
+    alignment: Alignment.bottomCenter,
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(24, 52, 24, 18),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.transparent, Color(0x80000000), Color(0xCC000000)],
+          stops: [0, .40, 1],
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(child: _titleBar()),
+              if (_hasEpisodeBadge)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    '第 ${_episodeIndex + 1} / ${_detail?.episodes.length ?? 0} 集',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: .62),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ValueListenableBuilder<double?>(
+            valueListenable: _seekPreview,
+            builder: (context, preview, _) {
+              final value = ((preview ?? _seekValue) ?? position / 1000)
+                  .clamp(0, total)
+                  .toDouble();
+              return Row(
+                children: [
+                  SizedBox(
+                    width: 54,
+                    child: Text(
+                      formatPosition(value),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3,
+                        activeTrackColor: Theme.of(context).colorScheme.primary,
+                        inactiveTrackColor: Colors.white.withValues(alpha: .24),
+                        thumbColor: Colors.white,
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 6,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 14,
+                        ),
+                      ),
+                      child: Slider(
+                        key: const ValueKey('feed-progress'),
+                        value: value,
+                        max: total,
+                        secondaryTrackValue: (buffered / 1000)
+                            .clamp(0, total)
+                            .toDouble(),
+                        semanticFormatterCallback: formatPosition,
+                        onChangeStart: duration > 0
+                            ? (_) {
+                                _interactions?.cancel();
+                                _hideTimer?.cancel();
+                              }
+                            : null,
+                        onChanged: duration <= 0
+                            ? null
+                            : (next) {
+                                _hideTimer?.cancel();
+                                setState(() => _seekValue = next);
+                              },
+                        onChangeEnd: (next) {
+                          if (duration > 0) {
+                            unawaited(
+                              _seekTo(
+                                Duration(milliseconds: (next * 1000).round()),
+                              ),
+                            );
+                          }
+                          setState(() => _seekValue = null);
+                          _showControls();
+                        },
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 54,
+                    child: Text(
+                      formatPosition(duration / 1000),
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              _desktopAction(
+                key: const ValueKey('feed-play-toggle'),
+                icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                tooltip: playing ? '暂停' : '播放',
+                onPressed: _togglePlayback,
+                primary: true,
+              ),
+              _desktopAction(
+                key: const ValueKey('feed-speed'),
+                icon: Icons.speed_rounded,
+                label: '${_speed}x',
+                tooltip: '倍速',
+                onPressed: () => unawaited(_openSpeedMenu()),
+              ),
+              _desktopAction(
+                key: const ValueKey('feed-quality'),
+                icon: Icons.hd_rounded,
+                label: _qualityLabel,
+                tooltip: '清晰度',
+                onPressed: () => unawaited(_openQualityMenu()),
+              ),
+              if (_plan?.supportsDanmaku ?? false)
+                _desktopAction(
+                  key: const ValueKey('feed-danmaku'),
+                  icon: _danmakuEnabled
+                      ? Icons.subtitles_rounded
+                      : Icons.subtitles_off_rounded,
+                  tooltip: _danmakuEnabled ? '关闭弹幕' : '开启弹幕',
+                  onPressed: () => unawaited(_toggleDanmaku()),
+                ),
+              _desktopAction(
+                key: const ValueKey('feed-episodes'),
+                icon: Icons.grid_view_rounded,
+                tooltip: '选集',
+                onPressed: () => unawaited(_openEpisodes()),
+              ),
+              _desktopAction(
+                key: const ValueKey('feed-follow'),
+                icon: _followed
+                    ? Icons.bookmark_rounded
+                    : Icons.bookmark_border_rounded,
+                tooltip: _followed ? '取消追剧' : '追剧',
+                onPressed: () => unawaited(_toggleFollow()),
+              ),
+              if (!widget.singleDrama)
+                _desktopAction(
+                  key: const ValueKey('feed-auto-next'),
+                  icon: widget.autoNextEpisode
+                      ? Icons.repeat_one_rounded
+                      : Icons.skip_next_rounded,
+                  tooltip: widget.autoNextEpisode ? '连播本剧' : '连播下一部',
+                  onPressed: widget.onToggleAutoNext,
+                  color: widget.autoNextEpisode
+                      ? const Color(0xFFFF765F)
+                      : Colors.white,
+                ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+
+  /// 桌面控制条上的一个紧凑动作（0.8.31）。图标 + 可选数值，文字说明走 tooltip。
+  Widget _desktopAction({
+    Key? key,
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+    String? label,
+    Color color = Colors.white,
+    bool primary = false,
+  }) => Padding(
+    padding: const EdgeInsets.only(right: 4),
+    child: Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 450),
+      child: Material(
+        color: primary
+            ? Colors.white.withValues(alpha: .14)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(9),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          key: key,
+          onTap: onPressed,
+          hoverColor: Colors.white.withValues(alpha: .13),
+          borderRadius: BorderRadius.circular(9),
+          child: SizedBox(
+            height: 34,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 18, color: color),
+                  if (label != null) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     ),
   );
 }

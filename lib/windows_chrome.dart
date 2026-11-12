@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,32 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app_build.dart';
 import 'windows_pip.dart';
+
+/// 播放页「沉浸模式」开关（0.8.31）。
+///
+/// 桌面播放页把自己注册进来，最外层 [WindowsDesktopFrame] 收到通知后：
+/// 画面铺满整窗（不再给固定标题栏让出 36px），标题栏变成「鼠标移到窗口
+/// 最上方才淡入」的半透明玻璃浮层。用户要的正是「播放时不要固定顶部栏」。
+///
+/// 用引用计数而不是单个 bool：全屏 overlay 与竖屏播放页可能短暂并存，
+/// 谁先退出都不能提前把顶栏叫回来。只有 Windows 播放页会调它，
+/// 发现 / 资料库等页面仍然是常驻的品牌标题栏。
+class WindowsChrome {
+  WindowsChrome._();
+
+  static final ValueNotifier<bool> immersive = ValueNotifier<bool>(false);
+  static int _depth = 0;
+
+  static void pushImmersive() {
+    _depth++;
+    if (!immersive.value) immersive.value = true;
+  }
+
+  static void popImmersive() {
+    if (_depth > 0) _depth--;
+    if (_depth == 0 && immersive.value) immersive.value = false;
+  }
+}
 
 // Windows 画中画见 lib/windows_pip.dart + windows/runner/flutter_window.cpp：
 // 浮窗形态切换 + 全局热键 Ctrl+Shift+P，方案取舍记在 docs/TODO.md。
@@ -33,17 +60,41 @@ class WindowsDesktopFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!supported) return child;
-    // 画中画时标题栏要彻底消失，但**不能把 Column 的子项数量改掉**：
-    // `child` 里挂着播放器，索引一变 Flutter 会重建整棵子树，正在播的那一路
-    // 会被 dispose 掉。用 Offstage 固定住两个位置，只切显示与高度。
+    // 0.8.31：改成「画面铺底 + 标题栏浮层」的 Stack。旧的 Column 会把一条
+    // 36px 亮色栏永久压在视频上方，黑画面配白顶栏割裂得厉害，播放页尤其难看。
+    //
+    // 结构恒定：两个子节点永远在树里，只改 padding / Offstage / 透明度。
+    // `child` 里挂着播放器，增删节点或换父类型都会让正在播的那一路被 dispose。
     return AnimatedBuilder(
-      animation: WindowsPip.instance,
+      animation: Listenable.merge([
+        WindowsPip.instance,
+        WindowsChrome.immersive,
+      ]),
       builder: (context, _) {
         final pip = WindowsPip.instance.active;
-        return Column(
+        final immersive = WindowsChrome.immersive.value;
+        return Stack(
           children: [
-            Offstage(offstage: pip, child: const WindowsTitleBar()),
-            Expanded(child: WindowsPipOverlay(child: child)),
+            // 普通页面让出 36px 给常驻标题栏；播放页 / PiP 铺满整窗。
+            Positioned.fill(
+              child: AnimatedPadding(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                padding: EdgeInsets.only(
+                  top: (pip || immersive) ? 0 : WindowsTitleBar.barHeight,
+                ),
+                child: WindowsPipOverlay(child: child),
+              ),
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Offstage(
+                offstage: pip,
+                child: WindowsTitleBar(immersive: immersive),
+              ),
+            ),
           ],
         );
       },
@@ -52,10 +103,16 @@ class WindowsDesktopFrame extends StatelessWidget {
 }
 
 /// 自绘标题栏本体。高度按 Windows 习惯给 36 逻辑像素。
+///
+/// [immersive] 为 true 时（播放页）默认完全隐藏，鼠标靠近窗口最上沿才淡入
+/// 一条半透明玻璃条；窗口按钮仍可用，但不会在黑画面上留一条常驻亮带。
 class WindowsTitleBar extends StatefulWidget {
-  const WindowsTitleBar({super.key, this.height = 36});
+  const WindowsTitleBar({super.key, this.immersive = false});
 
-  final double height;
+  static const double barHeight = 36;
+
+  /// 播放页沉浸模式：隐藏 → hover 唤出，并改用深色玻璃配色。
+  final bool immersive;
 
   @override
   State<WindowsTitleBar> createState() => _WindowsTitleBarState();
@@ -64,6 +121,7 @@ class WindowsTitleBar extends StatefulWidget {
 class _WindowsTitleBarState extends State<WindowsTitleBar>
     with WindowListener {
   bool _maximized = false;
+  bool _hovered = false;
 
   @override
   void initState() {
@@ -128,16 +186,66 @@ class _WindowsTitleBarState extends State<WindowsTitleBar>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-    // 与下面的 AppBar 用**同一个底色**，两条拼成一块完整的头部；分隔线只留
-    // AppBar 底部那一条（见 `AppTheme` 的 `appBarTheme.shape`）。各画各的线
-    // 会在窗口顶部出现两条平行细线，比原来那条系统白条还脏。
-    final header = theme.appBarTheme.backgroundColor ?? colors.surface;
-    return Material(
+    final colors = Theme.of(context).colorScheme;
+    final bar = _bar(context, colors);
+    if (!widget.immersive) return bar;
+    // 沉浸：默认完全透明也不可点，鼠标移到窗口最上方才淡入。
+    //
+    // 命中区单独放一层 Listener(translucent)，不能指望 AnimatedOpacity：
+    // RenderOpacity 在 opacity=0 时直接跳过 hitTest，那样永远唤不回来。
+    // MouseRegion 必须挂最外层 —— 挂在下层的话鼠标一挪到玻璃条上的按钮，
+    // 它就不在命中路径里，立刻 onExit 把刚出现的栏又收回去。
+    return MouseRegion(
+      opaque: false,
+      // 必须显式 translucent：deferToChild 时命中层返回 false，MouseRegion
+      // 自己不会进入 hit-test 路径，onEnter/onExit 永远不触发。
+      hitTestBehavior: HitTestBehavior.translucent,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: SizedBox(
+        height: WindowsTitleBar.barHeight + 10,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                child: const SizedBox.expand(),
+              ),
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: WindowsTitleBar.barHeight,
+              child: IgnorePointer(
+                ignoring: !_hovered,
+                child: AnimatedOpacity(
+                  opacity: _hovered ? 1 : 0,
+                  duration: const Duration(milliseconds: 150),
+                  curve: Curves.easeOut,
+                  child: bar,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 标题栏本体。普通页面跟随主题；播放页用深色玻璃 + 白字。
+  Widget _bar(BuildContext context, ColorScheme colors) {
+    final light = widget.immersive;
+    final header = light
+        ? const Color(0xB30B0B0E)
+        : (Theme.of(context).appBarTheme.backgroundColor ?? colors.surface);
+    final foreground = light
+        ? Colors.white.withValues(alpha: .92)
+        : colors.onSurface.withValues(alpha: .78);
+    final bar = Material(
       color: header,
       child: SizedBox(
-        height: widget.height,
+        height: WindowsTitleBar.barHeight,
         child: Row(
           children: [
             // 左侧整块是拖动区。窗口按钮必须留在外面 —— 包进来的话点关闭
@@ -173,7 +281,7 @@ class _WindowsTitleBarState extends State<WindowsTitleBar>
                             height: 1,
                             fontWeight: FontWeight.w600,
                             letterSpacing: .3,
-                            color: colors.onSurface.withValues(alpha: .78),
+                            color: foreground,
                           ),
                         ),
                       ),
@@ -185,6 +293,7 @@ class _WindowsTitleBarState extends State<WindowsTitleBar>
             _TitleBarButton(
               icon: Icons.remove_rounded,
               tooltip: '最小化',
+              light: light,
               onTap: windowManager.minimize,
             ),
             _TitleBarButton(
@@ -192,16 +301,26 @@ class _WindowsTitleBarState extends State<WindowsTitleBar>
                   ? Icons.filter_none_rounded
                   : Icons.crop_square_rounded,
               tooltip: _maximized ? '向下还原' : '最大化',
+              light: light,
               onTap: _toggleMaximize,
             ),
             _TitleBarButton(
               icon: Icons.close_rounded,
               tooltip: '关闭',
               danger: true,
+              light: light,
               onTap: windowManager.close,
             ),
           ],
         ),
+      ),
+    );
+    if (!light) return bar;
+    // 玻璃：模糊下方视频 + 半透明深底。不用硬边分隔线，纯黑画面上更干净。
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: bar,
       ),
     );
   }
@@ -217,6 +336,7 @@ class _TitleBarButton extends StatefulWidget {
     required this.tooltip,
     required this.onTap,
     this.danger = false,
+    this.light = false,
   });
 
   final IconData icon;
@@ -225,6 +345,9 @@ class _TitleBarButton extends StatefulWidget {
 
   /// 关闭按钮：悬停时整块变红、图标转白，与 Windows 的习惯一致。
   final bool danger;
+
+  /// 沉浸玻璃条：底色与图标都按白色半透明来画。
+  final bool light;
 
   @override
   State<_TitleBarButton> createState() => _TitleBarButtonState();
@@ -250,9 +373,13 @@ class _TitleBarButtonState extends State<_TitleBarButton> {
         ? Colors.transparent
         : widget.danger
         ? const Color(0xFFD93025)
+        : widget.light
+        ? Colors.white.withValues(alpha: .16)
         : colors.onSurface.withValues(alpha: .08);
     final foreground = _hovered && widget.danger
         ? Colors.white
+        : widget.light
+        ? Colors.white.withValues(alpha: .86)
         : colors.onSurface.withValues(alpha: .74);
     return Tooltip(
       message: widget.tooltip,
