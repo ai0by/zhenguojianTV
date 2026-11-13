@@ -183,6 +183,7 @@ jobs:
             pubspec.yaml
             config/update.json
             scripts/write_update_config.py
+            scripts/prune_release_assets.py
           sparse-checkout-cone-mode: false
 
       - name: Download APK
