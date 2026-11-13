@@ -6,6 +6,14 @@
 
 ---
 
+### 0.8.31 · 51 站源适配整站改版 + Windows 播放页沉浸式 UI
+
+- **51 短剧整站改版，旧版入口全部失效**：`/rank/`、`/rank/week/`、`/rank/month/`、`/new-theater-category/`、`/play/<id>/1/` 一律 404，页面里的 Nuxt `__NUXT_DATA__` / devalue 也整体下线，目录、榜单、搜索、详情因此全取不到数据。
+- **解析器按新页面重写**：目录改用 `hg-drama-card`、榜单 `hg-rank-item`、分页 `hg-pager`；路由换成 `/`、`/ranks/{hot,recommend,potential}/` 三张单页榜、`/newest/`、`/ai-duanju/<n>/` 路径式分页、`/search/?keyword=`、`/video/<id>/<ep>/`。详情页的 `videoInitialData` / `epPlaySrcs` 只是**按需签发的滑动窗口**（只给当前集附近几条），全量集号以选集区为骨架补齐；历史收藏与已下载里的 `51duanju-play://` 旧链接会按新路由重解析，不会再点开 404。
+- **新增站源存活性巡检**：`scripts/probe_source_health.py` 加手动触发的站源存活性巡检工作流，区分 `OK` / `DOWN` / `PROXY-ERROR` / `4XX-ONLY`，支持只看单个站源、探测候选域名、绕过代理直连复核，报告写进 CI 摘要。CI 海外网络确认 51 主镜像 9/9 路径全 200、新版结构键全部命中；`huangguo.video` 与几个 API 根在本机报的失败只是代理 / 4xx 视角，站点本身正常，镜像配置未改动。
+- **Windows 播放页改成沉浸式**：去掉播放页那条固定的 36px 顶部栏，画面铺满整个窗口，标题栏变成浮层且只在鼠标进入顶部 46px 时淡入；桌面不再显示手机端的时间 / 电量 HUD，返回与画中画改用半透明玻璃圆钮，集数改胶囊；底部换成桌面专用控件（剧名 + 整行进度条 + 两端时间 + 紧凑操作按钮，文字走 tooltip），鼠标移动后 4 秒自动隐藏。手机 / TV 布局完全没动。
+- **验证**：真实页面样本探针覆盖目录 / 榜单 / 搜索 / 详情 / 翻页边界；Go `gofmt -l .` / `go build ./...` / `go vet ./...` / `go test -count=1 ./core` / `go test -race -count=1 ./core` 全套干净，Python 57 项单测通过；`Full App Regression` 与 `TV Stable Regression` 双绿且逐 step 无失败；三次站源巡检 CI 全部成功。
+
 ### 0.8.30 · 红果两类播放故障定位 + Windows 随版构建
 
 - **「看一会儿突然一集不能播、重启 App 就好」：这轮先排除两个旧推测，再按最贴合的原因做保守修。** 实测上游 `data.video_model_data.<vid>.expire_time = 取流时刻 + 21600s`（6 小时），而 native 短缓存只有 10 分钟、前端计划缓存 5 分钟 —— 「缓存里躺着过期 URL」不成立，别再往 TTL 方向改；同一集固定身份连取 8 次全是同一编码，也排除了「上游间歇性返回坏档位」。真正对得上现象的是：`_prepare(force: true)` 里的 `force` **只**绕过 `_ready` 早退，本页计划缓存、预载结果与 native `mediaCache` 全都照常命中（探针实测 `CACHE_HIT_SAME_URL=true`），native 取流 action 也没有 force 通道。于是一份从一开始就坏掉的地址，页面内怎么点重试都会原样拿回来，只有重启清掉进程内缓存才恢复。
