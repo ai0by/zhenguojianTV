@@ -472,6 +472,10 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			} else if parsed, parseErr := url.Parse(candidate); parseErr == nil && strings.HasSuffix(strings.ToLower(parsed.Hostname()), "huangguoai.fit") {
 				// 黄果剧场（Cloudflare）详情页直连常需 15~25 秒，默认 12 秒会误判超时。
 				timeout = 30 * time.Second
+			} else if providerSourceForURL(rawURL) == sourceDuanju51 {
+				// 51 短剧改版后的 SSR 页面偶发 12~20 秒才回包（搜索页尤其明显），
+				// 默认 12 秒会把可用站源误判成超时；实测留到 25 秒能稳定拿到 200。
+				timeout = 25 * time.Second
 			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)
 			if err != nil {

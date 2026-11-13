@@ -1,0 +1,60 @@
+name: 站源存活性巡检
+
+# 只留手动触发：站源域名变动频繁，每天定时跑只会制造噪音。
+# 排查「某个站源不可用」时在这里点一次，报告会写进 job summary。
+on:
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: '只巡检某个站源 id（留空 = 全部）'
+        required: false
+        default: ''
+      candidates:
+        description: '额外探测候选域名与 51 全路径（排查改版时勾上）'
+        type: boolean
+        required: false
+        default: false
+      strict:
+        description: '有站源 DOWN / PROXY-ERROR 就把本 job 判失败；4XX-ONLY 不算'
+        type: boolean
+        required: false
+        default: false
+      no_proxy:
+        description: '绕过系统代理直连复核'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  source-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Probe all configured source mirrors
+        env:
+          FOCUS: ${{ inputs.focus }}
+          CANDIDATES: ${{ inputs.candidates }}
+          STRICT: ${{ inputs.strict }}
+          NO_PROXY: ${{ inputs.no_proxy }}
+        run: |
+          ARGS=""
+          if [ -n "$FOCUS" ]; then ARGS="$ARGS --focus $FOCUS"; fi
+          if [ "$CANDIDATES" = "true" ]; then ARGS="$ARGS --candidates"; fi
+          if [ "$STRICT" = "true" ]; then ARGS="$ARGS --strict"; fi
+          if [ "$NO_PROXY" = "true" ]; then ARGS="$ARGS --no-proxy"; fi
+          python3 scripts/probe_source_health.py $ARGS --json source-health.json
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-health-report
+          path: source-health.json
+          if-no-files-found: ignore

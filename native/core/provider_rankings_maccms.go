@@ -39,7 +39,8 @@ func buildMaccmsRanking(items []Drama, board rankingBoard) (rankingPage, error) 
 }
 
 // buildHuangjuRanking / buildDuanju51Ranking：这两个站点的目录接口
-// （黄剧 /dramas、51 的 /rank/ 卡片）已经产出 Drama 列表，只补名次。
+// （黄剧 /dramas、51 的 /ranks/ 榜单页）已经产出 Drama 列表，只补名次。
+// 51 改版后是单页榜，HasMore / TotalPages 由调用方强制收敛成 false / 1。
 func buildHuangjuRanking(items []Drama, board rankingBoard, page int) (rankingPage, error) {
 	if len(items) == 0 {
 		return rankingPage{}, errors.New("黄剧榜单未返回内容，站点可能暂不可用")

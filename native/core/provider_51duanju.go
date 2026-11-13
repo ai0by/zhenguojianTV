@@ -3,40 +3,72 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+
+	xhtml "golang.org/x/net/html"
 )
 
-// 51短剧：Nuxt 3 站点，列表页与详情页都把数据塞进 <script id="__NUXT_DATA__">。
-// 该脚本是 devalue 序列化后的「扁平数组 + 下标引用」，必须先解引用才能拿到真实对象。
+// 51短剧（0.8.30 修复）：站点在 2026-11 从 Nuxt 3 改成了服务端渲染的
+// `hg-*` 模板，旧的 /rank/、/new-theater-category/、/play/<id>/1/ 全部 404，
+// `__NUXT_DATA__` 也不再输出。现在的形态是：
 //
-// 关键点：
-//   - 分集播放地址直接在详情页 payload 的 episodeAll[].video_url 里，不用逐集抓页面；
-//   - 地址带 auth_key 查询串，截断成 .m3u8 会被 CDN 判 400，必须原样保留；
-//   - m3u8 是 AES-128 加密，密钥地址也带 auth_key，交给现有流代理重写即可。
+//   - 列表：`hg-drama-card`（首页 / 分类 / 搜索）与 `hg-rank-item`（榜单），
+//     剧集 ID 在 `data-track-id`，封面用 `img[data-src]`（src 是占位图）；
+//   - 分类：`/`、`/ranks/hot/`、`/newest/`、`/ai-duanju/` 等，分页是
+//     `/ai-duanju/<n>/` 这种路径式；搜索是 `/search/?keyword=...`；
+//   - 详情：`<script id="videoInitialData">` 里是普通 JSON，全部分集由
+//     `.hg-web-play__ep[data-ep-id]` 给出，剧集页是 `/video/<id>/ep-<n>/`；
+//   - 播放：每集 m3u8 带**有时效的 auth_key**，且 `epPlaySrcs` 只是当前集
+//     附近的滑动窗口。所以详情里只存 `51duanju-play://<id>/<n>` 占位，
+//     真正播放时再抓对应集页面换出新鲜地址。
+//
+// 页面里还塞了防爬脚本与隐藏的「猜你喜欢」卡片；解析统一走 DOM（复用
+// provider_maccms_html.go 里的通用工具），并只取 `<main>` / 当前激活的
+// `hg-card-grid` 子树，避免把 SEO 模板和隐藏面板混进目录。
 const (
-	sourceDuanju51  = "51duanju"
-	duanju51BaseURL = "https://blue.xdrgcewe.cc"
+	sourceDuanju51     = "51duanju"
+	duanju51BaseURL    = "https://blue.xdrgcewe.cc"
+	duanju51PlayScheme = "51duanju-play://"
 )
 
 // 镜像池与 config/source_mirrors.json 的 51duanju 段保持一致。
-// 该站换域名很勤（旧域名会 301 到停靠页），新地址优先改远程配置，
-// 这份内置列表只保证拉不到远程配置时仍能出内容。
+// 该站换域名很勤，新地址优先改远程配置，这份内置列表只作兜底。
 var duanju51BaseMirrors = []string{
 	"https://blue.xdrgcewe.cc",
 }
 
 var duanju51Categories = []nativeCategory{
 	{ID: "home", Name: "首页推荐"},
-	{ID: "rank", Name: "排行榜"},
-	{ID: "theater", Name: "剧场"},
-	{ID: "new", Name: "最新"},
+	{ID: "rank", Name: "热播榜"},
+	{ID: "theater", Name: "AI 短剧"},
+	{ID: "new", Name: "最新更新"},
+	{ID: "manju", Name: "AI 漫剧"},
+	{ID: "huanlian", Name: "AI 换脸"},
+	{ID: "mogai", Name: "AI 魔改"},
 }
 
-var duanju51NuxtPattern = regexp.MustCompile(`(?is)<script[^>]+id=["']__NUXT_DATA__["'][^>]*>(.*?)</script>`)
+// 分类 ID → 站点路径。首页与榜单只有一页，其余是 /<route>/<n>/ 分页。
+var duanju51CatalogRoutes = map[string]string{
+	"home":     "/",
+	"rank":     "/ranks/hot/",
+	"theater":  "/ai-duanju/",
+	"new":      "/newest",
+	"manju":    "/ai-manju/",
+	"huanlian": "/ai-huanlian/",
+	"mogai":    "/ai-mogai/",
+}
+
+var (
+	duanju51VideoPattern = regexp.MustCompile(`/video/([0-9]+)/`)
+	duanju51DigitPattern = regexp.MustCompile(`[0-9]+`)
+)
 
 func duanju51MirrorHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
@@ -51,44 +83,48 @@ func duanju51MirrorHost(host string) bool {
 	return false
 }
 
-func validDuanju51Category(category string) bool {
-	for _, entry := range duanju51Categories {
-		if entry.ID == category {
-			return true
+func duanju51NumericID(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
-// duanju51CatalogPath 返回分类列表页路径。page<=1 时用首页形态。
+func validDuanju51Category(category string) bool {
+	_, ok := duanju51CatalogRoutes[category]
+	return ok
+}
+
+// duanju51CatalogPath 返回分类列表页路径。首页 / 榜单只有一页，page>1 返回空。
 func duanju51CatalogPath(category string, page int) string {
 	if page < 1 {
 		page = 1
 	}
-	switch category {
-	case "", "home":
+	route, ok := duanju51CatalogRoutes[category]
+	if !ok {
+		route = duanju51CatalogRoutes["theater"]
+	}
+	if route == "/" || route == "/ranks/hot/" {
 		if page > 1 {
 			return ""
 		}
-		return "/"
-	case "rank":
-		if page == 1 {
-			return "/rank/"
-		}
-		return fmt.Sprintf("/rank/page/%d/", page)
-	case "new":
-		if page == 1 {
-			return "/new-theater-category/0-0-0-0-0-1/"
-		}
-		return fmt.Sprintf("/new-theater-category/0-0-0-0-0-1/page/%d/", page)
-	default:
-		if page == 1 {
-			return "/new-theater-category/"
-		}
-		return fmt.Sprintf("/new-theater-category/page/%d/", page)
+		return route
 	}
+	name := strings.Trim(route, "/")
+	if page == 1 {
+		return "/" + name + "/"
+	}
+	return fmt.Sprintf("/%s/%d/", name, page)
 }
 
+// duanju51SearchPath 用页面搜索框的 keyword 参数；page 直接透传，站点只有
+// 一页时第二页会回空列表（由 duanju51HasNextPage 控制不再翻页）。
 func duanju51SearchPath(query string, page int) string {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -97,15 +133,40 @@ func duanju51SearchPath(query string, page int) string {
 	if page < 1 {
 		page = 1
 	}
-	escaped := url.PathEscape(query)
-	if page == 1 {
-		return "/search/" + escaped + "/"
+	path := "/search/?keyword=" + url.QueryEscape(query)
+	if page > 1 {
+		path += "&page=" + strconv.Itoa(page)
 	}
-	return fmt.Sprintf("/search/%s/page/%d/", escaped, page)
+	return path
 }
 
-func duanju51DetailPath(sourceID string) string {
-	return "/play/" + url.PathEscape(strings.TrimSpace(sourceID)) + "/1/"
+// duanju51DetailPath 详情页路径：第 1 集是 /video/<id>/，其余是 ep-<n>。
+func duanju51DetailPath(sourceID string, episode int) string {
+	id := url.PathEscape(strings.Trim(strings.TrimSpace(sourceID), "/"))
+	if id == "" {
+		return ""
+	}
+	if episode <= 1 {
+		return "/video/" + id + "/"
+	}
+	return fmt.Sprintf("/video/%s/ep-%d/", id, episode)
+}
+
+func duanju51PlayPlaceholder(sourceID string, episode int) string {
+	return duanju51PlayScheme + strings.TrimSpace(sourceID) + "/" + strconv.Itoa(episode)
+}
+
+func duanju51ParsePlayPlaceholder(raw string) (string, int, bool) {
+	value := strings.Trim(strings.TrimPrefix(strings.TrimSpace(raw), duanju51PlayScheme), "/")
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 || !duanju51NumericID(parts[0]) {
+		return "", 0, false
+	}
+	episode, err := strconv.Atoi(parts[1])
+	if err != nil || episode < 1 {
+		return "", 0, false
+	}
+	return parts[0], episode, true
 }
 
 func (d *Downloader) fetchDuanju51Page(ctx context.Context, path string) (string, error) {
@@ -113,8 +174,7 @@ func (d *Downloader) fetchDuanju51Page(ctx context.Context, path string) (string
 	return d.fetchProviderText(ctx, strings.TrimRight(base, "/")+path, base+"/")
 }
 
-// fetchDuanju51CatalogPage 抓取列表页并解析卡片。
-// query 非空时走站内搜索，忽略 category。
+// fetchDuanju51CatalogPage 抓取列表页并解析卡片。query 非空时走站内搜索。
 func (d *Downloader) fetchDuanju51CatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	path := ""
 	if strings.TrimSpace(query) != "" {
@@ -129,81 +189,54 @@ func (d *Downloader) fetchDuanju51CatalogPage(ctx context.Context, page int, cat
 	if err != nil {
 		return nil, false, err
 	}
-	items := duanju51CardDramas(duanju51DecodeHTML(body))
-	// 首页只有一页；分类页每页 20 条，满页即认为还有下一页。
-	more := false
-	if strings.TrimSpace(query) != "" || (category != "" && category != "home") {
-		more = len(items) >= 20
-	}
+	items := duanju51CardDramas(body)
+	// 分页以页面里的「下一页」链接为准，避免最后一页翻出 404。
+	more := len(items) > 0 && duanju51HasNextPage(body, page)
 	return items, more, nil
 }
 
-// fetchDuanju51Detail 从详情页 payload 取剧集元信息与全部分集地址。
+// fetchDuanju51Detail 取详情元信息与全部分集；分集只存占位，播放时再解析。
 func (d *Downloader) fetchDuanju51Detail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	sourceID = strings.Trim(strings.TrimSpace(sourceID), "/")
-	if sourceID == "" {
-		return Drama{}, nil, fmt.Errorf("empty 51duanju sourceID")
+	if !duanju51NumericID(sourceID) {
+		return Drama{}, nil, fmt.Errorf("51短剧剧集 ID 无效")
 	}
-	base := d.providerBaseURL(sourceDuanju51)
-	pagePath := duanju51DetailPath(sourceID)
-	body, err := d.fetchDuanju51Page(ctx, pagePath)
+	base := strings.TrimRight(d.providerBaseURL(sourceDuanju51), "/")
+	body, err := d.fetchDuanju51Page(ctx, duanju51DetailPath(sourceID, 1))
 	if err != nil {
 		return Drama{}, nil, err
 	}
-	root := duanju51DecodeHTML(body)
-	detail := duanju51DetailObject(root, sourceID)
-	if detail == nil {
+	doc := maccmsDocument(body)
+	data := duanju51InitialData(doc)
+	if data == nil {
 		return Drama{}, nil, fmt.Errorf("51短剧详情解析失败，站点结构可能已变更")
 	}
 
-	title := firstNonEmpty(mapString(detail, "drama_name"), mapString(detail, "video_title"), "短剧"+sourceID)
-	cover := firstNonEmpty(mapString(detail, "cover_img"), mapString(detail, "cover"))
-	if strings.HasPrefix(cover, "//") {
-		cover = "https:" + cover
-	}
-	description := firstNonEmpty(mapString(detail, "description"), mapString(detail, "video_title"))
-	remark := firstNonEmpty(mapString(detail, "update_status"), mapString(detail, "serialize_status_text"))
-
-	episodes := duanju51Episodes(detail)
-	if len(episodes) == 0 {
+	indexes := duanju51EpisodeIndexes(doc, data)
+	if len(indexes) == 0 {
 		return Drama{}, nil, fmt.Errorf("51短剧该剧暂无可用分集")
 	}
-
 	var chapters []Chapter
-	freeFound := false
-	for position, ep := range episodes {
-		index := ep.Index
-		if index <= 0 {
-			index = position + 1
-		}
-		chapterTitle := strings.TrimSpace(ep.Title)
-		if chapterTitle == "" {
-			chapterTitle = fmt.Sprintf("第%d集", index)
-		}
-		key := ep.Key
-		if key == "" {
-			key = strconv.Itoa(index)
-		}
-		chapter := Chapter{
-			ID:             providerChapterID(sourceDuanju51, sourceID, key),
+	for _, index := range indexes {
+		path := duanju51DetailPath(sourceID, index)
+		pageURL := base + path
+		chapters = append(chapters, Chapter{
+			ID:             providerChapterID(sourceDuanju51, sourceID, strconv.Itoa(index)),
 			Source:         sourceDuanju51,
-			Title:          chapterTitle,
-			VideoURL:       ep.HLS,
-			PageURL:        strings.TrimRight(base, "/") + duanju51DetailPath(sourceID),
-			Referer:        strings.TrimRight(base, "/") + "/",
+			Title:          fmt.Sprintf("第%d集", index),
+			VideoURL:       duanju51PlayPlaceholder(sourceID, index),
+			PageURL:        pageURL,
+			Referer:        pageURL,
 			CurrentEpisode: rawEpisode(index),
-		}
-		if ep.Locked {
-			chapter.VIP = true
-		} else if ep.HLS != "" {
-			freeFound = true
-		}
-		chapters = append(chapters, chapter)
+		})
 	}
 	sortProviderChapters(chapters)
 	chapters = uniqueChapters(chapters)
 
-	vip := !freeFound
+	title := firstNonEmpty(mapString(data, "title"), "短剧"+sourceID)
+	cover := duanju51AbsoluteURL(mapString(data, "coverSrc", "posterSrc"))
+	description := mapString(data, "description")
+	vip := false
 	drama := Drama{
 		VIP:          &vip,
 		ID:           providerDramaID(sourceDuanju51, sourceID),
@@ -218,157 +251,384 @@ func (d *Downloader) fetchDuanju51Detail(ctx context.Context, sourceID string) (
 		TotalEpisode: strconv.Itoa(len(chapters)),
 		EpisodeCount: strconv.Itoa(len(chapters)),
 		ChannelName:  "51短剧",
-		CategoryName: "短剧",
-		Remark:       remark,
+		CategoryName: firstNonEmpty(duanju51BreadcrumbCategory(data), "短剧"),
+		Remark:       fmt.Sprintf("全%d集", len(chapters)),
+		Tags:         mapStringSlice(data, "tags"),
+		Views:        normalizeViews(mapString(data, "views")),
 	}
 	return drama, chapters, nil
 }
 
-// duanju51Episodes 把 episodeAll 转成 providerEpisode。
-func duanju51Episodes(detail map[string]any) []providerEpisode {
-	raw, ok := detail["episodeAll"].([]any)
+// resolveDuanju51Playback 按需抓「指定集」的详情页，换出带新鲜 auth_key 的 m3u8。
+// 老版本保存的裸 m3u8（同样带 auth_key）也走这里，避免历史收藏里的链接过期。
+func (d *Downloader) resolveDuanju51Playback(ctx context.Context, task Task) (providerMedia, error) {
+	sourceID, episode, ok := duanju51ParsePlayPlaceholder(task.Chapter.VideoURL)
 	if !ok {
+		if source, dramaID, valid := splitProviderDramaID(task.DramaID); valid && source == sourceDuanju51 {
+			sourceID = dramaID
+		}
+		fallback := task.Index
+		if fallback < 1 {
+			fallback = 1
+		}
+		episode, _ = strconv.Atoi(task.Chapter.EpisodeString(fallback))
+		ok = duanju51NumericID(sourceID) && episode > 0
+	}
+	if !ok {
+		return providerMedia{}, errors.New("51短剧播放分集信息无效，请刷新详情")
+	}
+	// DramaID 是权威来源：占位里的 ID 可能来自旧域名或旧快照。
+	if source, dramaID, valid := splitProviderDramaID(task.DramaID); valid && source == sourceDuanju51 && duanju51NumericID(dramaID) {
+		sourceID = dramaID
+	}
+	path := duanju51DetailPath(sourceID, episode)
+	body, err := d.fetchDuanju51Page(ctx, path)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	doc := maccmsDocument(body)
+	data := duanju51InitialData(doc)
+	if data == nil {
+		return providerMedia{}, fmt.Errorf("51短剧第%d集页面结构异常，站点可能已改版", episode)
+	}
+	address := duanju51EpisodeMedia(doc, data, episode)
+	if !isProviderHTTPMediaURL(address) {
+		return providerMedia{}, fmt.Errorf("51短剧第%d集暂未返回可用播放地址", episode)
+	}
+	pageURL := strings.TrimRight(d.providerBaseURL(sourceDuanju51), "/") + path
+	// 只负责把地址换出来；m3u8 拉取、#EXTM3U 校验与时长解析交给公共尾部。
+	return providerMedia{URL: address, Referer: pageURL}, nil
+}
+
+// duanju51EpisodeMedia 优先取当前集对应的 epPlaySrcs[n]，再退到 videoSrc 与
+// `<video><source>`。三者实测是同一个地址，但滑动窗口不一定包含较大集数。
+func duanju51EpisodeMedia(doc *xhtml.Node, data map[string]any, episode int) string {
+	if sources, ok := data["epPlaySrcs"].(map[string]any); ok {
+		if address := mapString(sources, strconv.Itoa(episode)); isProviderHTTPMediaURL(address) {
+			return address
+		}
+	}
+	if address := mapString(data, "videoSrc", "previewSrc"); isProviderHTTPMediaURL(address) {
+		return address
+	}
+	if video := maccmsFind(doc, func(node *xhtml.Node) bool {
+		return maccmsTag(node, "video") && maccmsHasClass(node, "hg-web-play__video")
+	}); video != nil {
+		for _, source := range maccmsNodes(video, func(node *xhtml.Node) bool {
+			return maccmsTag(node, "source")
+		}) {
+			if address := maccmsAttr(source, "src"); isProviderHTTPMediaURL(address) {
+				return address
+			}
+		}
+	}
+	return ""
+}
+
+// duanju51InitialData 从 `<script id="videoInitialData">` 读普通 JSON。
+func duanju51InitialData(doc *xhtml.Node) map[string]any {
+	node := maccmsFind(doc, func(current *xhtml.Node) bool {
+		return maccmsTag(current, "script") && strings.EqualFold(maccmsAttr(current, "id"), "videoInitialData")
+	})
+	if node == nil {
 		return nil
 	}
-	var out []providerEpisode
-	for position, entry := range raw {
-		ep, ok := entry.(map[string]any)
-		if !ok {
-			continue
+	var builder strings.Builder
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == xhtml.TextNode {
+			builder.WriteString(child.Data)
 		}
-		if isAdv, _ := ep["is_adv"].(bool); isAdv {
-			continue
+	}
+	text := strings.TrimSpace(builder.String())
+	if text == "" {
+		return nil
+	}
+	var data map[string]any
+	if json.Unmarshal([]byte(text), &data) != nil {
+		// script 是 raw text，实体引用不会被解析器还原；个别模板会手写 &amp;。
+		if json.Unmarshal([]byte(html.UnescapeString(text)), &data) != nil {
+			return nil
 		}
-		index := 0
-		for _, key := range []string{"index", "sort"} {
-			if value, err := strconv.Atoi(mapString(ep, key)); err == nil && value > 0 {
-				index = value
+	}
+	return data
+}
+
+// duanju51EpisodeIndexes 从分集按钮取全部集号；按钮缺失时退到 JSON 里的
+// 三张集号表，最后退到当前集号。
+func duanju51EpisodeIndexes(doc *xhtml.Node, data map[string]any) []int {
+	set := map[int]bool{}
+	for _, node := range maccmsNodes(doc, func(current *xhtml.Node) bool {
+		return maccmsHasClass(current, "hg-web-play__ep")
+	}) {
+		if index, err := strconv.Atoi(maccmsAttr(node, "data-ep-id")); err == nil && index > 0 {
+			set[index] = true
+		}
+	}
+	if len(set) == 0 {
+		for _, key := range []string{"episodeDurationLabels", "trackingEpisodes", "epPlaySrcs"} {
+			entries, ok := data[key].(map[string]any)
+			if !ok {
+				continue
+			}
+			for raw := range entries {
+				if index, err := strconv.Atoi(raw); err == nil && index > 0 {
+					set[index] = true
+				}
+			}
+			if len(set) > 0 {
 				break
 			}
 		}
-		media := mapString(ep, "video_url")
-		if media == "" {
-			media = mapString(ep, "video_url_h265")
-		}
-		if strings.HasPrefix(media, "//") {
-			media = "https:" + media
-		}
-		key := mapString(ep, "index", "sort", "id", "episode_id")
-		if key == "" {
-			key = strconv.Itoa(position + 1)
-		}
-		out = append(out, providerEpisode{
-			Key:    key,
-			Title:  firstNonEmpty(mapString(ep, "episode_title"), mapString(ep, "title")),
-			Index:  index,
-			HLS:    media,
-			Locked: !duanju51EpisodeFree(ep),
-		})
 	}
-	return out
+	if len(set) == 0 {
+		if index, err := strconv.Atoi(mapString(data, "ep")); err == nil && index > 0 {
+			set[index] = true
+		}
+	}
+	indexes := make([]int, 0, len(set))
+	for index := range set {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	return indexes
 }
 
-// duanju51EpisodeFree 判断单集是否可直接播放。
-// 站点用 unlocked / access_reason / state 三个字段描述权益，任一命中即视为免费。
-func duanju51EpisodeFree(ep map[string]any) bool {
-	if unlocked, ok := ep["unlocked"].(bool); ok && unlocked {
-		return true
+func duanju51BreadcrumbCategory(data map[string]any) string {
+	entries, _ := data["breadcrumb"].([]any)
+	for _, entry := range entries {
+		if row, ok := entry.(map[string]any); ok {
+			if name := mapString(row, "name"); name != "" && name != "51短剧" {
+				return name
+			}
+		}
 	}
-	if unlocked, ok := ep["web_unlocked"].(bool); ok && unlocked {
-		return true
+	return ""
+}
+
+// duanju51HasNextPage 以分页器里的「页码 = 当前页 + 1」为准。
+func duanju51HasNextPage(rawHTML string, page int) bool {
+	doc := maccmsDocument(rawHTML)
+	if doc == nil {
+		return false
 	}
-	if reason := strings.ToLower(mapString(ep, "access_reason")); reason == "free" {
-		return true
-	}
-	if state := strings.ToLower(mapString(ep, "state")); state == "playable" {
-		return true
+	next := strconv.Itoa(page + 1)
+	nodes := maccmsNodes(doc, func(current *xhtml.Node) bool {
+		return maccmsTag(current, "a", "button", "span")
+	})
+	for _, node := range nodes {
+		if maccmsAttr(node, "data-ajax-go") == next {
+			return true
+		}
+		if pages := maccmsAttr(node, "data-pages"); pages != "" {
+			if total, err := strconv.Atoi(pages); err == nil && total > page {
+				return true
+			}
+		}
+		href := maccmsAttr(node, "href")
+		if href == "" {
+			continue
+		}
+		if strings.Contains(href, "/"+next+"/") ||
+			strings.HasSuffix(href, "page="+next) ||
+			strings.Contains(href, "page="+next+"&") {
+			return true
+		}
 	}
 	return false
 }
 
-func duanju51DetailObject(root any, sourceID string) map[string]any {
-	var found map[string]any
-	duanju51WalkObjects(root, func(item map[string]any) {
-		if found != nil {
-			return
-		}
-		if mapString(item, "playlet_id") != sourceID {
-			return
-		}
-		if _, ok := item["episodeAll"].([]any); !ok {
-			return
-		}
-		found = item
+// duanju51CardDramas 解析列表页 / 搜索页 / 榜单页的卡片。
+func duanju51CardDramas(rawHTML string) []Drama {
+	doc := maccmsDocument(rawHTML)
+	if doc == nil {
+		return nil
+	}
+	scope := doc
+	// 分类页会为「最新/热播/原创/随机」预渲染四组卡片，只有 is-active 那组
+	// 是当前页内容；首页 / 榜单 / 搜索页则直接取 <main>。
+	if active := maccmsFind(doc, func(node *xhtml.Node) bool {
+		return maccmsHasClass(node, "hg-card-grid") && maccmsHasClass(node, "is-active")
+	}); active != nil {
+		scope = active
+	} else if main := maccmsFind(doc, func(node *xhtml.Node) bool {
+		return maccmsTag(node, "main")
+	}); main != nil {
+		scope = main
+	}
+	cards := maccmsNodes(scope, func(node *xhtml.Node) bool {
+		return maccmsHasClass(node, "hg-drama-card") || maccmsHasClass(node, "hg-rank-item")
 	})
-	return found
-}
-
-func duanju51CardDramas(root any) []Drama {
 	var out []Drama
 	seen := map[string]bool{}
-	duanju51WalkObjects(root, func(item map[string]any) {
-		videoID := mapString(item, "video_id")
-		if videoID == "" || seen[videoID] {
-			return
+	for _, card := range cards {
+		if duanju51HiddenCard(card) {
+			continue
 		}
-		title := firstNonEmpty(mapString(item, "title"), mapString(item, "video_title"), mapString(item, "drama_name"))
-		cover := firstNonEmpty(mapString(item, "cover"), mapString(item, "cover_img"))
-		if title == "" || cover == "" {
-			return
+		drama, ok := duanju51CardDrama(card)
+		if !ok || seen[drama.SourceID] {
+			continue
 		}
-		if strings.HasPrefix(cover, "//") {
-			cover = "https:" + cover
-		}
-		seen[videoID] = true
-		remark := firstNonEmpty(mapString(item, "play_count_text"), mapString(item, "remark_text"), mapString(item, "update_status"))
-		out = append(out, Drama{
-			ID:           providerDramaID(sourceDuanju51, videoID),
-			Source:       sourceDuanju51,
-			SourceID:     videoID,
-			Title:        title,
-			Name:         title,
-			Desc:         mapString(item, "description"),
-			Intro:        mapString(item, "description"),
-			Cover:        cover,
-			CoverURL:     cover,
-			ChannelName:  "51短剧",
-			CategoryName: firstNonEmpty(mapString(item, "type_text"), "短剧"),
-			Remark:       remark,
-			TotalEpisode: mapString(item, "total_serial"),
-			EpisodeCount: mapString(item, "total_serial"),
-			Tags:         mapStringSlice(item, "tags"),
-			Views:        normalizeViews(mapString(item, "play_count")),
-		})
-	})
+		seen[drama.SourceID] = true
+		out = append(out, drama)
+	}
 	return out
 }
 
-func duanju51WalkObjects(root any, visit func(map[string]any)) {
-	var walk func(any)
-	walk = func(value any) {
-		switch typed := value.(type) {
-		case map[string]any:
-			visit(typed)
-			for _, item := range typed {
-				walk(item)
-			}
-		case []any:
-			for _, item := range typed {
-				walk(item)
+// duanju51HiddenCard 排除 `<template>` 与页面顶部隐藏的搜索建议卡片。
+func duanju51HiddenCard(node *xhtml.Node) bool {
+	for parent := node.Parent; parent != nil; parent = parent.Parent {
+		if maccmsTag(parent, "template") || maccmsHasClass(parent, "hg-search-suggest") {
+			return true
+		}
+	}
+	return false
+}
+
+func duanju51CardDrama(card *xhtml.Node) (Drama, bool) {
+	videoID := maccmsAttr(card, "data-track-id")
+	if videoID == "" {
+		for _, anchor := range maccmsNodes(card, func(node *xhtml.Node) bool {
+			return maccmsTag(node, "a")
+		}) {
+			if match := duanju51VideoPattern.FindStringSubmatch(maccmsAttr(anchor, "href")); len(match) == 2 {
+				videoID = match[1]
+				break
 			}
 		}
 	}
-	walk(root)
+	if !duanju51NumericID(videoID) {
+		return Drama{}, false
+	}
+
+	title := maccmsAttr(card, "data-track-title")
+	if title == "" {
+		title = duanju51VisibleText(duanju51ClassFind(card, "hg-drama-card__title", "hg-rank-item__title"))
+	}
+	if title == "" {
+		title = duanju51VisibleText(duanju51ClassFind(card, "hg-drama-card__cover", "hg-rank-item__cover"))
+	}
+	if title == "" {
+		return Drama{}, false
+	}
+
+	var cover string
+	for _, image := range maccmsNodes(card, func(node *xhtml.Node) bool {
+		return maccmsTag(node, "img")
+	}) {
+		candidate := maccmsAttr(image, "data-src", "src")
+		if candidate == "" || strings.Contains(candidate, "cover-placeholder") {
+			continue
+		}
+		cover = duanju51AbsoluteURL(candidate)
+		break
+	}
+
+	remark := duanju51VisibleText(duanju51ClassFind(card, "hg-drama-card__episode"))
+	if remark == "" {
+		if heat := duanju51VisibleText(duanju51ClassFind(card, "hg-rank-item__heat-value", "hg-rank-metric-value")); heat != "" {
+			remark = "热度 " + heat
+		}
+	}
+	episodes := ""
+	if match := duanju51DigitPattern.FindString(remark); match != "" && strings.Contains(remark, "集") {
+		episodes = match
+	}
+	views := ""
+	if heat := duanju51VisibleText(duanju51ClassFind(card, "hg-rank-item__heat-value")); heat != "" {
+		views = normalizeViews(heat)
+	}
+
+	var tags []string
+	for _, node := range maccmsNodes(card, func(current *xhtml.Node) bool {
+		return maccmsHasClass(current, "hg-tag")
+	}) {
+		if tag := duanju51VisibleText(node); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+
+	return Drama{
+		ID:           providerDramaID(sourceDuanju51, videoID),
+		Source:       sourceDuanju51,
+		SourceID:     videoID,
+		Title:        title,
+		Name:         title,
+		Desc:         duanju51VisibleText(duanju51ClassFind(card, "hg-drama-card__desc", "hg-rank-item__desc")),
+		Intro:        duanju51VisibleText(duanju51ClassFind(card, "hg-drama-card__desc", "hg-rank-item__desc")),
+		Cover:        cover,
+		CoverURL:     cover,
+		ChannelName:  "51短剧",
+		CategoryName: firstNonEmpty(maccmsAttr(card, "data-track-type-name"), "短剧"),
+		Remark:       remark,
+		TotalEpisode: episodes,
+		EpisodeCount: episodes,
+		Tags:         tags,
+		Views:        views,
+	}, true
 }
 
-// duanju51DecodeHTML 从页面里取出 __NUXT_DATA__ 并解引用。
-func duanju51DecodeHTML(rawHTML string) any {
-	match := duanju51NuxtPattern.FindStringSubmatch(rawHTML)
-	if len(match) < 2 {
-		return nil
-	}
-	return duanju51DecodePayload(match[1])
+func duanju51ClassFind(root *xhtml.Node, names ...string) *xhtml.Node {
+	return maccmsFind(root, func(node *xhtml.Node) bool {
+		for _, name := range names {
+			if maccmsHasClass(node, name) {
+				return true
+			}
+		}
+		return false
+	})
 }
+
+// duanju51VisibleText 与 maccmsText 类似，但额外丢掉 sr-only 辅助文本
+// （卡片标题里塞了「全集在线观看」，混进来会污染剧名）。
+func duanju51VisibleText(node *xhtml.Node) string {
+	if node == nil {
+		return ""
+	}
+	var builder strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(current *xhtml.Node) {
+		if current.Type == xhtml.TextNode {
+			builder.WriteString(current.Data)
+			builder.WriteByte(' ')
+			return
+		}
+		if current.Type == xhtml.ElementNode {
+			switch strings.ToLower(current.Data) {
+			case "script", "style", "noscript", "form":
+				return
+			}
+			if maccmsHasClass(current, "sr-only") {
+				return
+			}
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.Join(strings.Fields(builder.String()), " ")
+}
+
+func duanju51AbsoluteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "//") {
+		return "https:" + raw
+	}
+	if strings.HasPrefix(raw, "/") {
+		return duanju51BaseURL + raw
+	}
+	return raw
+}
+
+// ---------------------------------------------------------------------------
+// devalue 扁平数组解码器
+//
+// 51 自身已经不用 Nuxt，但野果（provider_yeguo.go 的 fetchYeguoPayload）
+// 仍复用这份解码器读 _payload.json，所以必须保留，不能随 51 改版一起删掉。
+// ---------------------------------------------------------------------------
 
 var duanju51DevalueSpecial = map[string]bool{
 	"ShallowReactive": true, "Reactive": true, "Ref": true, "ShallowRef": true,
@@ -441,7 +701,7 @@ func duanju51DecodePayload(raw string) any {
 		var result any
 		if list, ok := value.([]any); ok {
 			switch {
-			case len(list) == 2 && duanju51DevalueMarker(list[0]) != "" && duanju51DevalueSpecial[duanju51DevalueMarker(list[0])]:
+			case len(list) == 2 && duanju51DevalueSpecial[duanju51DevalueMarker(list[0])]:
 				if target, ok := list[1].(float64); ok {
 					result = resolve(int(target))
 				} else {

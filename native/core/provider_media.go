@@ -228,6 +228,18 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 			return providerMedia{}, err
 		}
 	}
+	// 51短剧（0.8.30）：改版后每集的 m3u8 都带有时效 auth_key，详情里只存
+	// 51duanju-play:// 占位，播放时按集抓页面换新鲜地址。老版本保存下来的
+	// 裸 m3u8 同样会过期，也一并走按需解析。
+	if chapter.Source == sourceDuanju51 &&
+		(strings.HasPrefix(chapter.VideoURL, "51duanju-play://") ||
+			(isProviderHTTPMediaURL(chapter.VideoURL) && strings.Contains(chapter.VideoURL, "auth_key="))) {
+		var err error
+		media, err = d.resolveDuanju51Playback(ctx, task)
+		if err != nil {
+			return providerMedia{}, err
+		}
+	}
 	// 青空次元（0.8.15）：详情只给 episodeId，真实 m3u8 要再请求一次 play 接口。
 	if chapter.Source == sourceSorani && strings.HasPrefix(chapter.VideoURL, "sorani-play://") {
 		var err error

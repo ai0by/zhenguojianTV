@@ -41,9 +41,11 @@ var rankingBoards = []rankingBoard{
 	// fetchRankingPage 的 switch。
 	{ID: "huangju-hot", Source: sourceHuangju, Name: "热播榜", Description: "黄剧站点按热度排序。", upstreamKey: "hot"},
 	{ID: "huangju-new", Source: sourceHuangju, Name: "最新上架", Description: "黄剧站点按上架时间排序。", upstreamKey: "new"},
-	{ID: "51duanju-total", Source: sourceDuanju51, Name: "总榜", Description: "51短剧播放爆表总榜。", upstreamKey: "total"},
-	{ID: "51duanju-week", Source: sourceDuanju51, Name: "周榜", Description: "51短剧一周播放榜。", upstreamKey: "week"},
-	{ID: "51duanju-month", Source: sourceDuanju51, Name: "月榜", Description: "51短剧一月播放榜。", upstreamKey: "month"},
+	// 51 短剧改版后 /rank/ 系列下架，改成 /ranks/ 下的三张单页榜。
+	// ID 保持不变（用户的榜单入口与缓存按 ID 索引），只更新展示名与路径。
+	{ID: "51duanju-total", Source: sourceDuanju51, Name: "热播榜", Description: "51短剧当前热播 TOP 20。", upstreamKey: "total"},
+	{ID: "51duanju-week", Source: sourceDuanju51, Name: "推荐榜", Description: "51短剧编辑推荐 TOP 20。", upstreamKey: "week"},
+	{ID: "51duanju-month", Source: sourceDuanju51, Name: "潜力榜", Description: "51短剧潜力新剧 TOP 20。", upstreamKey: "month"},
 	{ID: "ezdmw-season", Source: sourceEZDMW, Name: "新番榜", Description: "E站当季新番人气排行（按月更新）。", upstreamKey: "season"},
 	{ID: "wangguo-top", Source: sourceWangguo, Name: "排行榜", Description: "网果站点影片排行榜。", path: "/label/top.html"},
 	{ID: "faguo-duanju", Source: sourceFaguo, Name: "短剧月榜", Description: "发果站点短剧月榜。", path: "/xzyxvt/duanjun.html"},
@@ -204,34 +206,28 @@ func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, p
 		}
 		return buildHuangjuRanking(items, board, page)
 	case sourceDuanju51:
-		// 51 的总/周/月榜都是 /rank/ 系列页面，走现有 Nuxt 卡片解析。
-		if page < 1 || page > 50 {
-			return rankingPage{}, errors.New("榜单页码无效")
+		// 改版后是 /ranks/{hot,recommend,potential}/ 三张单页榜，20 条一页，
+		// 没有分页器；卡片换成 hg-rank-item，由 duanju51CardDramas 统一解析。
+		if page != 1 {
+			return rankingPage{}, errors.New("该榜单只有一页")
 		}
-		path := "/rank/"
+		path := "/ranks/hot/"
 		switch board.upstreamKey {
 		case "week":
-			if page > 1 {
-				path = "/rank/week/page/" + strconv.Itoa(page) + "/"
-			} else {
-				path = "/rank/week/"
-			}
+			path = "/ranks/recommend/"
 		case "month":
-			if page > 1 {
-				path = "/rank/month/page/" + strconv.Itoa(page) + "/"
-			} else {
-				path = "/rank/month/"
-			}
-		default:
-			if page > 1 {
-				path = "/rank/page/" + strconv.Itoa(page) + "/"
-			}
+			path = "/ranks/potential/"
 		}
 		body, err := d.fetchDuanju51Page(ctx, path)
 		if err != nil {
 			return rankingPage{}, err
 		}
-		return buildDuanju51Ranking(duanju51CardDramas(duanju51DecodeHTML(body)), board, page)
+		result, err := buildDuanju51Ranking(duanju51CardDramas(body), board, page)
+		if err != nil {
+			return rankingPage{}, err
+		}
+		result.HasMore, result.TotalPages = false, 1
+		return result, nil
 	case sourceEZDMW:
 		if page != 1 {
 			return rankingPage{}, errors.New("该榜单只有一页")
