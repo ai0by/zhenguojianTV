@@ -10,6 +10,7 @@ package core
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -187,6 +188,43 @@ func TestHongguoPlaybackReregistersAfterTransientRegisterFailure(t *testing.T) {
 	}
 	if len(modelDeviceIDs) == 0 || modelDeviceIDs[len(modelDeviceIDs)-1] != freshDevice {
 		t.Fatalf("第二轮必须用新注册的身份取流，实际 %v", modelDeviceIDs)
+	}
+}
+
+// 2026-11-19：v5 新接口 POST /novel/player/multi_video_model/player/v1 的真实
+// 响应形态（真网抓包）：BaseResp + code=0（数字）+ data.<videoID>.video_model
+// （JSON 字符串）。补齐这条夹具，确保 v5 拿到的数据能进既有解析链、产出可播
+// 地址与 CENC key，而不是被误判成空 model 回退到已失效的 v4。
+func TestHongguoPlaybackModelFromV5Response(t *testing.T) {
+	const videoID = "7697465535398677529"
+	model := `{"status":10,"video_duration":88,"video_id":"v02ebeg10000db9e87nog65rc9sgpfm0","video_list":{"video_1":{"main_url":"https://v9-reading-video.qznovelvod.com/a/720p.mp4","video_meta":{"codec_type":"bytevc1","vheight":720},"encrypt_info":{"encrypt":true,"spade_a":"nLwS816KF8Jsjxf0R486wHS5DfdEjjnGaL0WxFu9JfKlu+1nZw=="}}}}`
+	result := map[string]any{
+		"BaseResp": map[string]any{"StatusCode": json.Number("0"), "StatusMessage": "success"},
+		"code":     json.Number("0"),
+		"data": map[string]any{
+			videoID: map[string]any{
+				"expire_time":  json.Number("1795076142"),
+				"video_height": json.Number("720"),
+				"video_model":  model,
+			},
+		},
+	}
+	got, err := hongguoPlaybackModelFromResult(result, videoID)
+	if err != nil {
+		t.Fatalf("v5 响应应解析出 model：%v", err)
+	}
+	media, err := selectHongguoAppVideoList(got)
+	if err != nil {
+		t.Fatalf("v5 model 应产出可播地址：%v", err)
+	}
+	if !strings.HasSuffix(media.URL, "720p.mp4") {
+		t.Fatalf("地址不对：%s", media.URL)
+	}
+	if len(media.CENCKey) != 16 {
+		t.Fatalf("CENC key 应为 16 字节，实际 %d", len(media.CENCKey))
+	}
+	if want := "195c21c7dd8de75cb71be08dfa4ae6f3"; hex.EncodeToString(media.CENCKey) != want {
+		t.Fatalf("CENC key 与真网向量不符：%x", media.CENCKey)
 	}
 }
 

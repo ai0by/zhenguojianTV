@@ -45,7 +45,8 @@ func sourceFixtureResponse(request *http.Request, status int, body string) *http
 func sourceFixtureDownloader(t *testing.T, transport sourceFixtureTransport) *Downloader {
 	t.Helper()
 	downloader := &Downloader{cfg: Config{dataDir: t.TempDir(), Retries: 1, PageSize: 30, MaxPagesPerSort: 1},
-		client: &http.Client{Transport: transport}, limiter: newRequestLimiter(3, 0), providerHosts: map[string]string{}}
+		client: &http.Client{Transport: transport}, limiter: newRequestLimiter(3, 0), providerHosts: map[string]string{},
+		disableHongguoV5: true}
 	// 0.8.14：红果取流前会确保游客设备已注册，注册请求会走同一个 fixture
 	// transport，把「只请求一次取流接口」这类断言全部打破。单测里直接标记
 	// 成已注册，注册逻辑本身由 provider_hongguo_device_test.go 单独覆盖。
@@ -71,6 +72,7 @@ func sourceFixtureEngine(t *testing.T, transport sourceFixtureTransport) *native
 	engine.downloader.client.Transport = transport
 	engine.downloader.limiter = newRequestLimiter(3, 0)
 	engine.downloader.cfg.Retries = 1
+	engine.downloader.disableHongguoV5 = true
 	markHongguoDeviceRegistered(engine.downloader)
 	return engine
 }

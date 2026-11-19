@@ -133,10 +133,27 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	fetchCtx, cancel := context.WithTimeout(ctx, hongguoPlaybackFetchBudget)
 	defer cancel()
 
-	routes := hongguoPlaybackRoutes(videoID)
 	var model map[string]any
 	var lastErr error
 	var registerErr error
+
+	// 2026-11-19：上游取流升级到 v5，v4 播放器签名恒回 200+0。先走 v5
+	// （注册 + X-Khronos/Helios/Medusa 签名，真网 live 测试通过），拿到
+	// model 直接进解析链；v5 失败再回退下面既有 v4 三条路由，不动 v4 逻辑。
+	// v5 内部自己换设备重试，外层只调一次，失败原因记进 diagnostic 便于排障。
+	if !downloader.disableHongguoV5 {
+		if v5Model, v5Err := downloader.hongguoV5PlaybackModel(fetchCtx, videoID); v5Err == nil {
+			model = v5Model
+		} else {
+			downloader.recordDiagnostic(diagnosticEvent{
+				Event:   "hongguo_v5_playback_fallback",
+				Source:  sourceHongguo,
+				Message: fmt.Sprintf("videoID=%s v5 取流失败，回退 v4：%v", videoID, v5Err),
+			})
+		}
+	}
+
+	routes := hongguoPlaybackRoutes(videoID)
 	// 记下成功取到 model 那一发所用的身份：后面编码救济要用同一个已注册
 	// 身份，不能退回可能为空的目录侧身份（见 hongguoPlaybackModelV1 注释）。
 	var playbackIdentity hongguoPlaybackIdentity

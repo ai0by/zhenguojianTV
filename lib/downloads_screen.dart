@@ -283,6 +283,9 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                 initialEpisodeIndex: index,
                 initialPosition: position,
                 localOnly: true,
+                // 2026-11-19：把本地拼好的分集列表直接交给播放器，避免它再去
+                // 调在线 detail()——已下载的短剧断网也必须能播。
+                localDetail: detail,
               ),
         ),
       );

@@ -70,6 +70,7 @@ class VerticalFeedScreen extends StatefulWidget {
     this.initialEpisodeIndex = 0,
     this.initialPosition = 0,
     this.localOnly = false,
+    this.localDetail,
     this.mediaId,
     this.handoff,
   });
@@ -116,6 +117,15 @@ class VerticalFeedScreen extends StatefulWidget {
   /// true 时用 `repository.localPlayback` 取**已下载的本地文件**，
   /// 而不是 `repository.resolve` 拉在线流。供下载页使用。
   final bool localOnly;
+
+  /// 本地文件模式的**离线剧集列表**（2026-11-19 新增）。
+  ///
+  /// 下载页点播放时已经用本地下载记录拼好了完整 `DramaDetail`（含已下载分集），
+  /// 通过这里直接交给播放器：这样 `_prepare()` 的 `_detail ?? await detail()` 命中
+  /// 本地对象，**完全不发网络请求**。已下载短剧本就不该依赖在线详情接口——
+  /// 断网/详情缓存过期时，过去会因 `repository.detail()` 失败而播不了本地文件。
+  /// 仅在 [localOnly] 为 true 时有意义；在线模式保持 null，仍走在线详情。
+  final DramaDetail? localDetail;
 
   /// 本地媒体 ID（0.6.0 新增，迁移自老播放器）。
   ///
@@ -1207,6 +1217,10 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
               ? widget.initialPosition
               : 0,
           localOnly: widget.singleDrama != null && widget.localOnly,
+          localDetail:
+              widget.singleDrama != null && widget.localOnly
+                  ? widget.localDetail
+                  : null,
           mediaId: widget.singleDrama != null ? widget.mediaId : null,
           singleDrama: widget.singleDrama != null,
           // 预载（0.2.31）：把"下一部剧"传给当前页，供"连播下一部"模式预载。
@@ -1554,6 +1568,7 @@ class _FeedPage extends StatefulWidget {
     this.initialEpisodeIndex = 0,
     this.initialPosition = 0,
     this.localOnly = false,
+    this.localDetail,
     this.mediaId,
     this.singleDrama = false,
     this.nextDrama,
@@ -1630,6 +1645,9 @@ class _FeedPage extends StatefulWidget {
 
   /// 单剧模式（0.2.29）：true 时播放已下载的本地文件。
   final bool localOnly;
+
+  /// 本地文件模式的离线剧集列表（2026-11-19），见外层 VerticalFeedScreen 说明。
+  final DramaDetail? localDetail;
 
   /// 本地媒体 ID（0.6.0）：非空时进度写入 `store.saveMediaWatch`。
   final String? mediaId;
@@ -2077,6 +2095,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 单剧模式（0.2.29）：从指定集开始播放（详情页/下载页点的是第几集）。
     _episodeIndex = widget.initialEpisodeIndex;
     _pendingStart = widget.initialPosition;
+    // 2026-11-19：本地文件模式直接用下载页拼好的离线详情，_prepare() 里的
+    // `_detail ?? await repository.detail()` 会命中它，**零网络请求**。
+    // 已下载的短剧不该依赖在线详情接口（断网/缓存过期仍能播本地文件）。
+    if (widget.localOnly && widget.localDetail != null) {
+      _detail = widget.localDetail;
+    }
     // 追剧按钮初始状态（0.2.26 新增）。
     _followed = widget.store.isFavorite(widget.drama.id);
     // 局域网推送（0.6.4）：接管 handoff，并挂上"发送端要求停止"的回调。
@@ -4081,7 +4105,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _refreshFullscreen(immediate: true);
     }
     try {
-      final detail = _detail ?? await widget.repository.detail(widget.drama);
+      // 2026-11-19：本地文件模式优先用离线详情，绝不因详情缓存过期而在断网时
+      // 失败。下载页走 localDetail（initState 已预置 _detail）；本地媒体库走
+      // _LocalFileRepository.detail()（本身就是离线构造）。两条路都不触网。
+      final detail =
+          _detail ??
+          widget.localDetail ??
+          await widget.repository.detail(widget.drama);
       // 0.3.5：除代次外还要确认播放器实例没被替换/释放
       // （滑走页面会释放播放器，此时继续加载就是在操作已释放的实例）。
       if (!_attemptAlive(player)) return;

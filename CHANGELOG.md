@@ -6,6 +6,13 @@
 
 ---
 
+### 0.8.32 · 红果 v5 取流协议重建 + 已下载剧集离线可播
+
+- **红果取流整体失效的根因是上游协议升级，不是网络或出口 IP**：约 11-16 上游把取流从 v4（播放器签名 `X-Gorgon`/`X-Argus`/`X-Ladon`）整体切到 v5，新接口 `POST /novel/player/multi_video_model/player/v1`（`api5-normal-sinfonlinea.fqnovel.com`），新签名 `X-Khronos`/`X-Helios`/`X-Medusa`，版本升到 `7.4.3.32`。本机与 CI 海外出口双端验证：v4 全部 `200 + 0 字节`，目录/注册正常，确认是协议层问题；0.8.31 的红果因此完全不可播。
+- **v5 协议按真网可用的开源实现逐字节落地**：新增 `native/core/hgv5/` 子包承载匿名设备注册（tt-data 信封 + gzip）、30 参数稳定 query、gzip body 与多分支 F13 签名。三个关键坑都对齐了：body 先 gzip 且同一份字节同时用于签名与发送、`device_level=1`（`3` 只会拿到无法解码的 `bytevc2`）、`_rticket` 固定在第 4 位。上游自 10-29 起「每台匿名设备基本只放行一次播放」，因此一次取流内空结果就换新设备重签重发（最多 4 轮）。
+- **复用现有下游链路，零重复代码**：v5 拿到的原始响应直接喂给既有解析器，spade 地址解密、CENC key 派生（`spade_a`）、试看探测、短缓存、singleflight 全部沿用；对拍确认生产 `hongguoContentKey()` 与开源 `drm.Derive()` 两个真向量完全一致，`hongguo-cenc://` CENC 管线零改动。取流改为 **v5 优先、v4 回退**，v4 三条路由一行未动，便于灰度与回滚。
+- **已下载短剧离线仍要联网已修**：播放页 `_prepare()` 原先无条件调用在线 `repository.detail()`，而下载页其实早把本地分集列表拼好却只传了剧、把详情丢了；详情缓存一过期又断网，在线详情失败反而导致本地文件播不了。现在下载页把本地详情透传给播放页，本地模式在 `initState` 预置详情、`_prepare` 只从本地详情取，绝不发在线详情请求。原生 `localPlayback` 本身只读本地文件，弹幕/预载/自动连播对本地源也已跳过。
+- **验证**：红果 v5 走生产 Downloader 真网取流，并发 100 个真实剧集 ID **100/100 全部拿到可播地址 + 16 字节 CENC key**，普通与 `-race` 各跑一遍均 0 失败（p95 约 2.4s）；Go `gofmt -l .`/`go build`/`go vet`/`./core`/`./core/hgv5`/`-race ./core` 全绿；Flutter 全量 `199 passed / 1 skipped`（ffmpeg 环境跳过），`flutter analyze` 无 error。
 ### 0.8.31 · 51 站源适配整站改版 + Windows 播放页沉浸式 UI
 
 - **51 短剧整站改版，旧版入口全部失效**：`/rank/`、`/rank/week/`、`/rank/month/`、`/new-theater-category/`、`/play/<id>/1/` 一律 404，页面里的 Nuxt `__NUXT_DATA__` / devalue 也整体下线，目录、榜单、搜索、详情因此全取不到数据。

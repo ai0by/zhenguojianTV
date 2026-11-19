@@ -38,18 +38,22 @@ type Config struct {
 }
 
 type Downloader struct {
-	rankings               rankingCache
-	cfg                    Config
-	client                 *http.Client
-	huangdouDetails        map[string]huangdouDetailEntry
-	huangdouDetailPending  map[string]*huangdouDetailCall
-	huangdouVIPProbes      map[string]huangdouVIPProbe
-	providerMu             sync.Mutex
-	providerHosts          map[string]string
-	limiter                *requestLimiter
-	proxyRouter            *proxyRouter
-	hongguoOnce            sync.Once
-	hongguo                *hongguoAppClient
+	rankings              rankingCache
+	cfg                   Config
+	client                *http.Client
+	huangdouDetails       map[string]huangdouDetailEntry
+	huangdouDetailPending map[string]*huangdouDetailCall
+	huangdouVIPProbes     map[string]huangdouVIPProbe
+	providerMu            sync.Mutex
+	providerHosts         map[string]string
+	limiter               *requestLimiter
+	proxyRouter           *proxyRouter
+	hongguoOnce           sync.Once
+	hongguo               *hongguoAppClient
+	// disableHongguoV5 只给单测用：fixture transport 拦截了 v4 路由，v5 请求
+	// 会误命中同一批 mock 响应，破坏针对 v4 的重试 / 签名断言。生产零值为 false，
+	// 即默认走 v5。
+	disableHongguoV5       bool
 	huangjuOnce            sync.Once
 	huangju                *huangjuAPIClient
 	soraniOnce             sync.Once
