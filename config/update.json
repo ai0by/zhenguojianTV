@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.31",
-    "build": 113,
-    "tag": "v0.8.31",
-    "notes": "0.8.31 · 51 站源适配整站改版 + Windows 播放页沉浸式 UI",
+    "version": "0.8.32",
+    "build": 114,
+    "tag": "v0.8.32",
+    "notes": "0.8.32 · 红果 v5 取流协议重建 + 已下载剧集离线可播",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.31+113-all.apk",
-        "size": 73060400,
-        "sha256": "8c726ec5fdb8717114142344ff65cdd8b2b8aefbf5a7beabe43d3812a6faed87"
+        "name": "zhenguojianTV-0.8.32+114-all.apk",
+        "size": 73140420,
+        "sha256": "54295c2d6eda3af2f9947d51f4db4d592418aa5e4864eae0a9867bc9263420db"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.31+113-arm64-v8a.apk",
-        "size": 33163781,
-        "sha256": "e0d438676f543fccc1a371267082cd4eff40652e61003c6b4708d828da964e20"
+        "name": "zhenguojianTV-0.8.32+114-arm64-v8a.apk",
+        "size": 33199580,
+        "sha256": "d3e1c55fc96fc37af8260e6d4d1b65005a6ee22e51282a39865b25d46442cd49"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.31+113-armeabi-v7a.apk",
-        "size": 41717082,
-        "sha256": "51a5e5f160d1c7ea9749fb4487a32632c5d9249fe5fe37a8066970f2d9c82654"
+        "name": "zhenguojianTV-0.8.32+114-armeabi-v7a.apk",
+        "size": 41761294,
+        "sha256": "f4a01e091a1857bfe7dccd3f29d126edaa1e42855a98728e2dc0cc99d1041f80"
       }
     ]
   },
