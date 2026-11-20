@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 export 'app_build.dart';
 
-const appVersion = '0.8.32';
+const appVersion = '0.8.33';
 
 ThemeData televisionTheme(ThemeData theme) {
   final colors = theme.colorScheme;

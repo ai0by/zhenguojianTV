@@ -152,8 +152,18 @@ func (downloader *Downloader) hongguoV5FetchModel(ctx context.Context, videoID s
 			continue
 		}
 		if len(content) == 0 {
+			// 2026-11-20 服务端对 v5 POST 静默返回空正文。恢复路径（jackotom 7.7）：
+			// 用同一身份改发 video_tab bodyless GET（v5 播放器签名），实测可拿到
+			// 完整 video_model。GET 也空才换新设备进入下一轮。
 			lastErr = errHongguoAppEmptyModel
-			continue // 设备被用过 → 下一轮换新设备重签
+			if recovered, tabErr := downloader.hongguoV5VideoTabRecover(fetchCtx, identity, videoID); tabErr == nil && len(recovered) > 0 {
+				content = recovered
+			} else {
+				if tabErr != nil {
+					lastErr = fmt.Errorf("%w（video_tab 恢复失败：%v）", errHongguoAppEmptyModel, tabErr)
+				}
+				continue // 两条路由都空 → 下一轮换新设备重签
+			}
 		}
 		if len(content) > v5ModelMaxBodySize {
 			lastErr = errors.New("红果 v5 取流返回数据过大")
@@ -186,6 +196,58 @@ func (downloader *Downloader) hongguoV5FetchModel(ctx context.Context, videoID s
 		return nil, errHongguoAppEmptyModel
 	}
 	return nil, lastErr
+}
+
+// hongguoV5VideoTabRecover 在 v5 POST 返回空正文时，用同一身份改发
+// video_tab bodyless GET（v5 播放器签名）恢复取流。
+//
+// 2026-11-20 上游对 v5 POST 静默返回 200+0；开源 jackotom/hongguo-drama 7.7
+// （commit 92df757）确认 video_tab 同属 player 签名族，改用 v5 无正文 GET 签名
+// 后恢复。本方法逐字节对齐其 videoTabRequest，已用真网探针验证拿到非空 model。
+// 返回原始响应体，交给与 POST 相同的解析链处理。
+func (downloader *Downloader) hongguoV5VideoTabRecover(ctx context.Context, identity hgv5.Identity, videoID string) ([]byte, error) {
+	tabCtx, cancel := context.WithTimeout(ctx, v5RequestTimeout)
+	defer cancel()
+	tabURL, headers, err := hgv5.SignVideoTabGET(identity, videoID, time.Now().UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(tabCtx, http.MethodGet, tabURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("User-Agent", hgv5.VideoTabUserAgent())
+	req.Header.Set("Accept", "application/json")
+
+	resp, derr := downloader.doPreparedCatalogRequest(req, v5RequestTimeout, nil)
+	if derr != nil {
+		var backoff *requestBackoff
+		if errors.As(derr, &backoff) && downloader.limiter != nil {
+			downloader.limiter.clearBackoff(backoff.host)
+			resp, derr = downloader.doPreparedCatalogRequest(req, v5RequestTimeout, nil)
+		}
+		if derr != nil {
+			return nil, derr
+		}
+	}
+	content, readErr := io.ReadAll(io.LimitReader(resp.Body, v5ModelMaxBodySize+1))
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("红果 video_tab 恢复 HTTP %d", resp.StatusCode)
+	}
+	if len(content) == 0 {
+		return nil, errHongguoAppEmptyModel
+	}
+	if len(content) > v5ModelMaxBodySize {
+		return nil, errors.New("红果 video_tab 恢复返回数据过大")
+	}
+	return content, nil
 }
 
 // hongguoV5PlaybackModel 走完 v5 取流并返回 video_model；失败原因直接上抛，

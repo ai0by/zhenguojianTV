@@ -6,6 +6,13 @@
 
 ---
 
+### 0.8.33 · 红果 v5 取流空响应恢复（video_tab 无正文 GET）
+
+- **11-20 红果再次整体失效，先排除签名算法再定位到服务端封了 POST 取流**：生产链路、hgv5 直连、清代理直连全部 `HTTP 200 + 0 字节`，注册 200 正常。用 Docker 跑 `openhongguo-signer`（真机 `libmetasec_ml.so` 签名）与内置 Go 签名做 A/B 对照——两条路都失败，说明不是我们签名算法有 bug；再换 host（`sinonlineb`）、换设备指纹（Redmi/Android 16）、改 `x-xs-from-web` 也全失败，客户端可控变量彻底穷尽。上游 issue #15 作者同样确认「又被官方封了」。
+- **突破口：`video_tab` 同属播放器签名族，改用 v5 无正文 GET 签名即可恢复**。参考 11-20 开源 `jackotom/hongguo-drama` v7.7（commit `92df757`）：上游对 v5 取流 POST 静默返回空正文，但 `video_tab`（`api5-normal-sinfonlineb.fqnovel.com` 上的 `/reading/bookapi/video_tab/multi_video_model/v1/`）改用 v5 bodyless GET 签名后能拿到完整播放模型。关键点：body 摘要按 `md5(空)` 计算（不是全零），只带 `X-Khronos`/`X-Helios`/`X-Medusa`，不发送 `Content-Type`/`Content-Encoding`/`x-ss-stub`/Argus/Ladon。两套开源签名实现（openhongguo 系与 drpys 系）在这一路由上验证完全兼容。
+- **修复只落在 v5 链路，v4 与下游零改动**：`hgv5` 新增 `VideoTabPairs`/`SignVideoTabGET`/`VideoTabUserAgent`；v5 POST 拿到空正文时先用同一身份改发 `video_tab` GET 恢复，GET 也空才换新设备重签重发。拿到的原始响应继续喂给既有解析器，spade 解密、CENC key 派生、试看探测、短缓存、singleflight 全部沿用。新增离线签名结构测试与真网探针（build tag 门控，不影响普通构建）。
+- **验证**：先用开源 JS 源码真网拿到播放 URL，再用 Go 签名原语签同款 GET 一次命中 `21851` 字节 `video_model`；生产 Downloader 入口真网 1.04s 出片、CENC key 正确；**并发 100 个真实剧集 ID 100/100 全部成功**（p50 1.0s、p95 1.56s，0 失败）；Go `gofmt -l .`/`go build`/`go vet`/`go test`/`-race` 全绿，Flutter 全量 `199 passed / 1 skipped`。
+
 ### 0.8.32 · 红果 v5 取流协议重建 + 已下载剧集离线可播
 
 - **红果取流整体失效的根因是上游协议升级，不是网络或出口 IP**：约 11-16 上游把取流从 v4（播放器签名 `X-Gorgon`/`X-Argus`/`X-Ladon`）整体切到 v5，新接口 `POST /novel/player/multi_video_model/player/v1`（`api5-normal-sinfonlinea.fqnovel.com`），新签名 `X-Khronos`/`X-Helios`/`X-Medusa`，版本升到 `7.4.3.32`。本机与 CI 海外出口双端验证：v4 全部 `200 + 0 字节`，目录/注册正常，确认是协议层问题；0.8.31 的红果因此完全不可播。

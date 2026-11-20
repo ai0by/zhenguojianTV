@@ -390,3 +390,53 @@ func SignRequest(id Identity, pairs [][2]string, body []byte, nowMillis int64) (
 	}
 	return query, headers, nil
 }
+
+// VideoTabHost 是 video_tab 恢复路由所在的 host。与取流主路由 sinonlinea 不同，
+// 该路由在 sinonlineb 上（与 jackotom/hongguo-drama 7.7 一致，2026-11-20 真网验证）。
+const VideoTabHost = "api5-normal-sinfonlineb.fqnovel.com"
+
+// VideoTabPath 是 v5 取流空响应后的恢复路由：bodyless GET。
+const VideoTabPath = "/reading/bookapi/video_tab/multi_video_model/v1/"
+
+// VideoTabPairs 构造 video_tab GET 的 query 参数，顺序参与签名，不可重排。
+// 该路由属于播放器签名族，参数集与 POST 取流不同（jackotom 7.7 / drpys）。
+func VideoTabPairs(id Identity, videoID string) [][2]string {
+	return [][2]string{
+		{"aid", AID}, {"app_name", AppName}, {"version_code", V5VersionCode}, {"version_name", V5VersionName},
+		{"channel", "vivo_8662_64"}, {"device_platform", DevicePlatform}, {"device_type", "PGT-AN10"},
+		{"os_version", "12"}, {"update_version_code", V5VersionCode},
+		{"iid", id.InstallID}, {"cdid", id.CDID}, {"device_id", id.DeviceID},
+		{"video_id", videoID}, {"video_id_type", "0"}, {"device_level", "1"},
+		{"need_all_video_definition", "1"}, {"need_mp4_align", "0"}, {"use_os_player", "0"},
+		{"video_platform", "1024"}, {"source", "0"}, {"from_video_id", ""},
+		{"_rticket", ""},
+	}
+}
+
+// SignVideoTabGET 对 video_tab bodyless GET 签名，返回完整 URL 与需要设置的 header。
+//
+// 关键差异（2026-11-20 服务端封禁后的恢复路径）：
+//   - body 传空切片（非 nil）→ 签名按 md5(空) 计算，与客户端行为一致；
+//   - 删除 Content-Type / x-ss-stub 等仅适用于带 body 请求的头；
+//   - 保留 X-Khronos / X-Helios / X-Medusa（播放器签名族）。
+//
+// 上游证据：jackotom/hongguo-drama commit 92df757 (7.7) docs/issue-130-video-tab.md；
+// 本实现已用 core/hgv5 的真网探针（TestProbeVideoTabGET）验证拿到非空 video_model。
+func SignVideoTabGET(id Identity, videoID string, nowMillis int64) (string, map[string]string, error) {
+	pairs := VideoTabPairs(id, videoID)
+	// 空 body（非 nil）：让 md5Raw 计算 md5(空)，签名才正确。
+	query, headers, err := SignRequest(id, pairs, []byte{}, nowMillis)
+	if err != nil {
+		return "", nil, err
+	}
+	// bodyless GET 不发送任何 body 专有头。
+	delete(headers, "Content-Type")
+	delete(headers, "x-ss-stub")
+	return "https://" + VideoTabHost + VideoTabPath + "?" + query, headers, nil
+}
+
+// VideoTabUserAgent 是 video_tab 恢复请求使用的客户端 UA（7.3.9.32 版本串 +
+// Android 16 机型），与 7.7 真网验证用的 UA 一致。
+func VideoTabUserAgent() string {
+	return "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+}
