@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.32",
-    "build": 114,
-    "tag": "v0.8.32",
-    "notes": "0.8.32 · 红果 v5 取流协议重建 + 已下载剧集离线可播",
+    "version": "0.8.33",
+    "build": 115,
+    "tag": "v0.8.33",
+    "notes": "0.8.33 · 红果 v5 取流空响应恢复（video_tab 无正文 GET）",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.32+114-all.apk",
-        "size": 73140420,
-        "sha256": "54295c2d6eda3af2f9947d51f4db4d592418aa5e4864eae0a9867bc9263420db"
+        "name": "zhenguojianTV-0.8.33+115-all.apk",
+        "size": 73144260,
+        "sha256": "5edf61e572f4379309dc8c1a8afa8fd89a92d8195372c481815017817855fd88"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.32+114-arm64-v8a.apk",
-        "size": 33199580,
-        "sha256": "d3e1c55fc96fc37af8260e6d4d1b65005a6ee22e51282a39865b25d46442cd49"
+        "name": "zhenguojianTV-0.8.33+115-arm64-v8a.apk",
+        "size": 33201320,
+        "sha256": "6993cd2939d6d0f29cbd8cc62dec2a6e53c56da55a3f43334c9f8c25635bbe39"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.32+114-armeabi-v7a.apk",
-        "size": 41761294,
-        "sha256": "f4a01e091a1857bfe7dccd3f29d126edaa1e42855a98728e2dc0cc99d1041f80"
+        "name": "zhenguojianTV-0.8.33+115-armeabi-v7a.apk",
+        "size": 41763388,
+        "sha256": "3f491ad0d3bf1bec243d255f47e6e0b1077dc70d4f9f37dee8402ab2d3b457fd"
       }
     ]
   },
