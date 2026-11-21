@@ -1,0 +1,98 @@
+{
+  "algorithm": "aes-256-gcm",
+  "digest": "2bde97c4624f6c29ff09207f9da0fffb7e371a6390eee1220f845c711f6d3279",
+  "generatedAt": "2026-11-21T07:27:26Z",
+  "sources": {
+    "51duanju": {
+      "count": 4097,
+      "file": "sources/51duanju.json.enc",
+      "sha256": "a307365a76d4b58b9834740e91bc14ef5e532e96b9edb59d828fe09c74863821"
+    },
+    "cloudfront": {
+      "count": 427,
+      "file": "sources/cloudfront.json.enc",
+      "sha256": "21769a9b87717f29db4b5d3184595d92635679f577680a1ef8fffebc259e7e93"
+    },
+    "ezdmw": {
+      "count": 1385,
+      "file": "sources/ezdmw.json.enc",
+      "sha256": "0b21c016fc36d956409c246d79be82b22f3d66c08a7fbfce79c4aaa083e8eb11"
+    },
+    "faguo": {
+      "count": 42,
+      "file": "sources/faguo.json.enc",
+      "sha256": "d2239e4f7a01a5a735b6fe266290758dd7021477242ce7fd7e49a6b0ee59950e",
+      "truncated": false
+    },
+    "hema": {
+      "count": 17321,
+      "file": "sources/hema.json.enc",
+      "sha256": "9f194ae8faeca69526a03eb2b7e45c518d99cb2f5077acbe90481571ce7fc5dc"
+    },
+    "hongguo": {
+      "count": 6024,
+      "file": "sources/hongguo.json.enc",
+      "sha256": "e5cb2df1d98f42c72f4fa169b2fe6113795d71c0cd077c442fa039eb7b7d991c"
+    },
+    "huaguo": {
+      "count": 53983,
+      "file": "sources/huaguo.json.enc",
+      "sha256": "1b5137e7e54dcc4f865797237ac986daeedfe4942a250746f7a1da54718bfae5",
+      "truncated": true
+    },
+    "huangdou": {
+      "count": 4878,
+      "file": "sources/huangdou.json.enc",
+      "sha256": "cc383eb0fdb3e80b1182a775be6b7cb169d6599dc1cf838ed0db0ef96e1b0c15"
+    },
+    "huangguo-video": {
+      "count": 2137,
+      "file": "sources/huangguo-video.json.enc",
+      "sha256": "745c0723408bdc05c495278867a35a0fda4c9f5da5f6de7ed571c352f3692160"
+    },
+    "huangguoai": {
+      "count": 3350,
+      "file": "sources/huangguoai.json.enc",
+      "sha256": "f3a6c717342658448c60d8a821fe82784b9187059ffad3a883806f26987a1ea3"
+    },
+    "huangju": {
+      "count": 4239,
+      "file": "sources/huangju.json.enc",
+      "sha256": "268485ed46f93719d4ed999c847666223be7e71f25e8d67d16feb3b49e86f897"
+    },
+    "jcydm": {
+      "count": 54,
+      "file": "sources/jcydm.json.enc",
+      "sha256": "dd0c276e62fff833f3a09b062c02e97eb355ae4b91c8222f3738b240b81f9d2d",
+      "truncated": false
+    },
+    "mxdm": {
+      "count": 8929,
+      "file": "sources/mxdm.json.enc",
+      "sha256": "370408554d3f600de4de36619fdd3a89018a9685a58bbf5af3d9d8022c997552"
+    },
+    "sorani": {
+      "count": 4763,
+      "file": "sources/sorani.json.enc",
+      "sha256": "b97c6ca23bc886fd53c31c3924f5b0728d5452c94a5eaa4cafe5a1995cc4cfb9"
+    },
+    "wangguo": {
+      "count": 50794,
+      "file": "sources/wangguo.json.enc",
+      "sha256": "65dc4a0181ca77a411f6b3158c9d1805f052d71d3810de43ee6ec50aa02ac935",
+      "truncated": false
+    },
+    "wuguo": {
+      "count": 38582,
+      "file": "sources/wuguo.json.enc",
+      "sha256": "5c9ff5f05f2ff738e658b0d017b906566792c9d1c0a124e902b8d49c186c48c5",
+      "truncated": false
+    },
+    "yeguo": {
+      "count": 1377,
+      "file": "sources/yeguo.json.enc",
+      "sha256": "2229d6e89b1a14b80c49bf8be2bb65ebcbb9986829f0191d6ae2a5efc5cfd1ff"
+    }
+  },
+  "version": 1
+}
