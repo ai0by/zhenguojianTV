@@ -19,7 +19,16 @@ type providerMedia struct {
 	CENCKey     []byte
 	Quality     int
 	Variants    []providerMedia
+	// SourceKind 标记取流通道（仅红果使用）："app" = App 接口（可能 CENC 加密），
+	// "web" = 官网网页播放器公开片源（明文 H.264 360P）。空值表示非红果或旧路径。
+	// 前端据此区分来源，与画质无关（同一集可以同时有 app 与 web 两条线路）。
+	SourceKind string
 }
+
+const (
+	hongguoSourceApp = "app"
+	hongguoSourceWeb = "web"
+)
 
 func (d *Downloader) providerBaseURL(source string) string {
 	source = canonicalProviderSource(source)

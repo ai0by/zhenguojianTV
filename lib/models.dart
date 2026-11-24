@@ -459,6 +459,7 @@ class PlaybackPlan {
     this.routeCount = 1,
     this.local = false,
     this.danmakuId = '',
+    this.source = '',
   });
   final String url;
   final Map<String, String> headers;
@@ -475,6 +476,10 @@ class PlaybackPlan {
   /// 弹幕（0.8.11）：只有红果会返回这个 id，其余站源为空字符串。
   /// 为空表示本集没有弹幕可看，播放器据此隐藏弹幕开关。
   final String danmakuId;
+
+  /// 取流通道（11-23）：红果 "app" = App 接口（可能加密高清），
+  /// "web" = 官网网页公开片源（明文 360P）。其余站源为空。前端据此区分来源。
+  final String source;
   bool get hasAlternative => session.isNotEmpty && routeIndex + 1 < routeCount;
   bool get supportsDanmaku => !local && session.isNotEmpty && danmakuId.isNotEmpty;
   factory PlaybackPlan.fromJson(Map<String, dynamic> json) => PlaybackPlan(
@@ -495,6 +500,7 @@ class PlaybackPlan {
         ? intValue(json['routeCount'])
         : 1,
     danmakuId: json['danmakuId'] as String? ?? '',
+    source: json['source'] as String? ?? '',
   );
 }
 

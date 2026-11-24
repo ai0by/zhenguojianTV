@@ -4484,7 +4484,11 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
 
   String get _qualityLabel {
     if (_plan?.local == true) return '本地原画';
-    return _quality == 0 ? '自动' : '${_quality}P';
+    final quality = _quality == 0 ? '自动' : '${_quality}P';
+    // 11-23：网页公开片源通道单独标识，便于用户与 App 高清线路区分。
+    // App 通道保持原标签不变，避免影响既有布局。
+    if (_plan?.source == 'web') return '$quality·网页';
+    return quality;
   }
 
   /// 剧名最大字数（**含省略号本身**）。

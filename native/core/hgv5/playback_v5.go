@@ -116,7 +116,7 @@ func (s *PlaybackV5Signer) medusa(query string, queryHash [32]byte, bodyMD5 [16]
 		protoString(7, version), protoString(8, "v04.10.03-ml-android"), protoSInt(9, 0x040a0300),
 		protoBytes(10, flags), protoSInt(12, int64(ts)), protoBytes(13, digest), protoBytes(14, queryHash[:6]),
 		protoBytes(15, concat(protoSInt(1, 1), protoSInt(2, 1), protoSInt(3, 1), protoSInt(5, 1))),
-		protoSInt(17, int64(ts)), protoString(20, "none"), protoSInt(21, 377), protoBytes(23, env),
+		protoSInt(17, int64(ts)), protoString(20, "none"), protoSInt(21, 312), protoBytes(23, env),
 		protoString(24, "{\"cmr\":16777216,\"cmr2\":16777216,\"un_h\":11,\"vpn\":0,\"kd\":0,\"dyn\":\"\",\"do\":1,\"tk\":true}"),
 	)
 	hash, mask := keyHash(playbackV5SignKey, entropy.Random)

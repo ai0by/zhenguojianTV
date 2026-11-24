@@ -177,6 +177,8 @@ type nativePlan struct {
 	RouteCount      int               `json:"routeCount"`
 	// 弹幕（0.8.11）：只有红果能给出这个 id，其余站源为空，前端据此隐藏弹幕入口。
 	DanmakuID string `json:"danmakuId,omitempty"`
+	// Source 标记取流通道（仅红果）："app" / "web"，前端据此在界面上区分来源。
+	Source string `json:"source,omitempty"`
 }
 
 type nativeEngine struct {

@@ -334,6 +334,10 @@ func (downloader *Downloader) verifyHongguoAppMedia(ctx context.Context, media p
 			// 探测不出来 → 当作可信，放行（见上面的说明）。
 			chosen := candidate
 			chosen.Variants = media.Variants
+			chosen.SourceKind = hongguoSourceApp
+			for i := range chosen.Variants {
+				chosen.Variants[i].SourceKind = hongguoSourceApp
+			}
 			return chosen, nil
 		}
 		if !hongguoLooksLikePreview(duration) {
@@ -341,6 +345,11 @@ func (downloader *Downloader) verifyHongguoAppMedia(ctx context.Context, media p
 			// 用实测时长覆盖元数据：进度条 / 自动下一集都更准。
 			chosen.Duration = duration
 			chosen.Variants = media.Variants
+			// 标记 App 取流通道（含所有画质档），前端据此与网页片源区分。
+			chosen.SourceKind = hongguoSourceApp
+			for i := range chosen.Variants {
+				chosen.Variants[i].SourceKind = hongguoSourceApp
+			}
 			return chosen, nil
 		}
 		if shortest == 0 || duration < shortest {

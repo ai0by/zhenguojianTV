@@ -77,7 +77,7 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 		URL: media.URL, Headers: map[string]string{"User-Agent": userAgent, "Referer": media.Referer},
 		Key: hex.EncodeToString(media.CENCKey), Quality: media.Quality, Qualities: choice.qualities,
 		RouteIndex: choice.index, RouteCount: len(choice.media), Session: hex.EncodeToString(tokenBytes),
-		DanmakuID: choice.danmakuVideo,
+		DanmakuID: choice.danmakuVideo, Source: media.SourceKind,
 	}
 	if media.credentials != nil && !media.credentials.expires.IsZero() {
 		if !time.Now().Before(media.credentials.expires) {

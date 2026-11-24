@@ -200,54 +200,74 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if !hongguoNumericID.MatchString(videoID) || !hongguoNumericID.MatchString(seriesID) {
 		return providerMedia{}, fmt.Errorf("红果章节 ID 无效，请重新获取章节")
 	}
+
+	// 2026-11-23：App 取流与官网网页公开片源是两条**独立并列**的通道，二者
+	// 均可用。网页通道只请求一次公开接口（~200ms），与较慢的 App 链路并行，
+	// 不互相等待：App 成功就把网页片源作为备选线路附上，App 失败就用网页顶上。
+	// 网页通道用独立 ctx，避免 App 链路的预算/cancel 把它一起掐掉；但仍受父
+	// ctx 约束（用户切集/退出即停）。
+	webCtx, webCancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer webCancel()
+	// 继承播放优先级，避免网页通道被后台目录/弹幕请求排队拖慢首播。
+	webCtx = withPlaybackPriority(webCtx)
+	type webResult struct {
+		media providerMedia
+		err   error
+	}
+	webCh := make(chan webResult, 1)
+	go func() {
+		media, err := d.resolveHongguoWebFallbackMedia(webCtx, videoID)
+		webCh <- webResult{media: media, err: err}
+	}()
+
 	media, nativeErr := d.resolveHongguoAppMedia(ctx, videoID)
+	web := <-webCh
+	webOK := web.err == nil && ctx.Err() == nil
+	if webOK {
+		web.media.SourceKind = hongguoSourceWeb
+	}
+
 	if nativeErr == nil {
+		// App 成功：主线路是 App（高清/加密），网页片源作为备选线路附上，
+		// 前端可在两条线路间切换（`source` 字段区分 app/web）。
+		if webOK {
+			media.SourceKind = hongguoSourceApp
+			for i := range media.Variants {
+				media.Variants[i].SourceKind = hongguoSourceApp
+			}
+			media.Variants = append(media.Variants, web.media)
+		}
 		return media, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
-	// 设备没注册成功时，取流必然空正文，公开片源与网页链路也只会给 10 秒预告
-	// （会被时长校验拒掉），继续往下试只是白等两个网络往返。但注册抖动本身
-	// 是暂态（0.8.27 复测里出现过一次把 3s 预算吃光的抖动），旧代码把它当
-	// 硬失败短路、不包 errNativeMediaTransient，前端因此永不自动重试，一次
-	// 抖动就让整集判死。这里保留"直指根因 + 请检查网络后重试"的语义，但包
-	// 一层 transient（media_transient），让前端静默再试一次。
+
+	// App 失败：优先用网页完整片源顶上。这条通道 2026-11-23 起是 App 全链路
+	// 空响应时唯一能拿到完整正片的路（实测 88~99 秒、360P 明文 H.264）。
+	if webOK {
+		return web.media, nil
+	}
+
+	// 两条通道都没拿到。保留原有的 transient 语义让前端自动重试一次：
+	// App 空响应 / 设备注册抖动都是上游间歇性风控，用户点重试常立刻恢复。
 	if errors.Is(nativeErr, errHongguoDeviceUnregistered) {
 		return providerMedia{}, fmt.Errorf("%w：%v，请检查网络后重试", errNativeMediaTransient, nativeErr)
 	}
-	// 0.8.16 第四批：App 链路换设备重注册后仍然空正文，也直接短路。
-	//
-	// 公开片源对游客固定只给 10 秒预告（且第 4 集起 404），网页播放页同样
-	// 只有预告 —— 再试这两条路必然是"多等两三个网络往返，然后报一个更长
-	// 的错误"。实测网页侧没有隐藏的取流接口，所以这里没有损失可捡。
 	if errors.Is(nativeErr, errHongguoAppEmptyModel) {
-		// 0.8.22：包一层 `errNativeMediaTransient`，让前端知道"这次值得再试
-		// 一遍"。用户实测点重试立刻就好，说明它本来就是瞬时的 —— 与其把
-		// 错误亮出来让用户点，不如让前端自己静默重来一次。
 		return providerMedia{}, fmt.Errorf("%w：红果暂时取不到这一集的片源（%v）",
 			errNativeMediaTransient, nativeErr)
 	}
-	media, publicErr := d.resolveHongguoPublicMedia(ctx, videoID)
-	if publicErr == nil {
-		return media, nil
+	// 最后再试已废弃的两条旧网页链路（正常只会给 10 秒预告，被时长校验拒掉），
+	// 保留是为了兼容站点偶尔放开某部剧的情况。
+	if publicMedia, publicErr := d.resolveHongguoPublicMedia(ctx, videoID); publicErr == nil {
+		return publicMedia, nil
+	} else if pageMedia, pageErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID); pageErr == nil {
+		return pageMedia, nil
 	}
-	if err := ctx.Err(); err != nil {
-		return providerMedia{}, err
-	}
-	media, pageErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
-	if pageErr == nil {
-		return media, nil
-	}
-	// 原先这里还有一级第三方解析（djapi.999888456.xyz）。实测该接口
-	// 解密后固定返回 {"parse":0,"url":""}，多剧多轮均无地址，已移除，
-	// 避免用户等待一个必然失败的请求。
-	//
-	// 0.8.14：三条链路都失败时把各级原因摊开。App 链路是主链路，它失败
-	// 通常是设备注册没成功或该集确实没有地址。
 	return providerMedia{}, fmt.Errorf(
-		"红果取不到该集播放地址（App：%v；公开片源：%v；网页：%v）",
-		publicError(nativeErr), publicError(publicErr), pageErr)
+		"红果取不到该集播放地址（App：%v；网页公开片源：%v）",
+		publicError(nativeErr), publicError(web.err))
 }
 
 // resolveHongguoPublicMedia 使用红果网页播放器同款的公开片源。

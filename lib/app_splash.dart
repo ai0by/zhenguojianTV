@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_layout.dart';
+import 'tv_splash.dart';
 import 'windows_splash.dart';
 
 /// 开屏页（启动画面）。
@@ -135,7 +136,7 @@ class _AppSplashState extends State<AppSplash> {
                 setState(() => _visible = false);
               },
               child: _SplashSurface(
-                landscape: landscapeSplash(AppLayout.isTelevision(context)),
+                television: AppLayout.isTelevision(context),
               ),
             ),
           ),
@@ -144,11 +145,11 @@ class _AppSplashState extends State<AppSplash> {
   }
 }
 
-/// 开屏图该用横版还是竖版。
+/// 开屏位图该用横版还是竖版（仅手机等走成品位图的平台需要）。
 ///
-/// 电视用横版；**Windows 桌面版也用横版** —— 桌面窗口是横的（最小 980×620），
-/// 把 1080×1920 的竖版图 `BoxFit.cover` 进来只会露出中间一条，上下全被裁掉。
-/// 手机竖屏继续用竖版，与 0.8.11 以来的行为一致。
+/// 0.8.34 起 TV 与 Windows 都改走各自的满屏自绘开屏，不再用成品位图，
+/// 所以这里只判断桌面平台兜底；TV 传 false 即可。真正的横竖图选择现在
+/// 只在手机分支用到（恒竖版）。保留函数是为了兼容既有调用与测试语义。
 bool landscapeSplash(bool television) =>
     television ||
     (!kIsWeb &&
@@ -179,11 +180,12 @@ bool get windowsCinematicSplash =>
 /// 三处防闪措施（这里预解码、`_SplashSurface` 垫色、Android 12+ 的
 /// values-v31 纯色启动画面）继续保留。
 Future<void> precacheSplashImage(bool television) async {
-  // Windows 动画开屏只用到 logo.jpg（胶片带 / 光晕是 CustomPaint 自绘），
+  // Windows 动画开屏和 TV 自绘开屏都只用 logo.jpg（光晕 / 装饰是自绘），
   // 预载那张根本不会显示的 splash_tv.jpg 纯属浪费内存。
-  final asset = windowsCinematicSplash
+  final cinematic = windowsCinematicSplash || television;
+  final asset = cinematic
       ? 'assets/logo.jpg'
-      : landscapeSplash(television)
+      : landscapeSplash(false)
       ? 'assets/splash/splash_tv.jpg'
       : 'assets/splash/splash_phone.jpg';
   final provider = AssetImage(asset);
@@ -211,10 +213,10 @@ Future<void> precacheSplashImage(bool television) async {
 ///
 /// 图上不再有任何品牌块 / 文字 / 花哨动效，避免和图片本身打架。
 class _SplashSurface extends StatelessWidget {
-  const _SplashSurface({required this.landscape});
+  const _SplashSurface({required this.television});
 
-  /// 该用横版还是竖版开屏图，见 [landscapeSplash]。
-  final bool landscape;
+  /// 是否电视模式。电视用满屏自绘开屏 [TvSplashSurface]，和深色首页无缝衔接。
+  final bool television;
 
   /// 与开屏图顶部主色一致（手机图取样 #FEF5F5，电视图 #FDF7F7）。
   ///
@@ -240,6 +242,9 @@ class _SplashSurface extends StatelessWidget {
   /// 用 LayoutBuilder 做了宽窄适配，横竖窗口都不会裁元素。
   @override
   Widget build(BuildContext context) {
+    // TV 与 Windows 都用满屏自绘开屏（深色底，衔接各自的深色主界面），
+    // 不再把浅色位图拉伸到电视大屏上。判据用 widget 树里的 television，
+    // 与 AppLayout 一致；Windows 仍按进程平台判据，互不干扰。
     if (windowsCinematicSplash) {
       return const AnnotatedRegion<SystemUiOverlayStyle>(
         value: SystemUiOverlayStyle(
@@ -250,6 +255,17 @@ class _SplashSurface extends StatelessWidget {
         child: WindowsSplashSurface(),
       );
     }
+    if (television) {
+      return const AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          statusBarBrightness: Brightness.dark,
+        ),
+        child: TvSplashSurface(),
+      );
+    }
+    final landscape = landscapeSplash(false);
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: _overlay,
       child: ColoredBox(

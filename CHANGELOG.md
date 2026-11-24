@@ -6,6 +6,14 @@
 
 ---
 
+### 0.8.34 · 红果取流根因修复 + TV 开屏重做 + 网页兜底通道
+
+- **11-23 红果"全路由 200+0"的真正根因是我方 v5 播放器签名用了过时的 Medusa `field21=377`，不是服务端 IP 级封禁。** 上一轮"正确签名 vs 篡改签名响应一致"的 A/B 对照存在盲点——两种签名都带着已失效的 377，服务端对错误签名一律静默返回空正文，导致误判成"出口 IP 信誉问题、客户端无解"。11-23 同一天 tsukiyo 0.1.38（`dcbda1f3`）与 N3urda 0.16.14（`ef328f3a`）两家独立逐字段定位到 `field21` 必须从 377 改成 312（zigzag 624）才能通过校验，`beilunyang/openhongguo` 0.4.1 也把 x-medusa 按真机形态重写印证该字段是校验点。修复只改一行：`native/core/hgv5/playback_v5.go` 的 v5 播放器签名 `protoSInt(21, 377)` → `312`（v5 主路由与 `video_tab` 恢复路由共用的签名器；通用签名 `medusa.go` 早就是 312，未动）。
+- **真网跨剧多集验证，付费后续集全部恢复 1080P**：随机取剧的后半段（网页通道只覆盖前 5 集，这些是付费集），走生产完整入口 `resolveHongguoAppMedia` 逐集取流——首轮《我叫刚子2》6/6 成功；扩大到跨 4 部剧（《我叫刚子2》《爱我老己》《离婚当天，婆婆为我撑腰》《霍先生的专属保姆，惊艳全家》）各取后半段 4 集共 **16/16 全部成功**，全部 1920 清晰度（1080P）、16 字节 CENC key、1~2.5 分钟完整时长、非试看。一行修复即完全恢复 App 高清取流，无需移植 SDK session / preload 等重方案。
+- **红果取流新增网页公开片源通道，与 App 通道并存**：采纳 jackotom 8.0 的官网 `fallback-play-info` 公开片源（仅前 5 集、360P 明文 H.264，付费集 403），作为独立 `source=web` 线路。App 与 Web 并行取流：App 成功时 Web 作为备选 Variant 附上（清晰度可切换、UI 标注"·网页"）；App 失败时 Web 顶上，二者都失败才报错。新增 URL 白名单安全闸（只允许 qznovelvod/fqnovelvod/douyinvod、强制 HTTPS、校验 `url_expire`、64KB 头部探测拒 10 秒预告）。明文片源无 CENC key，播放器天然可播，下载链路零改动。
+- **TV 开屏页重做，深色底直接衔接首页**：原 TV 开屏用浅色成品位图（#FEF5F5）`BoxFit.cover` 铺大屏——logo 显得小、构图被裁、淡出时从白跳到深色首页，且加载线只有 96×2 几乎看不见。新增 `lib/tv_splash.dart` 自绘开屏：深色底 + 品牌橙呼吸光晕、居中大 logo（200px）与应用名（64px）+ 标语、底部 340×4 流光加载条与"正在准备片库…"提示，进场错峰淡入上浮。仍只用位图 logo，不复刻 0.8.25 那套还原不准的矢量 Path。TV 走自绘、手机继续用成品位图，互不影响；`precacheSplashImage` 同步改为 TV/Windows 预载 logo.jpg。
+- **验证**：Go `build ./...`/`vet ./...`/`gofmt`/`go test`/`-race` 全绿；Flutter 全量 `201 passed / 1 skipped`（新增 TV 开屏 widget 测试 2 项），`flutter analyze` 无 error。
+
 ### 0.8.33 · 红果 v5 取流空响应恢复（video_tab 无正文 GET）
 
 - **11-20 红果再次整体失效，先排除签名算法再定位到服务端封了 POST 取流**：生产链路、hgv5 直连、清代理直连全部 `HTTP 200 + 0 字节`，注册 200 正常。用 Docker 跑 `openhongguo-signer`（真机 `libmetasec_ml.so` 签名）与内置 Go 签名做 A/B 对照——两条路都失败，说明不是我们签名算法有 bug；再换 host（`sinonlineb`）、换设备指纹（Redmi/Android 16）、改 `x-xs-from-web` 也全失败，客户端可控变量彻底穷尽。上游 issue #15 作者同样确认「又被官方封了」。
