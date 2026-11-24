@@ -2,28 +2,28 @@
   "version": 1,
   "ttlSeconds": 21600,
   "latest": {
-    "version": "0.8.33",
-    "build": 115,
-    "tag": "v0.8.33",
-    "notes": "0.8.33 · 红果 v5 取流空响应恢复（video_tab 无正文 GET）",
+    "version": "0.8.34",
+    "build": 116,
+    "tag": "v0.8.34",
+    "notes": "0.8.34 · 红果取流根因修复 + TV 开屏重做 + 网页兜底通道",
     "assets": [
       {
         "abi": "all",
-        "name": "zhenguojianTV-0.8.33+115-all.apk",
-        "size": 73144260,
-        "sha256": "5edf61e572f4379309dc8c1a8afa8fd89a92d8195372c481815017817855fd88"
+        "name": "zhenguojianTV-0.8.34+116-all.apk",
+        "size": 73159774,
+        "sha256": "b786ee0ff052730cb62d9e3cec6e4a607ab8eb3dd74b4f10c7ec27a10bbd6e05"
       },
       {
         "abi": "arm64-v8a",
-        "name": "zhenguojianTV-0.8.33+115-arm64-v8a.apk",
-        "size": 33201320,
-        "sha256": "6993cd2939d6d0f29cbd8cc62dec2a6e53c56da55a3f43334c9f8c25635bbe39"
+        "name": "zhenguojianTV-0.8.34+116-arm64-v8a.apk",
+        "size": 33208546,
+        "sha256": "b5f2ed5e1f6aa1cfacc711c96e641362090b4795fc2a2c0ce0dab38bde742295"
       },
       {
         "abi": "armeabi-v7a",
-        "name": "zhenguojianTV-0.8.33+115-armeabi-v7a.apk",
-        "size": 41763388,
-        "sha256": "3f491ad0d3bf1bec243d255f47e6e0b1077dc70d4f9f37dee8402ab2d3b457fd"
+        "name": "zhenguojianTV-0.8.34+116-armeabi-v7a.apk",
+        "size": 41771682,
+        "sha256": "f4e58109dbe5b8cf8e19e1450a6c365410604f845a2200d8e9067a2b9bdbdcda"
       }
     ]
   },
