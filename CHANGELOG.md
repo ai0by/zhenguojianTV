@@ -6,6 +6,15 @@
 
 ---
 
+### 0.8.35 · 红果取流恢复（完整 Medusa 画像）+ 签名结构级热更新
+
+- **11-25 红果再次整体失效，根因不是签名算法或常量，而是 x-medusa 明文结构太简。** magic / signKey / license / SDKCode / field21=312 全部没变，但服务端改成按官方 7.4.5.32 的完整设备画像校验：`flags` 必须是 `4480000000000000`（原来全零）、设备画像要带 7/8/9/10/11/14 与 **16–21 六个 fixed32 零**、23/24/26/27/28/29/33/35/36/38，env 要带 1/2(247235599)/3(247235596)/5/7/13，`field15` 从 `1,1,1,1` 换成 `305,4,694367,1621072674`，并新增 `field16` 进程 nonce（`"A"+base64url(18B)` 截 25 字符）。缺任何一项都回 `HTTP 200 + 0 字节`，且不区分签名对错——所以此前反复调常量、换主机、换档位全部无效。
+- **唯一给出完整结构的开源实现是 `h2cker/hongguo-pwa` 的 `4b644a2c`（11-25 09:19 北京时间），按它逐字节复刻后一次打通**：`video_tab` 三个 host 全部返回 22KB 正常模型；5 档里 360–720P 是 `bytevc2`（无解码器、不可播），**1080P 是 `bytevc1`** 1920×1080 / 10MB / cenc-aes-ctr；抓前 512KB 确认 `hvcC`/`frma`/`hvc1`/`encv`/`senc`/`tenc` 齐全、无 bvc2。生产入口真网取流 **1.1–1.2 秒出片**，带完整 CENC key。`player/v1` POST 仍返回空，只有 `video_tab` GET 通，因此取流恢复统一走已有的 `hongguoV5VideoTabRecover`。
+- **`video_tab` 参数集从 22 项扩到 39 项**，新增 `ssmix`、`resolution`、`dpi`、`device_brand`、`language`、`os_api`、`ac`、`host_abi`、`dragon_device_type`、`pv_player`、`compliance_status`、`need_personal_recommend`、`player_so_load`、`is_android_pad_screen`、`rom_version`、`klink_egdi`；注册后补打一次 `app_alert_check` 完成设备激活，并从注册响应提取 `klink_egdi` 随取流下发。
+- **新增签名「结构级」热更新：以后上游改 medusa 字段不用再发版。** 把 medusa 明文的字段序列抽成可远程下发的声明式规格 `envelopeSpec`（每个字段只声明 tag + 一个值来源：常量/query/进程量/消息量/嵌套），远程 `config/hongguo-signing.json` 里加 `envelope:"custom"` + `envelopeSpec` 即可改结构、改 flags、加字段。内置的 official 规格与硬编码实现逐字节等价（有测试保证），渲染失败自动回退内置档，不会产出坏签名。
+- **热更新源改为多路回退 + 设置页可手动检查。** 拉取顺序 jsDelivr → Fastly jsDelivr → gcore jsDelivr → GitHub raw，国内与 TV 网络环境至少一条通；「设置 → 红果取源签名」可看到当前档名/field21/device_level/拉取来源与检查时间，并一键「立即检查」——**手机与 TV 同一入口，拉取成功后立即生效，无需重启、无需升级 App**。
+- **验证**：Go `build`/`vet`/`gofmt`/`go test`/`-race` 全绿（新增 envelope 规格 3 项测试，含「声明式规格与硬编码逐字节一致」断言）；Flutter 全量 `205 passed / 1 skipped`，`flutter analyze` 无 error；生产入口真网取流连跑三次均成功。
+
 ### 0.8.34 · 红果取流根因修复 + TV 开屏重做 + 网页兜底通道
 
 - **11-23 红果"全路由 200+0"的真正根因是我方 v5 播放器签名用了过时的 Medusa `field21=377`，不是服务端 IP 级封禁。** 上一轮"正确签名 vs 篡改签名响应一致"的 A/B 对照存在盲点——两种签名都带着已失效的 377，服务端对错误签名一律静默返回空正文，导致误判成"出口 IP 信誉问题、客户端无解"。11-23 同一天 tsukiyo 0.1.38（`dcbda1f3`）与 N3urda 0.16.14（`ef328f3a`）两家独立逐字段定位到 `field21` 必须从 377 改成 312（zigzag 624）才能通过校验，`beilunyang/openhongguo` 0.4.1 也把 x-medusa 按真机形态重写印证该字段是校验点。修复只改一行：`native/core/hgv5/playback_v5.go` 的 v5 播放器签名 `protoSInt(21, 377)` → `312`（v5 主路由与 `video_tab` 恢复路由共用的签名器；通用签名 `medusa.go` 早就是 312，未动）。

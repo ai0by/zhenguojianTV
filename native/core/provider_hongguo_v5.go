@@ -101,6 +101,20 @@ func (downloader *Downloader) hongguoV5FetchModel(ctx context.Context, videoID s
 			continue
 		}
 		identity.DeviceID, identity.InstallID = deviceID, installID
+		identity.Egdi = hgv5.ParseRegisterEgdi(regRaw)
+
+		// 1.5) 设备激活（app_alert_check）。官方客户端注册后会再打一次，
+		// 未激活的设备 2026-11-25 起取流一律 200 + 0 字节。失败不阻断，仅记诊断。
+		if alertURL, alertUA := hgv5.AlertCheckURL(deviceID, installID, time.Now().UnixMilli()); alertURL != "" {
+			if alertReq, aerr := http.NewRequestWithContext(fetchCtx, http.MethodGet, alertURL, nil); aerr == nil {
+				alertReq.Header.Set("User-Agent", alertUA)
+				alertReq.Header.Set("Accept", "application/json")
+				if alertResp, aerr2 := downloader.doPreparedCatalogRequest(alertReq, v5RegisterTimeout, nil); aerr2 == nil {
+					_, _ = io.Copy(io.Discard, io.LimitReader(alertResp.Body, 4096))
+					alertResp.Body.Close()
+				}
+			}
+		}
 
 		// 2) 构造 v5 body / query / 签名，全部基于同一份 gzip body。
 		body, berr := hgv5.BuildPlaybackBody(videoID)
@@ -114,7 +128,7 @@ func (downloader *Downloader) hongguoV5FetchModel(ctx context.Context, videoID s
 			lastErr = serr
 			continue
 		}
-		playURL := hgv5.APIBase + hgv5.PathPlayback + "?" + query
+		playURL := hgv5.APIBase + hgv5.PlaybackPath() + "?" + query
 		req, perr := http.NewRequestWithContext(fetchCtx, http.MethodPost, playURL, bytes.NewReader(body))
 		if perr != nil {
 			lastErr = perr
@@ -126,7 +140,11 @@ func (downloader *Downloader) hongguoV5FetchModel(ctx context.Context, videoID s
 		req.Header.Set("User-Agent", hgv5.PlaybackUserAgent())
 		req.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 		req.Header.Set("x-xs-from-web", "0")
-		req.Header.Set("Content-Encoding", "gzip")
+		if hgv5.PlaybackNeedsGzip() {
+			req.Header.Set("Content-Encoding", "gzip")
+		} else {
+			req.Header.Del("Content-Encoding")
+		}
 
 		resp, derr := downloader.doPreparedCatalogRequest(req, v5RequestTimeout, nil)
 		if derr != nil {

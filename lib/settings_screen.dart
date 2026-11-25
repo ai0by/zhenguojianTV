@@ -16,6 +16,7 @@ import 'playback_cache_screen.dart';
 import 'profiles_screen.dart';
 import 'app_build.dart';
 import 'sources_screen.dart';
+import 'signing_config.dart';
 import 'widgets.dart';
 import 'resource_settings_screen.dart';
 import 'lan_screen.dart';
@@ -44,6 +45,76 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _busy = false;
   String? _message;
+
+  /// 红果取源签名：显示当前档 + 一键从 CDN 拉取新配置（手机 / TV 通用）。
+  Future<void> _openSigningSheet() async {
+    Map<String, dynamic>? status;
+    try {
+      status = await widget.repository.hongguoSigningStatus();
+    } catch (_) {}
+    if (!mounted) return;
+    var busy = false;
+    String? message;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('红果取源签名'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('当前档：${status?['name'] ?? '内置默认'}'),
+                Text('field21：${status?['medusa21'] ?? '-'}'),
+                Text('device_level：${status?['deviceLevel'] ?? '-'}'),
+                for (final entry in SigningConfig.statusSummary().entries)
+                  Text('${entry.key}：${entry.value}'),
+                if (message != null) ...[
+                  const SizedBox(height: 8),
+                  Text(message!, style: const TextStyle(fontSize: 12)),
+                ],
+                const SizedBox(height: 12),
+                const Text(
+                  '上游换签名时点「立即检查」即可从 CDN 拉取新配置并立即生效，'
+                  '不需要更新 App。依次尝试 jsDelivr / Fastly / gcore / GitHub。',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.pop(dialogContext),
+              child: const Text('关闭'),
+            ),
+            FilledButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setLocal(() {
+                        busy = true;
+                        message = '正在检查…';
+                      });
+                      final failure =
+                          await widget.repository.refreshHongguoSigning();
+                      try {
+                        status =
+                            await widget.repository.hongguoSigningStatus();
+                      } catch (_) {}
+                      if (!dialogContext.mounted) return;
+                      setLocal(() {
+                        busy = false;
+                        message = failure ?? '已更新并生效';
+                      });
+                    },
+              child: Text(busy ? '检查中…' : '立即检查'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _chooseTheme() async {
     final selected = await showDialog<String>(
@@ -182,6 +253,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+              ListTile(
+                key: const ValueKey('signing-setting'),
+                leading: const Icon(Icons.key_outlined),
+                title: const Text('红果取源签名'),
+                subtitle: const Text('上游换签名时可在此一键更新，无需升级 App'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: _openSigningSheet,
+              ),
               ListTile(
                 key: const ValueKey('theme-setting'),
                 leading: const Icon(Icons.palette_outlined),

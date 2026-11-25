@@ -20,6 +20,7 @@ import 'cover_decoder.dart';
 import 'catalog_updates.dart';
 import 'download_collections.dart';
 import 'resource_settings.dart';
+import 'signing_config.dart';
 
 typedef _NativeRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -203,6 +204,13 @@ abstract class AppRepository {
     bool force = false,
   }) async => const [CatalogCategory.all];
   bool get supportsSourceManagement => false;
+
+  /// 红果取源签名：手动检查更新。默认实现返回不支持，只有原生仓库覆盖。
+  Future<String?> refreshHongguoSigning() async => '当前环境不支持';
+
+  /// 红果取源签名：当前生效档摘要。
+  Future<Map<String, dynamic>> hongguoSigningStatus() async => const {};
+
   Future<SourceStatus> sourceStatus(String source) async =>
       SourceStatus.fromJson({'source': source});
   Future<SourceStatus> startSourceJob(
@@ -692,6 +700,25 @@ class NativeRepository extends AppRepository {
   );
   int _playbackSequence = DateTime.now().microsecondsSinceEpoch;
 
+  /// 手动检查红果取源签名更新（手机 / TV 通用）。
+  ///
+  /// 依次尝试 jsDelivr / Fastly / gcore / GitHub raw；成功即写入本地缓存并
+  /// 立即在原生侧生效，**无需重启、无需发版**。返回 null 表示成功。
+  Future<String?> refreshHongguoSigning() async {
+    final directory = await getApplicationSupportDirectory();
+    return SigningConfig.refresh(
+      supportDir: directory.path,
+      inject: (profile) => _call({
+        'action': 'configureHongguoSigning',
+        'signingProfile': profile,
+      }),
+    );
+  }
+
+  /// 当前生效的签名档摘要（档名 / field21 / 路径 / device_level）。
+  Future<Map<String, dynamic>> hongguoSigningStatus() =>
+      _call({'action': 'hongguoSigningStatus'});
+
   Future<Map<String, dynamic>> _call(Map<String, dynamic> input) async {
     try {
       final action = input['action'] as String;
@@ -840,6 +867,15 @@ class NativeRepository extends AppRepository {
     }
     if (!background) await BackgroundDownloads.prepare();
     if (!background) {
+      // 红果签名档热更新（0.8.35）：先注入缓存、再联网刷新。任何失败都被
+      // SigningConfig 吞掉并沿用内置默认档，不影响启动。
+      await SigningConfig.bootstrap(
+        supportDir: directory.path,
+        inject: (profile) => _call({
+          'action': 'configureHongguoSigning',
+          'signingProfile': profile,
+        }),
+      );
       SystemProxyMonitor.start((value) async {
         await _call({'action': 'updateSystemProxy', 'systemProxy': value});
       });

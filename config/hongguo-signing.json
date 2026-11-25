@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "updated": "2026-11-25",
+  "_note": "红果取流签名热更新控制面。profile 可是预置档名（current / v04.10.03 / v04.06.04）或完整档对象；完整档对象里带 envelopeSpec 时可改 medusa 结构（加字段 / 改 flags / 改嵌套），无需发版。原生侧强校验，坏配置一律忽略并沿用内置默认档。",
+  "_howto": [
+    "1. 只换常量（license / magic / signKey / medusa21 / path / deviceLevel）：下发 {profile:{...}} 即可。",
+    "2. 换 medusa 结构：加 envelope:'custom' + envelopeSpec，字段写法见 _specExample。",
+    "3. 改完提交到 main，App 下次启动或用户在「设置 → 红果取源签名 → 立即检查」时生效。",
+    "4. 验证：真网取一集付费后续集，确认返回非空 video_model 且 1080P 为 bytevc1。"
+  ],
+  "_specExample": {
+    "flags": "4480000000000000",
+    "device": [
+      {"t": 1, "i": 1},
+      {"t": 4, "m": "deviceid"},
+      {"t": 5, "p": "nonce"},
+      {"t": 16, "x": 0},
+      {"t": 22, "q": "os_version"},
+      {"t": 25, "p": "started"},
+      {"t": 28, "p": "now"}
+    ],
+    "env": [
+      {"t": 1, "p": "launch"},
+      {"t": 7, "p": "pid"},
+      {"t": 12, "m": "device"},
+      {"t": 13, "n": [{"t": 1, "m": "ts"}, {"t": 2, "i": -2}, {"t": 4, "i": 200}]},
+      {"t": 14, "m": "version"}
+    ],
+    "nested15": [{"t": 1, "i": 305}, {"t": 2, "i": 4}, {"t": 3, "i": 694367}, {"t": 5, "i": 1621072674}],
+    "message": [{"t": 16, "p": "nonce"}]
+  },
+  "profile": "current"
+}

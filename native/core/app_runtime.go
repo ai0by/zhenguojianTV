@@ -97,7 +97,10 @@ type nativeDrama struct {
 }
 
 type nativeInput struct {
-	LAN              json.RawMessage         `json:"lan"`
+	LAN json.RawMessage `json:"lan"`
+	// SigningProfile（0.8.35）是远程下发的红果取流签名档：可以是预置档名
+	// （如 "v04.06.04"）或完整档 JSON 对象。仅 configureHongguoSigning 使用。
+	SigningProfile   json.RawMessage         `json:"signingProfile"`
 	ExpectedVersions map[string]string       `json:"expectedVersions"`
 	SystemProxy      nativeSystemProxy       `json:"systemProxy"`
 	Settings         nativeResourceSettings  `json:"settings"`
@@ -504,6 +507,14 @@ func nativeDispatch(input nativeInput) (any, error) {
 		ctx = work
 	}
 	switch input.Action {
+	case "configureHongguoSigning":
+		name, err := engine.configureHongguoSigning(input.SigningProfile)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"active": name, "status": hongguoSigningStatus()}, nil
+	case "hongguoSigningStatus":
+		return hongguoSigningStatus(), nil
 	case "lan":
 		return engine.nativeLAN(ctx, input.Command, input.LAN)
 	case "updateSystemProxy":

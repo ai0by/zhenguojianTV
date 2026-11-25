@@ -112,7 +112,10 @@ func registerUserAgent() string {
 type Identity struct {
 	CDID, OpenUDID, ClientUDID, OAID, ReqID string
 	DeviceID, InstallID                     string
-	Device                                  Device
+	// Egdi 是注册响应里的 klink_egdi。2026-11-25 起 video_tab 取流要求带上它
+	// （服务端按设备画像校验），缺了同样回 200 + 0 字节。
+	Egdi   string
+	Device Device
 }
 
 // NewIdentity 用 crypto/rand 生成一组全新匿名身份。换设备重来时调它即可。
@@ -334,6 +337,34 @@ func (f *flexString) UnmarshalJSON(b []byte) error {
 }
 func (f flexString) String() string { return string(f) }
 
+// ParseRegisterEgdi 取注册响应里的 klink_egdi（可能为空；空时不写进 query）。
+func ParseRegisterEgdi(raw []byte) string {
+	var env struct {
+		Egdi string `json:"klink_egdi"`
+	}
+	if json.Unmarshal(raw, &env) != nil {
+		return ""
+	}
+	return strings.TrimSpace(env.Egdi)
+}
+
+// AlertCheckURL 构造设备激活地址（app_alert_check）。
+//
+// 2026-11-25 起，仅注册成功还不够：官方客户端注册后会再打一次 app_alert_check
+// 完成激活，未激活的设备取流一律 200 + 0 字节。返回 GET 地址与所需 UA。
+func AlertCheckURL(deviceID, installID string, nowMillis int64) (string, string) {
+	pairs := [][2]string{
+		{"aid", AID}, {"app_name", AppName}, {"channel", "update_64"},
+		{"device_id", deviceID}, {"iid", installID},
+		{"device_platform", DevicePlatform}, {"os", "android"},
+		{"version_code", RegisterCode}, {"version_name", RegisterVer},
+		{"_rticket", strconv.FormatInt(nowMillis, 10)},
+	}
+	url := "https://log5-applog-lf.fqnovel.com/service/2/app_alert_check/?" + encodeQuery(pairs)
+	ua := fmt.Sprintf("%s/%s (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)", Package, RegisterCode)
+	return url, ua
+}
+
 // ---------- 取流 query / body / 签名 ----------
 
 // PlaybackPairs 按 7.4.3.32 抓包顺序生成 30 个 query 参数（顺序是签名的一部分）。
@@ -355,20 +386,35 @@ func PlaybackPairs(id Identity) [][2]string {
 	}
 }
 
-// BuildPlaybackBody 生成 gzip 后的请求体；同一份字节既用于签名也用于发送。
+// PlaybackPath 返回当前取流档的接口路径（热更新可切换）。
+func PlaybackPath() string { return ActiveSigningProfile().Path }
+
+// PlaybackNeedsGzip 返回当前取流档是否需要 gzip body + Content-Encoding 头。
+func PlaybackNeedsGzip() bool { return ActiveSigningProfile().GzipBody }
+
+// BuildPlaybackBody 生成请求体；同一份字节既用于签名也用于发送。
+// body 形态（device_level / dr_scene / 是否 gzip）由当前取流档决定，可热更新。
 func BuildPlaybackBody(episodeID string) ([]byte, error) {
-	body, err := json.Marshal(map[string]any{
-		"biz_param": map[string]any{
-			"detail_page_version": 0, "device_level": 1, "disable_digg_stat": false,
-			"disable_video_relate_book": false, "need_all_video_definition": true,
-			"need_mp4_align": false, "use_os_player": false, "use_server_dns": false,
-			"video_platform": 1024,
-		},
+	p := ActiveSigningProfile()
+	biz := map[string]any{
+		"detail_page_version": 0, "device_level": p.DeviceLevel, "disable_digg_stat": false,
+		"disable_video_relate_book": false, "need_all_video_definition": true,
+		"need_mp4_align": false, "use_os_player": false, "use_server_dns": false,
+		"video_platform": 1024,
+	}
+	payload := map[string]any{
+		"biz_param":          biz,
 		"mixed_video_id_map": map[string][]string{"1004": {episodeID}},
-		"dr_scene":           "player",
-	})
+	}
+	if p.DrScene != "" {
+		payload["dr_scene"] = p.DrScene
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
+	}
+	if !p.GzipBody {
+		return body, nil
 	}
 	var out bytes.Buffer
 	w := gzip.NewWriter(&out)
@@ -399,18 +445,34 @@ const VideoTabHost = "api5-normal-sinfonlineb.fqnovel.com"
 const VideoTabPath = "/reading/bookapi/video_tab/multi_video_model/v1/"
 
 // VideoTabPairs 构造 video_tab GET 的 query 参数，顺序参与签名，不可重排。
-// 该路由属于播放器签名族，参数集与 POST 取流不同（jackotom 7.7 / drpys）。
+//
+// 2026-11-25 起服务端按「官方 7.4.5.32 播放器画像」校验：参数集从 22 项扩到 39 项，
+// 并额外要求 klink_egdi（注册响应下发）。少一项就回 200 + 0 字节。
+// 机型串固定为 PGT-AN10 / Android 12 / HONOR，与 VideoTabUserAgent 一致。
 func VideoTabPairs(id Identity, videoID string) [][2]string {
-	return [][2]string{
-		{"aid", AID}, {"app_name", AppName}, {"version_code", V5VersionCode}, {"version_name", V5VersionName},
-		{"channel", "vivo_8662_64"}, {"device_platform", DevicePlatform}, {"device_type", "PGT-AN10"},
-		{"os_version", "12"}, {"update_version_code", V5VersionCode},
-		{"iid", id.InstallID}, {"cdid", id.CDID}, {"device_id", id.DeviceID},
-		{"video_id", videoID}, {"video_id_type", "0"}, {"device_level", "1"},
-		{"need_all_video_definition", "1"}, {"need_mp4_align", "0"}, {"use_os_player", "0"},
-		{"video_platform", "1024"}, {"source", "0"}, {"from_video_id", ""},
-		{"_rticket", ""},
+	pairs := [][2]string{
+		{"device_platform", DevicePlatform}, {"os", "android"}, {"ssmix", "a"}, {"cdid", id.CDID},
+		{"channel", "vivo_8662_64"}, {"aid", AID}, {"app_name", AppName},
+		{"version_code", V5VersionCode}, {"version_name", V5VersionName},
+		{"manifest_version_code", V5VersionCode}, {"update_version_code", V5VersionCode},
+		{"resolution", "1920*1080"}, {"dpi", "280"}, {"device_type", "PGT-AN10"},
+		{"device_brand", "HONOR"}, {"language", "zh"}, {"os_api", "31"}, {"os_version", "12"},
+		{"ac", "wifi"}, {"host_abi", "arm64-v8a"}, {"dragon_device_type", "phone"},
+		{"pv_player", V5VersionCode}, {"compliance_status", "0"}, {"need_personal_recommend", "1"},
+		{"player_so_load", "1"}, {"is_android_pad_screen", "0"}, {"rom_version", "V417IR+release-keys"},
+		{"iid", id.InstallID}, {"device_id", id.DeviceID},
 	}
+	if id.Egdi != "" {
+		pairs = append(pairs, [2]string{"klink_egdi", id.Egdi})
+	}
+	pairs = append(pairs,
+		[2]string{"video_id", videoID}, [2]string{"video_id_type", "0"},
+		[2]string{"device_level", deviceLevel}, [2]string{"need_all_video_definition", "1"},
+		[2]string{"need_mp4_align", "0"}, [2]string{"use_os_player", "0"},
+		[2]string{"video_platform", "1024"}, [2]string{"source", "0"},
+		[2]string{"from_video_id", ""}, [2]string{"_rticket", ""},
+	)
+	return pairs
 }
 
 // SignVideoTabGET 对 video_tab bodyless GET 签名，返回完整 URL 与需要设置的 header。
